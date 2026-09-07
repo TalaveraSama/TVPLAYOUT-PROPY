@@ -86,6 +86,13 @@ class OutputWorker(QThread):
         # v22.2.1: offset actual del clip en emisión (lo que persiste el
         # watcher de drift del playout local).
         self._current_offset = 0.0
+        # v22.2.2: timestamp de cuándo arrancó EFECTIVAMENTE el FFmpeg para
+        # este clip (cuando se hizo Popen y empezó a decodificar). Se usa para
+        # estimar la posición actual del FFmpeg como
+        # _current_offset + (now - _clip_emit_started). Sin esto, el watcher
+        # de drift compara el offset ESTÁTICO contra la posición DINÁMICA de
+        # mpv, y nunca converge.
+        self._clip_emit_started = 0.0
 
     @staticmethod
     def _norm_items(items):
@@ -308,6 +315,26 @@ class OutputWorker(QThread):
         with self._lock:
             return getattr(self, "_current_offset", 0.0)
 
+    @property
+    def current_position(self):
+        """v22.2.2: posición estimada actual del FFmpeg (en segundos dentro
+        del clip que se está emitiendo). Se calcula como
+        current_offset + (now - clip_emit_started).
+
+        Esto es lo que el watcher de drift del playout local debe comparar
+        contra self.player._time (la posición actual de mpv local).
+
+        Si el FFmpeg no está corriendo, devuelve current_offset sin
+        acumular tiempo (no tiene sentido).
+        """
+        with self._lock:
+            offset = float(getattr(self, "_current_offset", 0.0) or 0.0)
+            started = float(getattr(self, "_clip_emit_started", 0.0) or 0.0)
+            proc = getattr(self, "proc", None)
+        if not proc or proc.poll() is not None or started <= 0:
+            return offset
+        return offset + max(0.0, time.time() - started)
+
     NOISE = ("Immediate exit requested", "Last message repeated", "Error muxing a packet", "Error writing trailer",
              "Error closing file", "Terminating thread", "Error submitting a packet")
 
@@ -380,6 +407,10 @@ class OutputWorker(QThread):
                     self.proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL,
                                                  text=True, encoding="utf-8", errors="replace", creationflags=CREATE_NO_WINDOW)
                     self._clip_started = time.time()
+                    # v22.2.2: marca de cuándo arrancó el FFmpeg. La estimación
+                    # de posición usa este timestamp (no _clip_started) para
+                    # descontar el tiempo de arranque de FFmpeg.
+                    self._clip_emit_started = time.time()
                     proc = self.proc
                 if first:
                     self.state.emit(True, f"RTMP ON AIR • {label} • {self.resolution}@{self.fps} • {self.bitrate} kbps")

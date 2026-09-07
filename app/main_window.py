@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                                QPushButton, QSplitter, QTableWidget, QTableWidgetItem, QAbstractItemView, QHeaderView,
                                QTabWidget, QListWidget, QListWidgetItem, QLineEdit, QComboBox, QSlider,
                                QMessageBox, QFileDialog, QInputDialog, QMenu, QStackedWidget, QFrame, QSizePolicy,
+                               QRadioButton, QButtonGroup,
                                QDialog)
 
 from . import logger
@@ -46,7 +47,7 @@ STATUS_LABEL = {ST_PENDING: "", ST_READY: "LISTO", ST_ONAIR: "AL AIRE", ST_AIRED
 
 DEFAULT_SETTINGS = {
     "rtmp_url": "", "resolution": "1920x1080", "fps": "29.97", "encoder": "AUTO", "bitrate": 6000, "audio_bitrate": 192,
-    "subtitle_burn": False, "ffmpeg_extra": "", "rtmp_autostart": False,
+    "subtitle_burn": False, "ffmpeg_extra": "", "rtmp_autostart": False, "rtmp_mode": "local",
     "audio_pref": AUDIO_PREFS[0], "sub_pref": "OFF", "hwdec": "auto-safe", "audio_device": "",
     "autofill_category": "Todas", "autofill_count": 10, "tandas_category": "Publicidad", "tandas_count": 2,
     "restore_playlist": True, "autoplay": False, "probe_on_scan": True,
@@ -598,15 +599,41 @@ class MainWindow(QMainWindow):
         self.rtmp_url.editingFinished.connect(lambda: self._save_setting("rtmp_url", self.rtmp_url.text().strip()))
         r1.addWidget(self.rtmp_url, 1)
         ov.addLayout(r1)
+        # v22.2.2: selector de modo (radio buttons). Reemplaza al botón
+        # "INICIAR RTMP" separado. El modo define si hay stream o no.
+        r_modes = QHBoxLayout()
+        r_modes.setContentsMargins(6, 0, 6, 0)
+        r_modes.setSpacing(10)
+        self.rtmp_mode_group = QButtonGroup(self)
+        self.rtmp_mode_local = QRadioButton("Solo monitor local")
+        self.rtmp_mode_remote = QRadioButton("RTMP Remoto")
+        self.rtmp_mode_ndi = QRadioButton("RTMP Local (NDI)")
+        self.rtmp_mode_ndi.setEnabled(False)  # Próximamente
+        self.rtmp_mode_ndi.setToolTip("Próximamente")
+        for rb in (self.rtmp_mode_local, self.rtmp_mode_remote, self.rtmp_mode_ndi):
+            self.rtmp_mode_group.addButton(rb)
+            r_modes.addWidget(rb)
+        r_modes.addStretch()
+        # Seleccionar el modo persistido (default: local)
+        initial_mode = s.get("rtmp_mode", "local")
+        if initial_mode == "remote":
+            self.rtmp_mode_remote.setChecked(True)
+        else:
+            self.rtmp_mode_local.setChecked(True)
+        self.rtmp_mode_group.buttonClicked.connect(self._rtmp_mode_changed)
+        ov.addLayout(r_modes)
         r2 = QHBoxLayout()
         r2.setContentsMargins(6, 0, 6, 0)
-        self.rtmp_btn = _btn("🔴 INICIAR RTMP", self.toggle_rtmp, None, "La salida RTMP sigue a la playlist local (mismo evento)")
-        self.rtmp_btn.setMinimumHeight(30)
-        r2.addWidget(self.rtmp_btn, 1)
+        # v22.2.2: chip de estado (ON/OFF) — el botón "INICIAR RTMP" se
+        # elimina: el modo se elige con los radios de arriba.
         self.rtmp_chip = LedLabel("OFF", object_name="rtmpChip")
         self.rtmp_chip.setMinimumWidth(120)
         self.rtmp_chip.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         r2.addWidget(self.rtmp_chip, 1)
+        # Mantenemos self.rtmp_btn como referencia por compatibilidad con
+        # otras partes del código que aún lo usan (lo ocultamos).
+        self.rtmp_btn = _btn("", lambda: None, None, "")
+        self.rtmp_btn.setVisible(False)
         ov.addLayout(r2)
         self.rtmp_info = _lbl("", "clipInfo")
         self.rtmp_info.setContentsMargins(6, 0, 6, 0)
@@ -702,7 +729,7 @@ class MainWindow(QMainWindow):
         if self.settings.get("autoplay") and self.ctrl.items and not self.ctrl.is_on_air:
             self.ctrl.play_next("auto")
         if self.settings.get("rtmp_autostart") and self.ctrl.items and not self.output:
-            self.toggle_rtmp()
+            self._rtmp_start()
 
     # ============================================================= library
     def refresh_categories(self):
@@ -1489,26 +1516,56 @@ class MainWindow(QMainWindow):
 
     # ================================================================= RTMP
     def toggle_rtmp(self):
+        """v22.2.2: compat — ya no se llama desde la UI, los radios
+        (_rtmp_mode_changed) son la nueva forma de prender/apagar. Se
+        conserva para no romper nada que aún lo invoque. Prende o apaga
+        según el estado actual."""
         if self._locked:
             return
         if self.output and self.output.isRunning():
-            self.output.stop()
-            self.rtmp_btn.setText("🔴 INICIAR RTMP")
+            self._rtmp_stop()
+        else:
+            mode = "remote" if self.rtmp_mode_remote.isChecked() else "local"
+            if mode == "remote":
+                self._rtmp_start()
+
+    def _rtmp_mode_changed(self, _btn=None):
+        """v22.2.2: el usuario cambió el modo RTMP. Persistir y actuar."""
+        if self.rtmp_mode_remote.isChecked():
+            new_mode = "remote"
+        else:
+            new_mode = "local"
+        self._save_setting("rtmp_mode", new_mode)
+        log.info("RTMP mode → %s", new_mode)
+        # Si estamos pasando de "remote" a "local" con el RTMP activo, parar.
+        if new_mode == "local" and self.output and self.output.isRunning():
+            self._rtmp_stop()
+        # Si estamos pasando a "remote" y no hay RTMP activo, arrancar.
+        elif new_mode == "remote" and (not self.output or not self.output.isRunning()):
+            self._rtmp_start()
+
+    def _rtmp_start(self):
+        """v22.2.2: arranca el RTMP en modo 'remote'."""
+        if self._locked:
             return
         url = self.rtmp_url.text().strip()
         if not url:
             QMessageBox.warning(self, "RTMP", "Escribe la URL RTMP (rtmp://servidor/app/clave).")
+            self.rtmp_mode_local.setChecked(True)
             return
         self._save_setting("rtmp_url", url)
         if not FFMPEG_PATH:
             QMessageBox.warning(self, "RTMP", "No se encontró ffmpeg.exe. Colócalo en la raíz del proyecto.")
+            self.rtmp_mode_local.setChecked(True)
             return
         if not self.ctrl.items:
             QMessageBox.warning(self, "RTMP", "La playlist está vacía.")
+            self.rtmp_mode_local.setChecked(True)
             return
         if not self.ctrl.is_on_air:
             if not self.ctrl.play_next("manual"):
                 QMessageBox.warning(self, "RTMP", "No hay eventos pendientes para emitir.")
+                self.rtmp_mode_local.setChecked(True)
                 return
         s = self.settings
         # v22.2.1: leer la posición ACTUAL de mpv directamente del atributo del
@@ -1527,9 +1584,13 @@ class MainWindow(QMainWindow):
         self.output.log.connect(self._rtmp_log)
         self.output.ended.connect(self._rtmp_finished)
         self.output.start()
-        self.rtmp_btn.setText("■ DETENER RTMP")
         self._set_rtmp_chip("CONECTANDO…")
         self.rtmp_chip.set_active(True)
+
+    def _rtmp_stop(self):
+        """v22.2.2: detiene el RTMP si está corriendo."""
+        if self.output and self.output.isRunning():
+            self.output.stop()
 
     def _logo_config(self):
         s = self.settings
@@ -1542,12 +1603,14 @@ class MainWindow(QMainWindow):
         self._status(msg)
         self.rtmp_chip.set_active(ok)
         self._set_rtmp_chip(msg.replace("RTMP ON AIR • ", "ON AIR • ") if ok else ("ERROR" if "ERROR" in msg else "OFF"))
-        self.rtmp_btn.setText("■ DETENER RTMP" if ok else "🔴 INICIAR RTMP")
         if ok:
             self.rtmp_info.setText(msg)
         elif "ERROR" in msg:
             self.rtmp_info.setText(msg)
             log.error(msg)
+            # v22.2.2: si el RTMP falla, volver a modo local automáticamente
+            # para no dejar al operador con un modo "remote" que no anda.
+            self.rtmp_mode_local.setChecked(True)
 
     def _set_rtmp_chip(self, text):
         self.rtmp_chip.setToolTip(text)
@@ -1563,9 +1626,12 @@ class MainWindow(QMainWindow):
 
     def _rtmp_finished(self):
         self.output = None
-        self.rtmp_btn.setText("🔴 INICIAR RTMP")
         self.rtmp_chip.set_active(False)
         self._set_rtmp_chip("OFF")
+        # v22.2.2: si el modo sigue siendo "remote" pero el FFmpeg terminó
+        # (por error o stop externo), no forzar cambio de radio — el usuario
+        # puede reintentar. Pero si terminó por stop nuestro, dejamos el
+        # modo como está.
 
     def _rtmp_follow(self, index, _item):
         """La salida RTMP salta al mismo evento que el playout local."""
@@ -1597,12 +1663,16 @@ class MainWindow(QMainWindow):
             self._rtmp_drift_suspend_until = time.time() + 3.0
 
     def _rtmp_check_drift(self):
-        """v22.2.1: detecta desincronización entre el playout local y el RTMP
+        """v22.2.2: detecta desincronización entre el playout local y el RTMP
         y la corrige reiniciando FFmpeg con el offset correcto.
 
-        El RTMP se desfasa progresivamente porque FFmpeg re-encodea (latencia
-        acumulada). Si la diferencia entre la posición de mpv y el offset
-        con el que está emitiendo el RTMP supera el umbral, llamamos
+        Compara la posición DINÁMICA de mpv contra la posición estimada
+        DINÁMICA del FFmpeg (current_offset + tiempo desde que arrancó).
+        Esto es lo correcto: el offset estático solo no representa la
+        posición actual del FFmpeg (que avanza con el reloj).
+
+        El RTMP se desfasa progresivamente porque FFmpeg re-encodea
+        (latencia acumulada). Si la diferencia supera el umbral, llamamos
         output.seek_to(onair, mpv_time) para realinear.
 
         Se suspende durante 3s después de cualquier seek/pause/realign para
@@ -1616,12 +1686,15 @@ class MainWindow(QMainWindow):
             return
         # Posición real del playout local (lo que mpv reporta por IPC)
         mpv_time = float(getattr(self.player, "_time", 0.0) or 0.0)
-        # Offset con el que está emitiendo el RTMP ahora mismo
-        rtmp_offset = float(self.output.current_offset or 0.0)
+        # Posición estimada actual del FFmpeg (avanza con el reloj desde
+        # que arrancó el clip). current_position se calcula internamente
+        # como current_offset + (now - clip_emit_started).
+        ffmpeg_pos = float(self.output.current_position or 0.0)
         # Diferencia absoluta
-        drift = abs(mpv_time - rtmp_offset)
+        drift = abs(mpv_time - ffmpeg_pos)
         if drift >= self._rtmp_drift_threshold:
-            log.info("RTMP drift %.2fs (mpv=%.2fs, rtmp=%.2fs) — realineando", drift, mpv_time, rtmp_offset)
+            log.info("RTMP drift %.2fs (mpv=%.2fs, ffmpeg_est=%.2fs) — realineando",
+                     drift, mpv_time, ffmpeg_pos)
             self.output.seek_to(self.ctrl.onair, mpv_time)
             # Suspender el watcher 3s para no realinear otra vez mientras
             # FFmpeg termina de reconectar.
@@ -1671,7 +1744,7 @@ class MainWindow(QMainWindow):
             if changed_output and self.output and self.output.isRunning():
                 if QMessageBox.question(self, "RTMP", "La salida RTMP está activa. ¿Reiniciarla con los nuevos ajustes?") == QMessageBox.Yes:
                     self.output.stop()
-                    QTimer.singleShot(1500, self.toggle_rtmp)
+                    QTimer.singleShot(1500, self._rtmp_start)
 
     def open_logo(self):
         from .dialogs_extra import LogoDialog

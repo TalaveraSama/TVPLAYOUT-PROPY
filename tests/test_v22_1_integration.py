@@ -124,8 +124,11 @@ def test_main_window_has_drift_watcher():
     idx = src.find("def _rtmp_check_drift(self")
     assert idx > 0
     # Leer 1500 caracteres (cubre cualquier implementación razonable)
-    block = src[idx:idx + 1500]
-    assert "self.output.current_offset" in block, "el watcher debe leer output.current_offset"
+    block = src[idx:idx + 2500]
+    # v22.2.2: el watcher lee current_position (estimación dinámica), no
+    # current_offset (estático).
+    assert "self.output.current_position" in block, \
+        "el watcher debe leer output.current_position (estimación dinámica de la posición de FFmpeg)"
     assert 'self.player, "_time"' in block or "self.player._time" in block, \
         "el watcher debe leer player._time (mpv local)"
     assert "self.output.seek_to" in block, "el watcher debe realinear con output.seek_to"
@@ -152,16 +155,66 @@ def test_drift_watcher_suspends_on_seek_and_pause():
 
 def test_toggle_rtmp_uses_player_time_directly():
     src = _read(WIN)
-    idx = src.find("def toggle_rtmp(self")
-    assert idx > 0, "no encontré toggle_rtmp"
+    idx = src.find("def _rtmp_start(self")
+    assert idx > 0, "no encontré _rtmp_start"
     end = src.find("self.output.start()", idx)
-    assert end > idx, "no encontré self.output.start() en toggle_rtmp"
+    assert end > idx, "no encontré self.output.start() en _rtmp_start"
     block = src[idx:end]
     # Acepta tanto self.player._time como getattr(self.player, "_time", 0.0)
     assert 'self.player._time' in block or 'getattr(self.player, "_time"' in block, \
-        "toggle_rtmp debe leer self.player._time (o getattr equivalente) para el offset inicial"
-    assert "start_offset=mpv_time" in block, "toggle_rtmp debe pasar mpv_time como start_offset al OutputWorker"
-    assert "self.ctrl.elapsed" not in block, "toggle_rtmp no debe usar self.ctrl.elapsed (puede estar desactualizado)"
+        "_rtmp_start debe leer self.player._time (o getattr equivalente) para el offset inicial"
+    assert "start_offset=mpv_time" in block, "_rtmp_start debe pasar mpv_time como start_offset al OutputWorker"
+
+
+# --- v22.2.2: rtmp mode radio + current_position ---
+
+def test_output_exposes_current_position():
+    src = _read(OUT)
+    assert "def current_position" in src, "OutputWorker debe tener property current_position"
+    pos_block_idx = src.find("def current_position(self")
+    assert pos_block_idx > 0
+    end = src.find("\n    @property", pos_block_idx)
+    if end < 0:
+        end = pos_block_idx + 1200
+    pb = src[pos_block_idx:end]
+    assert "_current_offset" in pb, "current_position debe usar _current_offset"
+    assert "_clip_emit_started" in pb, "current_position debe usar _clip_emit_started"
+    assert "time.time()" in pb, "current_position debe usar time.time() para calcular el tiempo transcurrido"
+
+
+def test_drift_watcher_uses_current_position():
+    src = _read(WIN)
+    idx = src.find("def _rtmp_check_drift(self")
+    assert idx > 0
+    block = src[idx:idx + 1500]
+    assert "self.output.current_position" in block, \
+        "el watcher de drift debe usar current_position (estimación dinámica), no current_offset (estático)"
+
+
+def test_rtmp_mode_radios_in_ui():
+    src = _read(WIN)
+    assert "QRadioButton" in src, "main_window.py debe importar QRadioButton"
+    assert "QButtonGroup" in src, "main_window.py debe usar QButtonGroup para los radios"
+    assert "self.rtmp_mode_local" in src, "debe existir self.rtmp_mode_local"
+    assert "self.rtmp_mode_remote" in src, "debe existir self.rtmp_mode_remote"
+    assert "self.rtmp_mode_ndi" in src, "debe existir self.rtmp_mode_ndi (placeholder para futuro)"
+    assert "def _rtmp_mode_changed" in src, "debe existir el handler _rtmp_mode_changed"
+    assert "def _rtmp_start" in src, "debe existir el método _rtmp_start"
+    assert "def _rtmp_stop" in src, "debe existir el método _rtmp_stop"
+
+
+def test_rtmp_mode_persisted_in_settings():
+    src = _read(WIN)
+    assert '"rtmp_mode"' in src, "rtmp_mode debe estar en DEFAULT_SETTINGS"
+    assert 'self._save_setting("rtmp_mode"' in src, "_rtmp_mode_changed debe persistir el modo en la BD"
+    # _rtmp_state debe volver a modo local si hay error
+    assert "self.rtmp_mode_local.setChecked(True)" in src, "fallo de RTMP debe volver a modo local"
+
+
+def test_ndi_radio_disabled_placeholder():
+    src = _read(WIN)
+    # El radio de NDI debe estar deshabilitado
+    assert "self.rtmp_mode_ndi.setEnabled(False)" in src, "RTMP Local (NDI) debe estar deshabilitado como placeholder"
 
 
 if __name__ == "__main__":
