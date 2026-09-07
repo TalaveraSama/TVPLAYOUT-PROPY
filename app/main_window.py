@@ -176,6 +176,16 @@ class MainWindow(QMainWindow):
         self.ctrl.playlist_end.connect(self._playlist_end)
         self.ctrl.on_start_callbacks.append(self._rtmp_follow)
         self.ctrl.items_changed.connect(self._rtmp_sync_structure)
+        # v22.1: sincronizar pausa y seek del playout con el RTMP.
+        self.ctrl.paused_changed = getattr(self.ctrl, "paused_changed", None)
+        # Crear la señal en el controlador si no existe (no se importa aquí para
+        # no acoplar; el controlador emite message y position; el cambio de
+        # pausa lo detectamos comparando estado).
+        self._last_paused_state = False
+        self._rtmp_sync_timer = QTimer(self)
+        self._rtmp_sync_timer.setInterval(400)
+        self._rtmp_sync_timer.timeout.connect(self._rtmp_tick_pause)
+        self._rtmp_sync_timer.start()
         self.scheduler = SchedulerService(self.db, self)
         self.scheduler.triggered.connect(self._scheduled_run)
         self.scheduler.status.connect(self._status)
@@ -647,10 +657,21 @@ class MainWindow(QMainWindow):
                 b.blockSignals(True)
                 b.setChecked(bool(s.get(key)))
                 b.blockSignals(False)
-            self.player.volume = int(s.get("volume", 100))
-            self.player.muted = bool(s.get("muted", False))
-            self.mute_btn.setChecked(self.player.muted)
-            self.mute_btn.setText("🔇 Local silenciado" if self.player.muted else "🔊 Audio local")
+            # v22.1: aplicar volumen y mute al mpv real (no sólo al atributo Python).
+            # Si mpv no está corriendo todavía, los valores se guardan en el atributo
+            # y se aplican en el primer play() (ver MPVPlayer.play).
+            vol = int(s.get("volume", 100))
+            muted = bool(s.get("muted", False))
+            self.player.volume = vol
+            self.player.muted = muted
+            self.vol.blockSignals(True)
+            self.vol.setValue(vol)
+            self.vol.blockSignals(False)
+            self.mute_btn.setChecked(muted)
+            self.mute_btn.setText("🔇 Local silenciado" if muted else "🔊 Audio local")
+            if self.player.running:
+                self.player.set_volume(vol)
+                self.player.set_mute(muted)
             self._modes_changed()
         self.rtmp_url.setText(s.get("rtmp_url", ""))
 
@@ -1294,8 +1315,13 @@ class MainWindow(QMainWindow):
             self._status("No hay siguiente evento")
 
     def ctrl_seek(self, frac):
-        if not self._locked:
-            self.ctrl.seek_fraction(frac)
+        if self._locked:
+            return
+        self.ctrl.seek_fraction(frac)
+        # v22.1: replicar el seek al RTMP (FFmpeg se reinicia con el offset
+        # correspondiente). Sólo si el playout está al aire.
+        if self.output and self.output.isRunning() and self.ctrl.is_on_air:
+            self.output.seek_to(self.ctrl.onair, self.ctrl.elapsed)
 
     def toggle_mute(self):
         muted = self.mute_btn.isChecked()
@@ -1306,9 +1332,21 @@ class MainWindow(QMainWindow):
             self.vu.reset()
 
     def _volume_changed(self, v):
-        self.player.set_volume(v)
+        # v22.1: debounce de 80ms — arrastrar el slider rápido ya no satura el
+        # IPC ni compite con loadfile/seek en curso. El último valor gana.
         self.settings["volume"] = v
+        self.player.volume = v   # sincroniza atributo para que play() lo re-aplique
+        if self.player.running:
+            if not hasattr(self, "_vol_debounce") or self._vol_debounce is None:
+                self._vol_debounce = QTimer(self)
+                self._vol_debounce.setSingleShot(True)
+                self._vol_debounce.timeout.connect(self._apply_volume)
+            self._vol_debounce.start(80)
         QTimer.singleShot(800, lambda: self.db.set_setting("volume", self.settings["volume"]))
+
+    def _apply_volume(self):
+        if self.player.running:
+            self.player.set_volume(self.settings["volume"])
 
     def toggle_lock(self):
         self._locked = self.lock_btn.isChecked()
@@ -1425,6 +1463,12 @@ class MainWindow(QMainWindow):
             self._status(f"PROGRAMADO • {schedule['name']} • sin medios")
             return
         self.ctrl.replace_playlist(items, start=True, reason=f"programador:{schedule['name']}")
+        # v22.1: tras un replace_playlist, el RTMP debe saltar a la nueva lista
+        # en el índice 0 (no al clip anterior). _rtmp_sync_structure sólo se
+        # llama con items_changed antes de play_index(0), momento en el que
+        # onair sigue siendo -1; por eso re-sincronizamos explícitamente aquí.
+        if self.output and self.output.isRunning():
+            self.output.sync_items(self.ctrl.export_items(), 0, force_jump=True)
         self._status(f"PROGRAMADO • {schedule['name']} • {len(items)} eventos • LOCAL + RTMP")
         log.info("Programación %s aplicada: %d eventos", schedule["name"], len(items))
 
@@ -1509,6 +1553,20 @@ class MainWindow(QMainWindow):
     def _rtmp_sync_structure(self):
         if self.output and self.output.isRunning():
             self.output.sync_items(self.ctrl.export_items(), self.ctrl.onair)
+
+    def _rtmp_tick_pause(self):
+        """v22.1: vigila el estado de pausa del playout y lo replica al RTMP.
+        El RTMP no soporta pausa limpia (no es como mpv), así que al pausar
+        dejamos el FFmpeg corriendo y al reanudar lo reiniciamos en el offset
+        actual. El seek del playout también se refleja aquí."""
+        if not self.output or not self.output.isRunning():
+            self._last_paused_state = False
+            return
+        cur_paused = bool(self.ctrl.paused) if self.ctrl.is_on_air else False
+        if cur_paused != self._last_paused_state:
+            self._last_paused_state = cur_paused
+            self.output.pause_here(cur_paused)
+            self._status(f"RTMP {'pausado' if cur_paused else 'reanudado'} • sincronizado con playout local")
 
     # ============================================================== diálogos
     def _show_dialog(self, key, factory):

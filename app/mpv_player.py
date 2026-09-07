@@ -378,6 +378,11 @@ class MPVPlayer(QObject):
             self.set_property("sid", int(sub_id) + 1)
         self.set_property("start", f"{float(start):.3f}" if start and start > 0 else "none")
         self.set_property("loop-file", "inf" if loop else "no")
+        # v22.1: re-aplicar volumen y mute al cargar cada clip. mpv podría haber
+        # perdido el estado si se reconectó el IPC, y este es el momento más
+        # seguro para sincronizar (después del loadfile).
+        self.set_property("volume", float(self.volume))
+        self.set_property("mute", bool(self.muted))
         self.set_property("pause", False)
         ok = self.command(["loadfile", path, "replace"])
         if ok:

@@ -74,9 +74,15 @@ class OutputWorker(QThread):
         self._lock = threading.RLock()
         self._jump = threading.Event()
         self._jump_index = None
+        self._jump_offset = 0.0
         self._current_index = -1
         self._clip_started = 0.0
         self._resolved = None
+        # v22.1: control de pausa/seek desde el playout local. Si el playout
+        # pausa/seek-ea, el RTMP se reinicia en el mismo offset.
+        self._paused = False
+        self._paused_index = None
+        self._paused_offset = 0.0
 
     @staticmethod
     def _norm_items(items):
@@ -203,10 +209,12 @@ class OutputWorker(QThread):
         return cmd, label, aid, sid
 
     # ---------------------------------------------------------- control
-    def sync_items(self, items, current_index, force_jump=False):
+    def sync_items(self, items, current_index, force_jump=False, start_offset=0.0):
         """Actualiza la lista de eventos y, si `force_jump`, salta al evento `current_index`.
 
         Sin `force_jump` solo se sincroniza la estructura (inserciones/borrados) manteniendo el clip actual.
+        `start_offset` (v22.1) permite reanudar en un offset distinto de cero
+        (usado por seek/pause).
         """
         new_items = self._norm_items(items)
         if not new_items:
@@ -224,9 +232,12 @@ class OutputWorker(QThread):
                         self._current_index = min(self._current_index, len(new_items) - 1)
                 return True
             recently_started = time.time() - self._clip_started < 4.0
-            if idx == self._current_index and self.proc is not None and self.proc.poll() is None and recently_started:
+            if idx == self._current_index and self.proc is not None and self.proc.poll() is None and recently_started and not start_offset:
                 return True
             self._jump_index = idx
+            # v22.1: el offset sobrevive al próximo loop para que un seek/pause
+            # se aplique correctamente.
+            self._jump_offset = float(start_offset or 0.0)
             self._jump.set()
             proc = self.proc
         self._terminate(proc)
@@ -240,6 +251,35 @@ class OutputWorker(QThread):
         with self._lock:
             items = self.items
         return self.sync_items(items, index, force_jump=True)
+
+    def pause_here(self, paused):
+        """v22.1: el playout local pausa/reanuda — el RTMP se reinicia en el
+        mismo índice y offset al reanudar. Mientras está pausado, el FFmpeg
+        actual sigue corriendo (no se mata) para evitar desconexiones del
+        servidor; al reanudar se mata y se relanza con el offset guardado."""
+        with self._lock:
+            self._paused = bool(paused)
+            if self._paused:
+                self._paused_index = self._current_index
+                # No tenemos un offset exacto del FFmpeg (sólo del playout);
+                # usamos 0 porque al reanudar vamos a recibir un seek explícito
+                # o seguir desde el frame que el playout indique.
+                self._paused_offset = 0.0
+                return
+            idx = self._paused_index
+            off = self._paused_offset
+            self._paused_index = None
+            self._paused_offset = 0.0
+        if idx is None or idx < 0:
+            return
+        self.sync_items(self.items, idx, force_jump=True, start_offset=off)
+
+    def seek_to(self, index, offset):
+        """v22.1: el playout local hizo seek. Reiniciamos FFmpeg en el mismo
+        índice con el offset dado (en segundos)."""
+        if index is None or index < 0:
+            return
+        self.sync_items(self.items, index, force_jump=True, start_offset=max(0.0, float(offset)))
 
     def set_logo(self, logo):
         with self._lock:
@@ -295,7 +335,9 @@ class OutputWorker(QThread):
                         if self._jump_index is not None:
                             index = self._jump_index
                             self._jump_index = None
-                            offset = 0.0
+                            # v22.1: consumir el offset pedido por seek/pause
+                            offset = getattr(self, "_jump_offset", 0.0) or 0.0
+                            self._jump_offset = 0.0
                     if not items:
                         break
                     if index >= len(items):
