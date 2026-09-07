@@ -615,7 +615,10 @@ class MainWindow(QMainWindow):
             r_modes.addWidget(rb)
         r_modes.addStretch()
         # Seleccionar el modo persistido (default: local)
-        initial_mode = s.get("rtmp_mode", "local")
+        # v22.2.2: usamos self.settings directamente porque s no está
+        # definido en este scope (sólo en apply_settings). Antes daba
+        # NameError al iniciar la app.
+        initial_mode = self.settings.get("rtmp_mode", "local")
         if initial_mode == "remote":
             self.rtmp_mode_remote.setChecked(True)
         else:

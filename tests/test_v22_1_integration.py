@@ -217,6 +217,43 @@ def test_ndi_radio_disabled_placeholder():
     assert "self.rtmp_mode_ndi.setEnabled(False)" in src, "RTMP Local (NDI) debe estar deshabilitado como placeholder"
 
 
+# --- v22.2.2 hotfix: bug del NameError en _build_right ---
+
+def test_build_right_does_not_use_undefined_s():
+    """v22.2.2: en _build_right se referenciaba 's.get(...)' que no estaba
+    definido en ese scope (sólo en apply_settings). El fix es usar
+    self.settings directamente. Este test garantiza que no vuelva a pasar.
+    """
+    src = _read(WIN)
+    idx = src.find("def _build_right(self")
+    end = src.find("def ", idx + 20)
+    block = src[idx:end]
+    # Buscamos 's.get(' o 's[' pero NO precedido por '=' (eso sería asignación
+    # local de s) ni por 'self.' (eso sería self.s).
+    import re
+    for m in re.finditer(r"(?<!self\.)\bs\.[a-zA-Z_]", block):
+        # Permitimos s.get, s.update, etc. dentro del bloque SOLO si hay
+        # un '=' asignando a 's' antes.
+        ctx_start = max(0, m.start() - 200)
+        ctx = block[ctx_start:m.start()]
+        if "= s" in ctx and ctx.rfind("= s") > ctx.rfind("\n"):
+            # Hay una asignación local a 's' antes de este uso, OK
+            continue
+        # Si llegamos acá, hay un uso de 's.' sin asignación previa
+        raise AssertionError(
+            f"_build_right usa 's.' en offset {m.start()} sin asignación "
+            f"previa: {block[max(0, m.start()-40):m.end()+40]!r}"
+        )
+
+
+def test_rtmp_mode_initial_uses_self_settings():
+    """v22.2.2: initial_mode = self.settings.get('rtmp_mode', 'local')"""
+    src = _read(WIN)
+    # Buscar la línea exacta
+    assert 'self.settings.get("rtmp_mode"' in src, \
+        "initial_mode debe usar self.settings.get('rtmp_mode', 'local'), no 's.get(...)'"
+
+
 if __name__ == "__main__":
     tests = [(name, fn) for name, fn in globals().items() if name.startswith("test_") and callable(fn)]
     failed = 0
