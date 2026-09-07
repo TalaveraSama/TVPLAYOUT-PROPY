@@ -186,6 +186,18 @@ class MainWindow(QMainWindow):
         self._rtmp_sync_timer.setInterval(400)
         self._rtmp_sync_timer.timeout.connect(self._rtmp_tick_pause)
         self._rtmp_sync_timer.start()
+        # v22.2.1: watcher de drift entre el playout local (mpv) y la salida
+        # RTMP (FFmpeg). FFmpeg re-encodea y se desfasa progresivamente
+        # respecto del mpv local; cada 2s comparamos y, si la diferencia
+        # supera el umbral, realineamos reiniciando FFmpeg con el offset
+        # correcto. El umbral default es 2.0s.
+        self._rtmp_drift_threshold = 2.0
+        self._rtmp_drift_timer = QTimer(self)
+        self._rtmp_drift_timer.setInterval(2000)
+        self._rtmp_drift_timer.timeout.connect(self._rtmp_check_drift)
+        self._rtmp_drift_timer.start()
+        # Para evitar realineamientos espurios justo después de un seek/pause.
+        self._rtmp_drift_suspend_until = 0.0
         self.scheduler = SchedulerService(self.db, self)
         self.scheduler.triggered.connect(self._scheduled_run)
         self.scheduler.status.connect(self._status)
@@ -1322,6 +1334,9 @@ class MainWindow(QMainWindow):
         # correspondiente). Sólo si el playout está al aire.
         if self.output and self.output.isRunning() and self.ctrl.is_on_air:
             self.output.seek_to(self.ctrl.onair, self.ctrl.elapsed)
+            # v22.2.1: suspender el watcher de drift 3s para no realinear
+            # mientras FFmpeg está reconectando.
+            self._rtmp_drift_suspend_until = time.time() + 3.0
 
     def toggle_mute(self):
         muted = self.mute_btn.isChecked()
@@ -1496,11 +1511,18 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, "RTMP", "No hay eventos pendientes para emitir.")
                 return
         s = self.settings
+        # v22.2.1: leer la posición ACTUAL de mpv directamente del atributo del
+        # player (no del PlayoutController, que se actualiza con la señal
+        # position y puede tener hasta 500ms de lag respecto del IPC). Si
+        # acabás de arrancar el playout, _time puede ser 0.0 — en ese caso
+        # FFmpeg arranca desde 0 que es el comportamiento correcto.
+        mpv_time = float(getattr(self.player, "_time", 0.0) or 0.0)
         self.output = OutputWorker(FFMPEG_PATH, self.ctrl.export_items(), url, s.get("resolution", "1920x1080"), s.get("fps", "29.97"),
                                    s.get("encoder", "AUTO"), int(s.get("bitrate", 6000)), s.get("audio_pref", AUDIO_PREFS[0]),
                                    s.get("sub_pref", "OFF"), bool(s.get("subtitle_burn", False)), int(s.get("audio_bitrate", 192)),
-                                   loop=True, start_index=max(0, self.ctrl.onair), start_offset=self.ctrl.elapsed,
+                                   loop=True, start_index=max(0, self.ctrl.onair), start_offset=mpv_time,
                                    extra_args=s.get("ffmpeg_extra", ""), logo=self._logo_config())
+        log.info("RTMP arrancado en offset %.2fs (mpv local: %.2fs)", mpv_time, mpv_time)
         self.output.state.connect(self._rtmp_state)
         self.output.log.connect(self._rtmp_log)
         self.output.ended.connect(self._rtmp_finished)
@@ -1549,6 +1571,9 @@ class MainWindow(QMainWindow):
         """La salida RTMP salta al mismo evento que el playout local."""
         if self.output and self.output.isRunning():
             self.output.sync_items(self.ctrl.export_items(), index, force_jump=True)
+            # v22.2.1: al cambiar de clip el offset se resetea a 0 en el RTMP,
+            # no tiene sentido que el watcher intente realinear durante 3s.
+            self._rtmp_drift_suspend_until = time.time() + 3.0
 
     def _rtmp_sync_structure(self):
         if self.output and self.output.isRunning():
@@ -1567,6 +1592,40 @@ class MainWindow(QMainWindow):
             self._last_paused_state = cur_paused
             self.output.pause_here(cur_paused)
             self._status(f"RTMP {'pausado' if cur_paused else 'reanudado'} • sincronizado con playout local")
+            # v22.2.1: suspender el watcher de drift 3s para no realinear
+            # mientras el RTMP se está ajustando tras la pausa/reanudación.
+            self._rtmp_drift_suspend_until = time.time() + 3.0
+
+    def _rtmp_check_drift(self):
+        """v22.2.1: detecta desincronización entre el playout local y el RTMP
+        y la corrige reiniciando FFmpeg con el offset correcto.
+
+        El RTMP se desfasa progresivamente porque FFmpeg re-encodea (latencia
+        acumulada). Si la diferencia entre la posición de mpv y el offset
+        con el que está emitiendo el RTMP supera el umbral, llamamos
+        output.seek_to(onair, mpv_time) para realinear.
+
+        Se suspende durante 3s después de cualquier seek/pause/realign para
+        evitar realineamientos espurios mientras el RTMP se está reiniciando.
+        """
+        if not self.output or not self.output.isRunning():
+            return
+        if not self.ctrl.is_on_air or self.ctrl.paused:
+            return
+        if self._rtmp_drift_suspend_until and time.time() < self._rtmp_drift_suspend_until:
+            return
+        # Posición real del playout local (lo que mpv reporta por IPC)
+        mpv_time = float(getattr(self.player, "_time", 0.0) or 0.0)
+        # Offset con el que está emitiendo el RTMP ahora mismo
+        rtmp_offset = float(self.output.current_offset or 0.0)
+        # Diferencia absoluta
+        drift = abs(mpv_time - rtmp_offset)
+        if drift >= self._rtmp_drift_threshold:
+            log.info("RTMP drift %.2fs (mpv=%.2fs, rtmp=%.2fs) — realineando", drift, mpv_time, rtmp_offset)
+            self.output.seek_to(self.ctrl.onair, mpv_time)
+            # Suspender el watcher 3s para no realinear otra vez mientras
+            # FFmpeg termina de reconectar.
+            self._rtmp_drift_suspend_until = time.time() + 3.0
 
     # ============================================================== diálogos
     def _show_dialog(self, key, factory):

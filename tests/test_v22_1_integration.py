@@ -103,6 +103,67 @@ def test_main_window_watches_pause():
     assert "self.output.seek_to" in sb, "ctrl_seek debe propagar el seek al RTMP"
 
 
+# --- v22.2.1: drift watcher ---
+
+def test_output_exposes_current_offset():
+    src = _read(OUT)
+    assert "def current_offset" in src, "OutputWorker debe tener property current_offset"
+    assert "_current_offset" in src, "OutputWorker debe mantener _current_offset"
+    # El loop debe persistirlo
+    run_block = re.search(r"def run\(self.*?\n(?:        .*\n)+", src, re.S)
+    assert run_block
+    rb = run_block.group(0)
+    assert "self._current_offset = " in rb, "el loop debe persistir _current_offset antes de arrancar cada clip"
+
+
+def test_main_window_has_drift_watcher():
+    src = _read(WIN)
+    assert "_rtmp_check_drift" in src, "MainWindow debe tener _rtmp_check_drift"
+    assert "_rtmp_drift_timer" in src, "MainWindow debe tener _rtmp_drift_timer"
+    assert "_rtmp_drift_threshold" in src, "MainWindow debe tener un umbral de drift configurable"
+    idx = src.find("def _rtmp_check_drift(self")
+    assert idx > 0
+    # Leer 1500 caracteres (cubre cualquier implementación razonable)
+    block = src[idx:idx + 1500]
+    assert "self.output.current_offset" in block, "el watcher debe leer output.current_offset"
+    assert 'self.player, "_time"' in block or "self.player._time" in block, \
+        "el watcher debe leer player._time (mpv local)"
+    assert "self.output.seek_to" in block, "el watcher debe realinear con output.seek_to"
+
+
+def test_drift_watcher_suspends_on_seek_and_pause():
+    src = _read(WIN)
+    # ctrl_seek debe suspender el watcher
+    seek_block = re.search(r"def ctrl_seek\(self.*?\n(?:        .*\n)+", src)
+    assert seek_block
+    sb = seek_block.group(0)
+    assert "_rtmp_drift_suspend_until" in sb, "ctrl_seek debe suspender el watcher de drift"
+    # _rtmp_tick_pause debe suspender el watcher
+    pause_block = re.search(r"def _rtmp_tick_pause\(self.*?\n(?:        .*\n)+", src)
+    assert pause_block
+    pb = pause_block.group(0)
+    assert "_rtmp_drift_suspend_until" in pb, "_rtmp_tick_pause debe suspender el watcher de drift"
+    # _rtmp_follow debe suspender el watcher
+    follow_block = re.search(r"def _rtmp_follow\(self.*?\n(?:        .*\n)+", src)
+    assert follow_block
+    fb = follow_block.group(0)
+    assert "_rtmp_drift_suspend_until" in fb, "_rtmp_follow debe suspender el watcher de drift"
+
+
+def test_toggle_rtmp_uses_player_time_directly():
+    src = _read(WIN)
+    idx = src.find("def toggle_rtmp(self")
+    assert idx > 0, "no encontré toggle_rtmp"
+    end = src.find("self.output.start()", idx)
+    assert end > idx, "no encontré self.output.start() en toggle_rtmp"
+    block = src[idx:end]
+    # Acepta tanto self.player._time como getattr(self.player, "_time", 0.0)
+    assert 'self.player._time' in block or 'getattr(self.player, "_time"' in block, \
+        "toggle_rtmp debe leer self.player._time (o getattr equivalente) para el offset inicial"
+    assert "start_offset=mpv_time" in block, "toggle_rtmp debe pasar mpv_time como start_offset al OutputWorker"
+    assert "self.ctrl.elapsed" not in block, "toggle_rtmp no debe usar self.ctrl.elapsed (puede estar desactualizado)"
+
+
 if __name__ == "__main__":
     tests = [(name, fn) for name, fn in globals().items() if name.startswith("test_") and callable(fn)]
     failed = 0

@@ -83,6 +83,9 @@ class OutputWorker(QThread):
         self._paused = False
         self._paused_index = None
         self._paused_offset = 0.0
+        # v22.2.1: offset actual del clip en emisión (lo que persiste el
+        # watcher de drift del playout local).
+        self._current_offset = 0.0
 
     @staticmethod
     def _norm_items(items):
@@ -297,6 +300,14 @@ class OutputWorker(QThread):
     def current_index(self):
         return self._current_index
 
+    @property
+    def current_offset(self):
+        """v22.2.1: offset (en segundos) con el que se está emitiendo el clip
+        actual en el RTMP. 0.0 si todavía no se arrancó ningún clip o si el
+        FFmpeg todavía no emitió nada del nuevo clip."""
+        with self._lock:
+            return getattr(self, "_current_offset", 0.0)
+
     NOISE = ("Immediate exit requested", "Last message repeated", "Error muxing a packet", "Error writing trailer",
              "Error closing file", "Terminating thread", "Error submitting a packet")
 
@@ -356,10 +367,14 @@ class OutputWorker(QThread):
                     index += 1
                     offset = 0.0
                     continue
+                # v22.2.1: persistir el offset con el que arranca este clip
+                # para que el watcher de drift del playout local pueda comparar.
+                with self._lock:
+                    self._current_offset = float(offset)
                 offset = 0.0
                 self.now_playing.emit(index, item["path"])
                 self.log.emit(("FFmpeg iniciado" if first else "FFmpeg siguiente") +
-                              f" • {label} • {os.path.basename(item['path'])} • audio #{aid if aid is not None else 'auto'}")
+                              f" • {label} • {os.path.basename(item['path'])} • audio #{aid if aid is not None else 'auto'} • offset {self._current_offset:.2f}s")
                 log.info("RTMP %s: %s", label, subprocess.list2cmdline(cmd))
                 with self._lock:
                     self.proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL,
