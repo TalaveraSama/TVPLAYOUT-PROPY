@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+# Datos en tiempo de ejecución
+logs/
+cache/
+*.db-wal
+*.db-shm
+.env
+# Binarios (no se versionan)
+ffmpeg.exe
+ffprobe.exe
+ffplay.exe
+mpv-x86_64/mpv.exe
+mpv-x86_64/*.dll
+bin/
+ffmpeg/
+# Sistema
+Thumbs.db
+.DS_Store

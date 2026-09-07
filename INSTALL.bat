@@ -6,7 +6,7 @@ set "VENV=.venv"
 set "PYTHON_EXE=%VENV%\Scripts\python.exe"
 
 echo ================================================
-echo   TVPlayout PRO V21 - INSTALADOR
+echo   TVPlayout PRO V22 - INSTALADOR
 echo ================================================
 echo.
 
@@ -68,15 +68,16 @@ echo [5/5] Verificando instalacion...
 "%PYTHON_EXE%" -c "import sys, PySide6; print('Python:',sys.version.split()[0]); print('PySide6:',PySide6.__version__)"
 if errorlevel 1 goto :error
 
-if not exist data mkdir data
 if not exist logs mkdir logs
+if not exist cache mkdir cache
 
 echo.
 echo ================================================
 echo   INSTALACION COMPLETADA CORRECTAMENTE
 echo ================================================
 echo.
-echo Ejecuta INICIAR_V20.bat
+echo Coloca mpv.exe en mpv-x86_64\ y ffmpeg.exe + ffprobe.exe en esta carpeta.
+echo Ejecuta INICIAR.bat
 pause
 exit /b 0
 

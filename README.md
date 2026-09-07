@@ -1,98 +1,93 @@
-# TVPlayout PRO V21
+# TVPlayout PRO V22 — Consola de playout estilo XPlayout
 
-Nueva base de playout tipo broadcast inspirada en la distribución funcional de XPlayout, sin copiar código ni recursos propietarios.
+Playout de televisión 24/7 para Windows con interfaz inspirada en la distribución de **XPlayout** (Axel Technology),
+sin usar código ni recursos propietarios. Reproductor local **mpv** embebido + salida **RTMP/SRT/UDP** con **FFmpeg**.
 
-## Arquitectura
+![Panel principal](docs/panel.png)
 
-- Biblioteca SQLite persistente.
-- Escaneo recursivo de carpetas locales y UNC.
-- MKV/MP4 y otros formatos habituales.
-- Reproductor de preview/ON AIR basado en `mpv-x86_64`.
-- Motor de salida basado en FFmpeg.
-- Resoluciones: 1280x720, 1920x1080 y personalizada.
-- FPS: 23.976, 24, 25, 29.97, 30, 50, 59.94, 60.
-- Encoder: AUTO, CPU/x264, NVIDIA NVENC, Intel QSV, AMD AMF.
-- Audio/subtítulos preferidos: es-MX, es-419, spa, es.
-- Playlist persistente.
-- Fuentes y categorías persistentes.
-- Base preparada para Scheduler y Tandas.
+## Distribución del panel
 
-## Dependencias
+| Zona | Contenido |
+|---|---|
+| Cabecera | Título, resolución/fps de salida, reloj principal, fecha |
+| Transporte | ▶ PLAY · ❚❚ PAUSA (solo local) · ■ STOP · ▶▏ SIGUIENTE · miniatura · nombre/ruta/formato del clip · barra de progreso · indicador **ON-AIR** |
+| Contadores | CATEGORÍA · DURACIÓN · POSICIÓN · RESTANTE (naranja, rojo en los últimos 10 s) · RESTA PLAYLIST · DESFASE · CODEC · SIGUIENTE |
+| Modos | Autofill · Tandas auto · Hora exacta · Loop · Autoscroll · Modo Automático/Manual |
+| GRID MODE | Playlist con filas coloreadas por categoría: #, Día, Hora (estimada), Hora real, Duración, Categoría, Título, Estado, ⏰ hora fija, Archivo, Formato. Fila azul = AL AIRE, lila = LISTO (cue), gris = emitido |
+| GRAPHIC MODE | La misma playlist con miniaturas |
+| BIBLIOTECA | Buscador + filtro por categoría, añadir al final / tras el aire / en selección / emitir ahora |
+| Botonera | Insertar archivo, Preparar, Editar clip, Subir/Bajar, Quitar, Limpiar emitidos, Ir al aire, Hora fija, Reiniciar estados, Duplicar, Vaciar, Previsualizar, Mezclar pendientes, Playlist Manager |
+| Monitor | VU meter estéreo (dBFS) + vídeo mpv embebido, volumen/mute **solo local**, aspecto |
+| FUNCIONES | Playlist Manager · Biblioteca · Programador · Registros As-Run · Fuentes/Categorías · Ajustes del sistema · Escanear · Logo/CG (RTMP) · Dispositivos · 🚨 EMERGENCIA |
+| SALIDA RTMP | URL, INICIAR/DETENER, estado (encoder, resolución, bitrate) |
+| Reloj de estación | Anillo de 60 segundos + HH:MM / SS, bloqueo de consola, minimizar/salir |
 
-Instala:
+Atajos: **F1** Play · **F2** Pausa · **F3** Stop · **F4** Siguiente · **F5** Preparar · **Supr** quitar · **Ctrl+↑/↓** mover ·
+**Ctrl+F** buscar en biblioteca · **Ctrl+L** bloquear · **F11** pantalla completa. Doble clic en una fila = emitir ahora.
+Se pueden **arrastrar archivos o carpetas** desde el Explorador a la grid.
 
-    py -3.13 -m pip install -r requirements.txt
+## Continuidad
 
-No incluye MPV ni FFmpeg.
+- **Automático**: al terminar un evento pasa al siguiente pendiente. **Manual**: se detiene y deja el siguiente en LISTO esperando PLAY.
+- **Hora exacta**: los eventos con hora fija (⏰) cortan lo que esté al aire a su hora; la columna DESFASE muestra el retraso real.
+- **Loop**: al acabar la playlist vuelve a empezar. **Autofill**: rellena con medios aleatorios de la categoría configurada.
+- **Tandas auto**: inserta N anuncios (categoría Publicidad) después de cada evento que no sea publicidad.
+- **Emergencia**: emite de inmediato el clip de emergencia configurado (se pide la primera vez).
+- La playlist actual se guarda sola y se restaura al abrir; opción de **poner al aire automáticamente** e **iniciar RTMP** al arrancar.
+- **As-Run log**: todo lo emitido queda registrado (inicio, fin, estado EMITIDO/CORTADO/ERROR) y se exporta a CSV.
 
-Coloca:
+## Salida RTMP
 
-    mpv-x86_64\mpv.exe
-    ffmpeg.exe
+La salida sigue al playout local: cada vez que empieza un evento en mpv, FFmpeg salta al mismo evento. Se emite clip por clip
+sobre la misma URL (el servidor ve una reconexión breve entre clips). Encoders: AUTO (prueba NVENC → QSV → AMF → x264),
+CPU/x264, NVIDIA NVENC, Intel QSV, AMD AMF. Audio AAC 48 kHz estéreo, pista de audio elegida por preferencia
+(es-MX / es-419 / Latino / spa / es…). Opcional: quemar subtítulos preferidos y superponer un **logo PNG** (posición, tamaño,
+opacidad). También acepta `srt://` y `udp://`.
 
-La aplicación los busca automáticamente en la raíz del proyecto.
+## Instalación (Windows)
 
-## Ejecución
+1. Instala **Python 3.13 x64** (o 3.11/3.12).
+2. Ejecuta `INSTALL.bat` (crea `.venv` e instala PySide6 6.8.3).
+3. Copia `mpv.exe` en `mpv-x86_64\` (build de mpv para Windows x86_64).
+4. Copia `ffmpeg.exe` y `ffprobe.exe` en la raíz del proyecto (o en `ffmpeg\bin\`, `bin\`).
+5. Ejecuta `INICIAR.bat` (`INICIAR_CONSOLA.bat` para ver mensajes de depuración).
 
-    py -3.13 main.py
+Opcional: archivo `.env` con `MPV_PATH=...`, `FFMPEG_PATH=...`, `FFPROBE_PATH=...`, `TVPLAYOUT_DB=...`.
 
-También puedes crear `.env` con:
+Primer uso: **Fuentes / Categorías** → añadir carpetas (locales o UNC) → **Escanear biblioteca**. Con ffprobe se analizan
+duración, resolución, códecs, pistas de audio/subtítulos y se generan miniaturas (en `cache\thumbs`).
 
-    MPV_PATH=mpv-x86_64\\mpv.exe
-    FFMPEG_PATH=ffmpeg.exe
+## Estructura
 
-La salida RTMP se configura desde Ajustes de salida.
+```
+main.py                 punto de entrada
+app/main_window.py      consola principal (layout XPlayout)
+app/playout.py          controlador de continuidad (auto/manual, cue, hora fija, loop, autofill, tandas)
+app/mpv_player.py       mpv embebido por IPC (named pipe / socket), VU meter
+app/output.py           motor RTMP/SRT/UDP con FFmpeg (sigue al playout local, logo, subtítulos)
+app/prober.py           ffprobe: metadatos, pistas, miniaturas; selección de pista preferida
+app/scanner.py          escaneo recursivo de fuentes
+app/scheduler.py        programador diario/semanal/mensual/trimestral
+app/db.py               SQLite: biblioteca, playlists, programaciones, ajustes, as-run
+app/dialogs*.py         Playlist Manager, Fuentes, Programador, Registros, Ajustes, Logo, Dispositivos
+app/widgets.py          reloj de estación, VU meter, superficie de vídeo, barra de progreso
+app/theme.py            hoja de estilos oscura
+tests/                  pruebas (python tests/test_core.py) y mpv simulado para pruebas
+```
 
+## Registro de cambios
 
-## V20.1 Output Engine
+### V22
+- Rediseño completo de la interfaz al estilo XPlayout: cabecera con reloj, transporte, contadores, modos, grid coloreada,
+  modo gráfico, biblioteca integrada, botonera, VU meter, monitor, funciones, salida RTMP y reloj de estación.
+- Continuidad real: encadenado automático por eventos de mpv (fin de archivo), modo manual con cue, hora fija, loop,
+  autofill, tandas, emergencia, bloqueo de consola, as-run log.
+- mpv por IPC bidireccional: posición/duración en tiempo real, VU meter, pista de audio/subtítulos por evento.
+- RTMP sincronizado con el playout local (mismo evento), logo PNG, subtítulos quemados opcionales, SRT/UDP.
+- ffprobe en segundo plano: duración, formato, pistas, miniaturas. Filtro de audio español latino mejorado.
+- Playlist Manager (guardar/cargar/renombrar/exportar/importar M3U/JSON), Fuentes con edición, Programador con próxima
+  ejecución, Registros (as-run + sistema), Ajustes del sistema, Dispositivos.
+- Ajustes persistentes en SQLite, restauración de playlist, arranque automático opcional.
 
-La salida RTMP ya toma el primer elemento de la playlist (o el elemento seleccionado) y lo procesa con FFmpeg en tiempo real:
-- escala al canvas elegido;
-- adapta FPS;
-- conserva audio y busca preferentemente pistas españolas;
-- codifica con x264/NVENC/QSV/AMF según selección;
-- envía H.264/AAC a RTMP.
-
-Esta primera base todavía no hace transición frame-accurate entre eventos ni inserta tandas automáticamente. Esos son los siguientes módulos del motor de continuidad.
-
-
-## Programador V20 — funcional
-
-El Programador ya no es un módulo reservado. Guarda las reglas en SQLite y las ejecuta automáticamente:
-- Diario: todos los días a una hora.
-- Semanal: uno o varios días de lunes a domingo.
-- Mensual: día 1–31.
-- Trimestral: día del mes + mes 1/2/3 dentro de cada trimestre.
-- Selección por categoría.
-- Cantidad de medios por evento.
-- Orden secuencial, aleatorio o recientes.
-- Al dispararse una regla, reemplaza la playlist con los medios seleccionados y comienza el primero automáticamente.
-- Cada ejecución queda marcada para evitar doble disparo dentro del mismo minuto.
-
-La siguiente etapa será convertir la playlist programada en una continuidad 24/7 real, con siguiente evento precargado y tandas comerciales insertadas según reglas.
-
-
-## V20.1 — RTMP corregido
-
-Se corrigió el error que aparecía como `FFmpeg terminó (4294967274)`, equivalente a `-22` en Windows.
-La causa era aplicar el preset `veryfast` de x264 al encoder NVIDIA NVENC. Ahora cada encoder recibe únicamente opciones compatibles:
-
-- CPU/x264 → `veryfast`
-- NVIDIA NVENC → `p5` + `hq`
-- Intel QSV → `veryfast`
-- AMD AMF → `balanced`
-
-Antes de iniciar una salida se comprueba que el encoder exista en el FFmpeg seleccionado. `AUTO` intenta hardware disponible y finalmente CPU/x264.
-
-## Programador V20.1
-
-Las reglas se mantienen persistentes en SQLite y funcionan por reloj local:
-
-- Diario: todos los días a la hora indicada.
-- Semanal: uno o varios días de lunes a domingo.
-- Mensual: día 1–31.
-- Trimestral: día del mes + mes 1/2/3 de cada trimestre.
-- Categoría, cantidad y orden secuencial/aleatorio/reciente.
-- Protección contra doble ejecución en el mismo minuto.
-
-El escáner V20 no se modifica en esta revisión.
+### V21 / V20.x
+- RTMP clip a clip, programador funcional, corrección de presets NVENC, playlist persistente (ver historial de git).
