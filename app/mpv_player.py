@@ -20,7 +20,18 @@ log = logger.get("mpv")
 CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 PROP_IDS = {"time-pos": 1, "duration": 2, "pause": 3, "idle-active": 4, "eof-reached": 5, "volume": 6, "mute": 7}
-VU_FILTER = "@vu:lavfi=[astats=metadata=1:reset=1:measure_perchannel=Peak_level:measure_overall=none]"
+# v22.2.9: formato del filtro VU actualizado. Antes usábamos
+# "lavfi=[astats=...:measure_perchannel=Peak_level:measure_overall=none]"
+# que asume 2 canales separados (lavfi.astats.1.P y lavfi.astats.2.P).
+# En builds nuevos de mpv (0.41+) las keys son distintas y los
+# corchetes ya no se aceptan. El formato correcto es:
+#   lavfi=astats=metadata=1:reset=1
+# Y las keys de salida son lavfi.astats.Overall.Peak_level y
+# lavfi.astats.Overall.RMS_level (no .1. ni .2. para peak).
+# Si querés canales separados, podés usar
+#   lavfi=astats=metadata=1:reset=1:length=0.1
+# pero Overall.Peak_level es suficiente para un VU estéreo en vivo.
+VU_FILTER = "@vu:lavfi=astats=metadata=1:reset=1"
 
 
 class _PipeConn:
@@ -364,8 +375,14 @@ class MPVPlayer(QObject):
                 v = -90.0
             return max(-90.0, v)
 
-        left = val("lavfi.astats.1.Peak_level")
-        right = val("lavfi.astats.2.Peak_level") if "lavfi.astats.2.Peak_level" in data else left
+        # v22.2.9: las keys de astats cambiaron en builds nuevos de mpv.
+        # Antes leíamos lavfi.astats.1.Peak_level y lavfi.astats.2.Peak_level
+        # (formato viejo que asume canales separados). En mpv 0.40+ las
+        # keys son lavfi.astats.Overall.Peak_level y lavfi.astats.Overall.RMS_level.
+        # Leemos Overall.Peak_level (que es el pico instantáneo del audio
+        # en dBFS, lo que se ve en un VU meter).
+        left = val("lavfi.astats.Overall.Peak_level")
+        right = val("lavfi.astats.Overall.RMS_level")
         self.levels.emit(left, right)
 
     # ------------------------------------------------------------ control

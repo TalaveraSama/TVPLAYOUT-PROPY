@@ -579,6 +579,24 @@ class PlayoutController(QObject):
         return n
 
     def _tick(self):
+        # v22.2.9: watchdog de fin de clip. Si mpv no emite end-file por
+        # IPC (caso documentado en v22.2.3), el playout no detecta que
+        # el clip terminó y queda colgado en el último frame con posición
+        # estimada > duración. Este watchdog dispara _on_ended("eof")
+        # cuando elapsed > duration + 2s de tolerancia.
+        if self.is_on_air and not self.paused and self.duration > 0:
+            try:
+                pos = float(self.elapsed or 0.0)
+                if pos > self.duration + 2.0:
+                    log.warning(
+                        "Watchdog fin de clip: %.2fs > duración %.2fs (%s)",
+                        pos, self.duration, self.current["title"] if self.current else "?",
+                    )
+                    self.message.emit(f"FIN DE CLIP (watchdog) • {self.current['title'] if self.current else ''}")
+                    self._on_ended("eof")
+                    return
+            except Exception:
+                pass
         if not self.exact_time or not self.items:
             return
         now = datetime.now()
