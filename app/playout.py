@@ -85,6 +85,14 @@ class PlayoutController(QObject):
         self.audio_pref = "AUTO"
         self.sub_pref = "OFF"
         self.paused = False
+        # v23.3: filler automático. Cuando se acaba la lista y no hay
+        # loop ni autofill, se carga un clip de filler con loop infinito
+        # para que el monitor nunca quede en negro. Configurable desde
+        # Ajustes (filler_path). Si no hay filler, se muestra un slate
+        # estático generado en runtime.
+        self.filler_path = ""
+        self.filler_active = False  # True mientras el filler está al aire
+        self._filler_play_count = 0
         self._pos = 0.0
         self._dur = 0.0
         self._started_at = 0.0
@@ -120,6 +128,14 @@ class PlayoutController(QObject):
 
     @property
     def elapsed(self):
+        # v22.2.4: si mpv no está reportando time-pos por IPC (caso
+        # documentado en v22.2.3 con build vieja de mpv), _pos queda en
+        # 0 aunque el video SÍ avance visualmente. En ese caso estimamos
+        # la posición con el reloj de pared: ahora - _started_at.
+        if self._pos > 0:
+            return self._pos
+        if 0 <= self.onair < len(self.items) and self._started_at > 0 and not self.paused:
+            return max(0.0, time.time() - self._started_at)
         return self._pos
 
     @property
@@ -462,6 +478,11 @@ class PlayoutController(QObject):
     def _on_position(self, pos, dur):
         if not self.is_on_air:
             return
+        # v23.3: si el filler está al aire (onair == -2), no actualizamos
+        # _pos/_dur — el filler es loop infinito y no tiene duración
+        # significativa para mostrar en la UI.
+        if self.onair == -2:
+            return
         self._pos = pos
         if dur and dur > 0:
             if abs(dur - self._dur) > 0.5:
@@ -479,6 +500,15 @@ class PlayoutController(QObject):
         if not self.is_on_air:
             return
         idx = self.onair
+        # v23.3: si el clip que terminó era el filler, NO disparamos el
+        # flujo de fin de playlist normal. Sólo recargamos el filler
+        # (loop infinito) sin emitir FIN DE PLAYLIST.
+        if idx == -2:  # convención: -2 = filler al aire (ver _play_filler)
+            self._pos = 0.0
+            if not self._play_filler(reason):
+                # si no se pudo cargar el filler otra vez, caemos al slate
+                self._play_slate()
+            return
         item = self.items[idx]
         if reason == "error":
             item["status"] = ST_ERROR
@@ -511,12 +541,27 @@ class PlayoutController(QObject):
             if nxt is not None:
                 self.play_index(nxt, "auto")
             else:
-                self.message.emit("FIN DE PLAYLIST")
+                # v23.3: no hay más clips. Antes emitíamos "FIN DE
+                # PLAYLIST" y dejábamos el monitor en negro. Ahora
+                # intentamos cargar el filler (clip de relleno con loop
+                # infinito). Si no hay filler configurado, mostramos un
+                # slate estático.
+                self.filler_active = False
+                if not self._play_filler("eof"):
+                    self._play_slate()
+                self.message.emit("FIN DE PLAYLIST • filler al aire")
                 self.playlist_end.emit()
         else:
             nxt = self.next_index()
             if nxt is not None and self.cue < 0:
                 self.set_cue(nxt)
+            # v23.3: en modo manual, también cargamos filler al final
+            # para que el operador pueda decidir si quiere algo
+            # específico.
+            if nxt is None and not self.is_on_air:
+                self.filler_active = False
+                if not self._play_filler("eof"):
+                    self._play_slate()
             self.message.emit("MODO MANUAL • esperando PLAY")
 
     def _on_player_died(self):
@@ -550,6 +595,87 @@ class PlayoutController(QObject):
             return self._first_pending(-1)
         return None
 
+    # v23.3: filler automático + slate fallback.
+    def _play_filler(self, reason):
+        """Carga el clip de filler (configurado en Ajustes) en loop
+        infinito. Retorna True si se cargó, False si no hay filler o
+        el archivo no existe. La convención es usar self.onair = -2
+        mientras el filler está al aire, así _on_ended sabe que
+        debe re-cargar el filler (no buscar el siguiente clip).
+        """
+        if not self.filler_path or not os.path.isfile(self.filler_path):
+            return False
+        # cerramos el item actual (sea clip normal, otro filler, o nada)
+        if 0 <= self.onair < len(self.items):
+            self._finish_current(ST_CUT)
+        if self._log_id:
+            self.db.air_log_end(self._log_id, ST_AIRED)
+            self._log_id = None
+        # usamos el MPVPlayer directamente con loop-file=inf
+        self.paused = False
+        ok = False
+        if hasattr(self.player, "play_loop"):
+            ok = self.player.play_loop(self.filler_path)
+        else:
+            # fallback: play normal con loop-file
+            ok = self.player.play(self.filler_path, loop=True)
+        if not ok:
+            return False
+        self.onair = -2  # convención: filler al aire
+        self.filler_active = True
+        self._filler_play_count += 1
+        self._pos = 0.0
+        self._dur = 0.0
+        self._started_at = time.time()
+        self.onair_changed.emit(-2)
+        self.position.emit(0.0, 0.0)
+        log.info("FILLER al aire (%dx) • %s", self._filler_play_count, self.filler_path)
+        return True
+
+    def _play_slate(self):
+        """v23.3: slate estático como fallback del filler. Usa la URL
+        lavfi de mpv (`av://lavfi:color=...:drawtext=...`) para generar
+        un patrón negro con texto "TVPlayout PRO — Próximamente" en vivo.
+        No requiere archivos externos ni PIL — mpv lo genera en runtime.
+        """
+        # Slate URL: color negro 1920x1080 con texto centrado.
+        # drawtext usa fontfile por default; en Windows buscamos Arial.
+        # Si no hay fuente, mpv cae al default.
+        font_path = ""
+        if os.name == "nt":
+            arial = r"C:\Windows\Fonts\arial.ttf"
+            if os.path.isfile(arial):
+                font_path = f":fontfile='{arial}'"
+        # Construimos la URL lavfi. Usamos comillas simples adentro
+        # porque mpv/ffmpeg parsea con espacios.
+        slate_url = (
+            "av://lavfi:color=c=black:s=1920x1080:r=30,"
+            f"drawtext{font_path}:text='TVPlayout PRO':"
+            "fontsize=80:fontcolor=white:x=(w-tw)/2:y=(h-th)/2-100,"
+            "drawtext=text='PROXIMAMENTE':"
+            "fontsize=60:fontcolor=gray:x=(w-tw)/2:y=(h-th)/2,"
+            "format=yuv420p"
+        )
+        if not hasattr(self.player, "play_loop"):
+            log.error("MPVPlayer no tiene play_loop; slate no soportado")
+            return
+        if 0 <= self.onair < len(self.items):
+            self._finish_current(ST_CUT)
+        if self._log_id:
+            self.db.air_log_end(self._log_id, ST_AIRED)
+            self._log_id = None
+        ok = self.player.play_loop(slate_url)
+        if ok:
+            self.onair = -2
+            self.filler_active = True
+            self._filler_play_count += 1
+            self._pos = 0.0
+            self._dur = 0.0
+            self._started_at = time.time()
+            self.onair_changed.emit(-2)
+            self.position.emit(0.0, 0.0)
+            log.info("SLATE al aire (lavfi)")
+
     def fill(self, category, count, index=None):
         exclude = [it["path"] for it in self.items[-50:]]
         rows = self.db.random_media(category, count, exclude_paths=exclude)
@@ -571,6 +697,42 @@ class PlayoutController(QObject):
         return n
 
     def _tick(self):
+        # v23.0: crossfade de audio. Cuando quedan crossfade_duration
+        # segundos para terminar el clip al aire, aplicamos un fade-out
+        # al audio de mpv para que la transición al próximo clip sea
+        # suave. El fade-in del próximo clip se aplica en player.play()
+        # vía el filter chain (afade=t=in:st=0). Si crossfade_enabled
+        # es False, no se hace nada (corte directo).
+        if (self.is_on_air and not self.paused and self.duration > 0
+                and getattr(self.player, "crossfade_enabled", False)):
+            try:
+                d = float(getattr(self.player, "crossfade_duration", 0.0) or 0.0)
+                if d > 0 and not getattr(self.player, "_fade_out_applied", False):
+                    rem = self.duration - self.elapsed
+                    # disparamos un poquito antes para que el fade esté
+                    # completo cuando mpv emita end-file
+                    if rem <= d + 0.05:
+                        self.player.fade_out(d)
+            except Exception:
+                pass
+        # v22.2.9: watchdog de fin de clip. Si mpv no emite end-file por
+        # IPC (caso documentado en v22.2.3), el playout no detecta que
+        # el clip terminó y queda colgado en el último frame con posición
+        # estimada > duración. Este watchdog dispara _on_ended("eof")
+        # cuando elapsed > duration + 2s de tolerancia.
+        if self.is_on_air and not self.paused and self.duration > 0:
+            try:
+                pos = float(self.elapsed or 0.0)
+                if pos > self.duration + 2.0:
+                    log.warning(
+                        "Watchdog fin de clip: %.2fs > duración %.2fs (%s)",
+                        pos, self.duration, self.current["title"] if self.current else "?",
+                    )
+                    self.message.emit(f"FIN DE CLIP (watchdog) • {self.current['title'] if self.current else ''}")
+                    self._on_ended("eof")
+                    return
+            except Exception:
+                pass
         if not self.exact_time or not self.items:
             return
         now = datetime.now()

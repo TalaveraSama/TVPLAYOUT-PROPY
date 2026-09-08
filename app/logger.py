@@ -52,6 +52,26 @@ def recent_lines(n=500):
         return list(_buffer)[-n:]
 
 
+def count_by_level(n=500):
+    """Cuenta cuántas líneas recientes hay de cada nivel (INFO/WARNING/ERROR/DEBUG).
+
+    Útil para mostrar un badge en la UI.
+    """
+    counts = {"INFO": 0, "WARNING": 0, "ERROR": 0, "DEBUG": 0}
+    with _lock:
+        for line in list(_buffer)[-n:]:
+            up = line.upper()
+            if "ERROR" in up:
+                counts["ERROR"] += 1
+            elif "WARNING" in up:
+                counts["WARNING"] += 1
+            elif "DEBUG" in up:
+                counts["DEBUG"] += 1
+            else:
+                counts["INFO"] += 1
+    return counts
+
+
 def add_listener(cb):
     with _lock:
         _listeners.append(cb)

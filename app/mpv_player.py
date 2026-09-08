@@ -20,7 +20,18 @@ log = logger.get("mpv")
 CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 PROP_IDS = {"time-pos": 1, "duration": 2, "pause": 3, "idle-active": 4, "eof-reached": 5, "volume": 6, "mute": 7}
-VU_FILTER = "@vu:lavfi=[astats=metadata=1:reset=1:measure_perchannel=Peak_level:measure_overall=none]"
+# v22.2.9: formato del filtro VU actualizado. Antes usábamos
+# "lavfi=[astats=...:measure_perchannel=Peak_level:measure_overall=none]"
+# que asume 2 canales separados (lavfi.astats.1.P y lavfi.astats.2.P).
+# En builds nuevos de mpv (0.41+) las keys son distintas y los
+# corchetes ya no se aceptan. El formato correcto es:
+#   lavfi=astats=metadata=1:reset=1
+# Y las keys de salida son lavfi.astats.Overall.Peak_level y
+# lavfi.astats.Overall.RMS_level (no .1. ni .2. para peak).
+# Si querés canales separados, podés usar
+#   lavfi=astats=metadata=1:reset=1:length=0.1
+# pero Overall.Peak_level es suficiente para un VU estéreo en vivo.
+VU_FILTER = "@vu:lavfi=astats=metadata=1:reset=1"
 
 
 class _PipeConn:
@@ -95,6 +106,16 @@ class MPVPlayer(QObject):
         self.slang = ""
         self.volume = 100
         self.muted = False
+        # v23.0: crossfade de audio entre clips. fade_in se aplica
+        # automáticamente en play() cuando crossfade_enabled es True.
+        # fade_out se aplica cuando quedan crossfade_duration segundos
+        # en el clip (triggereado por playout._tick). El crossfade es
+        # una capa de presentación sobre mpv — no requiere reescribir
+        # el motor ni manipular la playlist de mpv. Si el operador lo
+        # desactiva, el corte es instantáneo (sin artifact).
+        self.crossfade_enabled = True
+        self.crossfade_duration = 0.5
+        self._fade_out_applied = False  # para no aplicarlo dos veces
         self._watch = QTimer(self)
         self._watch.setInterval(500)
         self._watch.timeout.connect(self._check_process)
@@ -122,12 +143,34 @@ class MPVPlayer(QObject):
 
     def _build_cmd(self):
         wid = str(int(self.widget.winId()))
+        # v22.2.10: --no-resume-playback y --no-save-position-on-quit.
+        # Por defecto mpv GUARDA la posición de cada clip en
+        # ~/.config/mpv/watch_later/ cuando termina (o cuando loadfile
+        # replace) y la RESTAURA la próxima vez que ese mismo clip se
+        # carga. En playout eso es desastroso: el operador reproduce un
+        # clip hasta el final, mpv guarda la posición final, después
+        # cuando ese clip se vuelve a cargar en una tanda/horario, mpv
+        # arranca en esa posición guardada (al final del clip) y la
+        # ventana queda en negro. La posición se guarda también como
+        # `start=`, lo que puede ganarle al `start=none` que mandamos
+        # en el play() (la doc oficial dice: "The playback position is
+        # always saved as start, so adding start to this list has no
+        # effect" — el watch_later siempre pisa el start del clip).
+        # En playout SIEMPRE empezamos desde el principio del clip. El
+        # seek lo manejamos nosotros desde la UI con mpv.seek(...).
+        # v22.2.10 además limpia los archivos watch_later viejos al
+        # arrancar para no contaminar clips que ya se reprodujeron en
+        # versiones anteriores de la app. Ver _purge_watch_later().
+        self._purge_watch_later()
         cmd = [self.mpv_path, f"--wid={wid}", "--idle=yes", "--force-window=yes", "--keep-open=no",
                "--input-default-bindings=no", "--input-vo-keyboard=no", "--osc=no", "--osd-level=0",
                "--no-terminal", "--really-quiet", "--cursor-autohide=no",
                "--input-ipc-server=" + self.ipc_path, f"--hwdec={self.hwdec or 'no'}",
                f"--volume={int(self.volume)}", f"--mute={'yes' if self.muted else 'no'}",
-               "--audio-file-auto=no", "--sub-auto=no", "--ytdl=no", "--load-scripts=no"]
+               "--audio-file-auto=no", "--sub-auto=no", "--ytdl=no", "--load-scripts=no",
+               # v22.2.10: claves para que mpv no resture posiciones
+               # guardadas ni guarde la posición al final del clip.
+               "--no-resume-playback", "--no-save-position-on-quit"]
         if self.alang:
             cmd.append(f"--alang={self.alang}")
         if self.slang:
@@ -253,6 +296,60 @@ class MPVPlayer(QObject):
         except Exception as e:  # noqa: BLE001
             log.debug("fit child window: %s", e)
 
+    def _purge_watch_later(self):
+        """v22.2.10: borra los archivos de watch_later que mpv podría usar
+        para restaurar posiciones guardadas.
+
+        Por qué: aunque ya pasamos --no-resume-playback y
+        --no-save-position-on-quit al arrancar mpv, los archivos
+        preexistentes en watch_later pueden interferir si el usuario
+        actualizó desde una versión anterior de la app o si mpv
+        fue arrancado por otra vía. Limpiarlos al startup garantiza
+        que NINGÚN clip va a "arrancar" en una posición guardada.
+
+        En Windows: %APPDATA%/mpv/watch_later/  (o %MPV_HOME%/watch_later/)
+        En Linux:   ~/.config/mpv/watch_later/  o $XDG_STATE_HOME/mpv/watch_later
+        En macOS:   igual que Linux
+
+        Es seguro borrar TODOS los .cfg: mpv los regenera si el
+        operador decide usar Shift+Q. La app no usa esa feature.
+        """
+        try:
+            import shutil
+            # Buscar en orden: MPV_HOME (override), XDG_STATE_HOME,
+            # APPDATA (Windows), ~/.config (Linux), ~/.local/state (Linux)
+            candidates = []
+            mpv_home = os.environ.get("MPV_HOME")
+            if mpv_home:
+                candidates.append(os.path.join(mpv_home, "watch_later"))
+            xdg_state = os.environ.get("XDG_STATE_HOME")
+            if xdg_state:
+                candidates.append(os.path.join(xdg_state, "mpv", "watch_later"))
+            appdata = os.environ.get("APPDATA")
+            if appdata:
+                candidates.append(os.path.join(appdata, "mpv", "watch_later"))
+            home = os.path.expanduser("~")
+            if home:
+                if os.name == "nt":
+                    candidates.append(os.path.join(home, "AppData", "Roaming", "mpv", "watch_later"))
+                else:
+                    candidates.append(os.path.join(home, ".config", "mpv", "watch_later"))
+                    candidates.append(os.path.join(home, ".local", "state", "mpv", "watch_later"))
+            for wl_dir in candidates:
+                if os.path.isdir(wl_dir):
+                    purged = 0
+                    for name in os.listdir(wl_dir):
+                        if name.endswith(".cfg"):
+                            try:
+                                os.remove(os.path.join(wl_dir, name))
+                                purged += 1
+                            except OSError:
+                                pass
+                    if purged:
+                        log.info("watch_later purgado: %d archivos en %s", purged, wl_dir)
+        except Exception as e:  # noqa: BLE001
+            log.debug("purge watch_later: %s", e)
+
     # ----------------------------------------------------------------- IPC
     def command(self, cmd, callback=None):
         conn = self._conn
@@ -342,7 +439,11 @@ class MPVPlayer(QObject):
         if ok:
             self._vu_timer.start()
         else:
-            log.info("VU meter no disponible en este mpv")
+            # v22.2.5: el VU usa el filtro lavfi=astats, que no está en
+            # todos los builds de mpv (especialmente los recortados). Si
+            # falla, lo dejamos en WARNING para que el operador se entere
+            # de que tiene que actualizar el binario de mpv.
+            log.warning("VU meter no disponible en este mpv (lavfi/astats no soportado). Actualizá mpv a una build con lavfi (shinchiro/zhongfly).")
 
     def _poll_vu(self):
         if not self._vu_state or not self.running:
@@ -360,40 +461,154 @@ class MPVPlayer(QObject):
                 v = -90.0
             return max(-90.0, v)
 
-        left = val("lavfi.astats.1.Peak_level")
-        right = val("lavfi.astats.2.Peak_level") if "lavfi.astats.2.Peak_level" in data else left
+        # v22.2.9: las keys de astats cambiaron en builds nuevos de mpv.
+        # Antes leíamos lavfi.astats.1.Peak_level y lavfi.astats.2.Peak_level
+        # (formato viejo que asume canales separados). En mpv 0.40+ las
+        # keys son lavfi.astats.Overall.Peak_level y lavfi.astats.Overall.RMS_level.
+        # Leemos Overall.Peak_level (que es el pico instantáneo del audio
+        # en dBFS, lo que se ve en un VU meter).
+        left = val("lavfi.astats.Overall.Peak_level")
+        right = val("lavfi.astats.Overall.RMS_level")
         self.levels.emit(left, right)
 
     # ------------------------------------------------------------ control
+    def play_loop(self, path):
+        """v23.3: reproduce un clip (o URL) en loop infinito. Usado por el
+        filler automático. Aplica crossfade=no (el filler debe ser continuo)
+        y loop-file=inf. No requiere audio_id/sub_id.
+        Acepta tanto paths (ej: C:/filler.mp4) como URLs lavfi
+        (ej: av://lavfi:color=c=black:s=1920x1080:...,drawtext=...).
+        """
+        if not self.start():
+            return False
+        self._current_path = path
+        self._fade_out_applied = False
+        # sacar filtros de crossfade que pudieran estar de un clip anterior
+        self.command(["af", "remove", "@fadein"])
+        self.command(["af", "remove", "@fadeout"])
+        # setear las propiedades clave ANTES del loadfile (v22.2.8)
+        self.set_property("aid", "auto")
+        self.set_property("sid", "no")
+        self.set_property("start", "none")
+        self.set_property("loop-file", "inf")  # v23.3: loop infinito
+        self.set_property("loop-playlist", "inf")
+        self.set_property("volume", float(self.volume))
+        self.set_property("mute", "yes" if self.muted else "no")
+        ok = self.command(["loadfile", path, "replace"])
+        if ok:
+            self.status.emit("FILLER ▶ " + (os.path.basename(path) if not path.startswith("av://") else path))
+            log.info("play_loop: %s", path)
+        return ok
+
     def play(self, path, audio_id=None, sub_id=None, start=0.0, loop=False):
         if not self.start():
             return False
         self._current_path = path
-        self.set_property("aid", int(audio_id) + 1 if isinstance(audio_id, int) and audio_id >= 0 else "auto")
+        # v23.0: reset del flag de fade-out. Cuando el próximo clip
+        # entre, queremos aplicar el fade-in (vía el filter chain) y
+        # dejar que _tick() vuelva a triggerear el fade-out al final.
+        self._fade_out_applied = False
+        # v22.2.7: bug crítico de sincronización. Antes mandábamos 7
+        # set_property ANTES del loadfile (aid/sid/start/loop-file/
+        # volume/mute/pause). Esto causaba tres problemas en builds
+        # modernos de mpv:
+        #  1) set_property("start", "none") podía conservarse del
+        #     archivo anterior (#15544 en mpv repo: loadfile a veces
+        #     ignora start cuando viene de un set_property previo).
+        #  2) set_property("pause", false) ANTES del loadfile hacía
+        #     que el nuevo archivo arrancara con un frame del archivo
+        #     anterior (estado interno de mpv inconsistente).
+        #  3) Los set_property y el loadfile entran en cola en orden,
+        #     pero mpv puede procesarlos fuera de orden. Las propiedades
+        #     de la sesión anterior (volume, mute, start) se aplicaban
+        #     al archivo viejo.
+        # Síntoma: el panel mostraba "AL AIRE" el nuevo clip pero el
+        # monitor seguía mostrando el frame del clip anterior.
+        #
+        # Fix: usar loadfile con opciones embebidas (start, pause, volume,
+        # mute, loop-file, sid, aid) en un solo comando atómico. Las
+        # opciones embebidas en loadfile SÍ se aplican en orden, antes
+        # de decodificar el primer frame del nuevo archivo.
+        # v22.2.8: NO usar opciones embebidas en loadfile — mpv las
+        # rechaza (issue #5770). Volvemos a set_property separados.
+        # El método _post_load_apply se encarga de reaplicar las
+        # propiedades críticas 200ms después del loadfile.
+        if isinstance(audio_id, int) and audio_id >= 0:
+            self.set_property("aid", int(audio_id) + 1)
+        else:
+            self.set_property("aid", "auto")
         if sub_id is None:
             self.set_property("sid", "auto" if self.slang else "no")
         elif sub_id < 0:
             self.set_property("sid", "no")
         else:
             self.set_property("sid", int(sub_id) + 1)
+        # start=0 → "none" para que mpv no herede offset anterior
         self.set_property("start", f"{float(start):.3f}" if start and start > 0 else "none")
         self.set_property("loop-file", "inf" if loop else "no")
-        self.set_property("pause", False)
+        self.set_property("volume", float(self.volume))
+        self.set_property("mute", "yes" if self.muted else "no")
+        # v23.0: crossfade de audio. Si está habilitado, agregamos el
+        # filtro afade t=in al cargar el clip nuevo, para que el audio
+        # arranque en silencio y suba durante crossfade_duration. El
+        # fade-out se aplica en _tick() cuando quedan crossfade_duration
+        # segundos para terminar.
+        if self.crossfade_enabled and self.crossfade_duration > 0:
+            d = max(0.05, min(3.0, float(self.crossfade_duration)))
+            self.command(["af", "add", f"@fadein:lavfi=afade=t=in:st=0:d={d:.3f}"])
+        else:
+            # Si quedó un filtro @fadein de un clip anterior, lo sacamos
+            self.command(["af", "remove", "@fadein"])
+            self.command(["af", "remove", "@fadeout"])
         ok = self.command(["loadfile", path, "replace"])
         if ok:
             self.status.emit("MPV ▶ " + os.path.basename(path))
+            # v22.2.8: reaplicar pause/volume/mute 200ms después del
+            # loadfile. Cubre el caso donde mpv procesa los
+            # set_property que llegaron antes que el loadfile y los
+            # aplica al archivo anterior.
+            from PySide6.QtCore import QTimer
+            QTimer.singleShot(200, self._post_load_apply)
         return ok
 
     def stop(self):
         self._current_path = ""
         return self.command(["stop"])
 
+    def _post_load_apply(self):
+        """v22.2.8: reaplica pause/volume/mute 200ms después del loadfile.
+
+        Por qué: en v22.2.1-v22.2.6 mandábamos los set_property ANTES del
+        loadfile. En algunos builds de mpv, esos set_property se aplicaban
+        al archivo anterior (que estaba saliendo) y el nuevo archivo
+        quedaba con el frame del anterior, mute, o pause.
+        En v22.2.7 intentamos embeber las opciones en el loadfile, pero
+        mpv RECHAZA opciones embebidas (issue #5770: "loadfile sólo
+        acepta 3 opciones"). El loadfile fallaba silenciosamente.
+
+        La solución: mandar los set_property ANTES (como hasta v22.2.6) y
+        REPETIRLOS 200ms después con un QTimer.singleShot. Eso cubre
+        ambos casos: builds que procesan los set_property antes del
+        loadfile (v22.2.1) y builds que los procesan después (v22.2.7).
+        """
+        if not self.running:
+            return
+        try:
+            self.set_property("pause", "no")
+            self.set_property("volume", float(self.volume))
+            self.set_property("mute", "yes" if self.muted else "no")
+        except Exception as e:  # noqa: BLE001
+            log.debug("post_load_apply: %s", e)
+
     def set_pause(self, paused):
         return self.set_property("pause", bool(paused))
 
     def set_mute(self, muted):
+        # v22.2.5: mpv acepta 'yes'/'no' para propiedades booleanas. Antes
+        # mandábamos True/False como JSON, que mpv puede rechazar según
+        # la versión, dejando el audio sin silenciar.
         self.muted = bool(muted)
-        return self.set_property("mute", bool(muted))
+        return self.set_property("mute", "yes" if muted else "no")
 
     def set_volume(self, value):
         self.volume = int(value)
@@ -407,6 +622,32 @@ class MPVPlayer(QObject):
         if self.running:
             self.set_property("alang", alang)
             self.set_property("slang", slang)
+
+    def set_crossfade(self, enabled=None, duration=None):
+        """v23.0: configura el crossfade de audio. Llamado desde la UI."""
+        if enabled is not None:
+            self.crossfade_enabled = bool(enabled)
+        if duration is not None:
+            self.crossfade_duration = max(0.0, min(3.0, float(duration)))
+
+    def fade_out(self, duration):
+        """v23.0: aplica un fade-out al audio del clip actualmente al aire.
+        Llamado por playout._tick() cuando quedan `duration` segundos para
+        terminar el clip. Se aplica una sola vez por clip (flag
+        _fade_out_applied) para no duplicar el filtro.
+        """
+        if not self.crossfade_enabled or duration <= 0:
+            return False
+        if self._fade_out_applied:
+            return False
+        if not self.running:
+            return False
+        d = max(0.05, min(3.0, float(duration)))
+        ok = self.command(["af", "add", f"@fadeout:lavfi=afade=t=out:st=0:d={d:.3f}"])
+        if ok:
+            self._fade_out_applied = True
+            log.info("fade-out aplicado: duración %.2fs", d)
+        return ok
 
     def open_external_preview(self, path, title="PREVIEW"):
         """Abre el clip en una ventana mpv independiente (previsualización sin afectar el aire)."""
