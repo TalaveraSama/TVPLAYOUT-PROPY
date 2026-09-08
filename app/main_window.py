@@ -363,7 +363,28 @@ class MainWindow(QMainWindow):
         self.exact_btn = _btn("Hora exacta", self._modes_changed, "modeBtn", "Los eventos con hora fija (⏰) cortan lo que esté al aire a su hora", True)
         self.loop_btn = _btn("Loop", self._modes_changed, "modeBtn", "Repetir la playlist al terminar", True)
         self.autoscroll_btn = _btn("Autoscroll", self._modes_changed, "modeBtn", "Seguir el evento al aire en la grid", True)
-        for b in (self.autofill_btn, self.tandas_btn, self.exact_btn, self.loop_btn, self.autoscroll_btn):
+        # v23.0: crossfade de audio entre clips. Toggle + slider de
+        # duración (0.0–3.0s). El toggle habilita/deshabilita el crossfade,
+        # el slider controla la duración del fade-in/fade-out. La lógica
+        # vive en mpv_player.py (set_crossfade) y playout._tick() (trigger
+        # del fade-out cuando quedan crossfade_duration segundos para
+        # terminar el clip). El cambio en el slider se aplica al player
+        # en tiempo real (no requiere recargar el clip al aire).
+        self.crossfade_btn = _btn("Crossfade", self._crossfade_toggle_changed, "modeBtn",
+                                  "Solapa el audio del clip saliente con el entrante (transición suave entre clips)", True)
+        self.crossfade_duration = QSlider(Qt.Horizontal)
+        self.crossfade_duration.setObjectName("crossfadeDuration")
+        self.crossfade_duration.setMinimum(0)
+        self.crossfade_duration.setMaximum(30)  # 0.0s–3.0s, en pasos de 0.1s
+        self.crossfade_duration.setSingleStep(1)
+        self.crossfade_duration.setPageStep(5)
+        self.crossfade_duration.setFixedWidth(110)
+        self.crossfade_duration.setToolTip("Duración del crossfade en segundos (0.0s–3.0s)")
+        self.crossfade_duration.valueChanged.connect(self._crossfade_duration_changed)
+        self.crossfade_duration_label = _lbl("0.5s", "fieldName")
+        self.crossfade_duration_label.setFixedWidth(38)
+        for b in (self.autofill_btn, self.tandas_btn, self.exact_btn, self.loop_btn, self.autoscroll_btn,
+                  self.crossfade_btn, _lbl("CF:", "fieldName"), self.crossfade_duration, self.crossfade_duration_label):
             ml.addWidget(b)
         ml.addStretch()
         ml.addWidget(_lbl("Modo:", "fieldName"))
@@ -726,6 +747,17 @@ class MainWindow(QMainWindow):
             if self.player.running:
                 self.player.set_volume(vol)
                 self.player.set_mute(muted)
+            # v23.0: aplicar estado del crossfade desde settings.
+            cf_enabled = bool(s.get("crossfade_enabled", True))
+            cf_dur = float(s.get("crossfade_duration", 0.5))
+            self.player.set_crossfade(enabled=cf_enabled, duration=cf_dur)
+            self.crossfade_btn.blockSignals(True)
+            self.crossfade_btn.setChecked(cf_enabled)
+            self.crossfade_btn.blockSignals(False)
+            self.crossfade_duration.blockSignals(True)
+            self.crossfade_duration.setValue(int(round(cf_dur * 10)))
+            self.crossfade_duration.blockSignals(False)
+            self.crossfade_duration_label.setText(f"{cf_dur:.1f}s")
             self._modes_changed()
         self.rtmp_url.setText(s.get("rtmp_url", ""))
 
@@ -739,6 +771,22 @@ class MainWindow(QMainWindow):
                          ("autofill", self.ctrl.autofill), ("tandas", self.ctrl.tandas), ("autoscroll", self.autoscroll_btn.isChecked())):
             if self.settings.get(key) != val:
                 self._save_setting(key, val)
+
+    def _crossfade_toggle_changed(self):
+        """v23.0: habilita/deshabilita el crossfade y persiste en settings."""
+        enabled = self.crossfade_btn.isChecked()
+        self.player.set_crossfade(enabled=enabled)
+        if self.settings.get("crossfade_enabled", True) != enabled:
+            self._save_setting("crossfade_enabled", enabled)
+        log.info("crossfade %s", "ON" if enabled else "OFF")
+
+    def _crossfade_duration_changed(self, val):
+        """v23.0: actualiza la duración del crossfade (0.0s–3.0s en pasos de 0.1s)."""
+        d = val / 10.0
+        self.player.set_crossfade(duration=d)
+        self.crossfade_duration_label.setText(f"{d:.1f}s")
+        if abs(self.settings.get("crossfade_duration", 0.5) - d) > 1e-9:
+            self._save_setting("crossfade_duration", d)
 
     def _autostart(self):
         if self.settings.get("autoplay") and self.ctrl.items and not self.ctrl.is_on_air:

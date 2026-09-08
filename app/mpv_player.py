@@ -106,6 +106,16 @@ class MPVPlayer(QObject):
         self.slang = ""
         self.volume = 100
         self.muted = False
+        # v23.0: crossfade de audio entre clips. fade_in se aplica
+        # automáticamente en play() cuando crossfade_enabled es True.
+        # fade_out se aplica cuando quedan crossfade_duration segundos
+        # en el clip (triggereado por playout._tick). El crossfade es
+        # una capa de presentación sobre mpv — no requiere reescribir
+        # el motor ni manipular la playlist de mpv. Si el operador lo
+        # desactiva, el corte es instantáneo (sin artifact).
+        self.crossfade_enabled = True
+        self.crossfade_duration = 0.5
+        self._fade_out_applied = False  # para no aplicarlo dos veces
         self._watch = QTimer(self)
         self._watch.setInterval(500)
         self._watch.timeout.connect(self._check_process)
@@ -466,6 +476,10 @@ class MPVPlayer(QObject):
         if not self.start():
             return False
         self._current_path = path
+        # v23.0: reset del flag de fade-out. Cuando el próximo clip
+        # entre, queremos aplicar el fade-in (vía el filter chain) y
+        # dejar que _tick() vuelva a triggerear el fade-out al final.
+        self._fade_out_applied = False
         # v22.2.7: bug crítico de sincronización. Antes mandábamos 7
         # set_property ANTES del loadfile (aid/sid/start/loop-file/
         # volume/mute/pause). Esto causaba tres problemas en builds
@@ -506,6 +520,18 @@ class MPVPlayer(QObject):
         self.set_property("loop-file", "inf" if loop else "no")
         self.set_property("volume", float(self.volume))
         self.set_property("mute", "yes" if self.muted else "no")
+        # v23.0: crossfade de audio. Si está habilitado, agregamos el
+        # filtro afade t=in al cargar el clip nuevo, para que el audio
+        # arranque en silencio y suba durante crossfade_duration. El
+        # fade-out se aplica en _tick() cuando quedan crossfade_duration
+        # segundos para terminar.
+        if self.crossfade_enabled and self.crossfade_duration > 0:
+            d = max(0.05, min(3.0, float(self.crossfade_duration)))
+            self.command(["af", "add", f"@fadein:lavfi=afade=t=in:st=0:d={d:.3f}"])
+        else:
+            # Si quedó un filtro @fadein de un clip anterior, lo sacamos
+            self.command(["af", "remove", "@fadein"])
+            self.command(["af", "remove", "@fadeout"])
         ok = self.command(["loadfile", path, "replace"])
         if ok:
             self.status.emit("MPV ▶ " + os.path.basename(path))
@@ -568,6 +594,32 @@ class MPVPlayer(QObject):
         if self.running:
             self.set_property("alang", alang)
             self.set_property("slang", slang)
+
+    def set_crossfade(self, enabled=None, duration=None):
+        """v23.0: configura el crossfade de audio. Llamado desde la UI."""
+        if enabled is not None:
+            self.crossfade_enabled = bool(enabled)
+        if duration is not None:
+            self.crossfade_duration = max(0.0, min(3.0, float(duration)))
+
+    def fade_out(self, duration):
+        """v23.0: aplica un fade-out al audio del clip actualmente al aire.
+        Llamado por playout._tick() cuando quedan `duration` segundos para
+        terminar el clip. Se aplica una sola vez por clip (flag
+        _fade_out_applied) para no duplicar el filtro.
+        """
+        if not self.crossfade_enabled or duration <= 0:
+            return False
+        if self._fade_out_applied:
+            return False
+        if not self.running:
+            return False
+        d = max(0.05, min(3.0, float(duration)))
+        ok = self.command(["af", "add", f"@fadeout:lavfi=afade=t=out:st=0:d={d:.3f}"])
+        if ok:
+            self._fade_out_applied = True
+            log.info("fade-out aplicado: duración %.2fs", d)
+        return ok
 
     def open_external_preview(self, path, title="PREVIEW"):
         """Abre el clip en una ventana mpv independiente (previsualización sin afectar el aire)."""

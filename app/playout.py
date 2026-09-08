@@ -579,6 +579,24 @@ class PlayoutController(QObject):
         return n
 
     def _tick(self):
+        # v23.0: crossfade de audio. Cuando quedan crossfade_duration
+        # segundos para terminar el clip al aire, aplicamos un fade-out
+        # al audio de mpv para que la transición al próximo clip sea
+        # suave. El fade-in del próximo clip se aplica en player.play()
+        # vía el filter chain (afade=t=in:st=0). Si crossfade_enabled
+        # es False, no se hace nada (corte directo).
+        if (self.is_on_air and not self.paused and self.duration > 0
+                and getattr(self.player, "crossfade_enabled", False)):
+            try:
+                d = float(getattr(self.player, "crossfade_duration", 0.0) or 0.0)
+                if d > 0 and not getattr(self.player, "_fade_out_applied", False):
+                    rem = self.duration - self.elapsed
+                    # disparamos un poquito antes para que el fade esté
+                    # completo cuando mpv emita end-file
+                    if rem <= d + 0.05:
+                        self.player.fade_out(d)
+            except Exception:
+                pass
         # v22.2.9: watchdog de fin de clip. Si mpv no emite end-file por
         # IPC (caso documentado en v22.2.3), el playout no detecta que
         # el clip terminó y queda colgado en el último frame con posición

@@ -308,6 +308,82 @@ def test_mpv_player_disables_watch_later():
         "_purge_watch_later debe usar os.remove/unlink o shutil.rmtree para borrar"
 
 
+# --- v23.0: crossfade de audio entre clips ---
+
+def test_mpv_player_supports_crossfade():
+    """v23.0: MPVPlayer expone crossfade_enabled, crossfade_duration,
+    set_crossfade() y fade_out(). play() aplica el filtro afade de
+    fade-in al cargar el clip.
+    """
+    src = _read(MPV)
+    # Atributos de instancia
+    assert "self.crossfade_enabled" in src, "MPVPlayer debe tener self.crossfade_enabled"
+    assert "self.crossfade_duration" in src, "MPVPlayer debe tener self.crossfade_duration"
+    # Método set_crossfade para configurar
+    assert "def set_crossfade" in src, "MPVPlayer debe tener set_crossfade() para configurar desde la UI"
+    # Método fade_out para triggerear desde playout._tick()
+    fade_out = re.search(r"def fade_out\(self.*?\n(?:        .*\n)+", src, re.S)
+    assert fade_out, "no encontré el método fade_out()"
+    fb = fade_out.group(0)
+    assert "af" in fb and "afade" in fb, "fade_out debe agregar el filtro lavfi=afade a mpv"
+    # Flag de no-duplicar
+    assert "_fade_out_applied" in src, "MPVPlayer debe tener _fade_out_applied para no aplicar fade_out dos veces"
+    # play() debe aplicar el fade-in si está habilitado
+    play_block = re.search(r"def play\(self.*?\n(?:        .*\n)+", src, re.S)
+    assert play_block, "no encontré el método play()"
+    pb = play_block.group(0)
+    assert "afade" in pb, "play() debe aplicar el filtro afade de fade-in cuando crossfade_enabled es True"
+
+
+def test_playout_triggers_fade_out():
+    """v23.0: playout._tick() invoca player.fade_out() cuando quedan
+    crossfade_duration segundos para terminar el clip al aire.
+    """
+    src = _read(OUT)  # historical: OUT is the playout module path
+    # En este test suite OUT apunta a app/output.py, no app/playout.py.
+    # Necesitamos leer playout.py directamente.
+    playout_src = _read(os.path.join(REPO, "app", "playout.py"))
+    tick_block = re.search(r"def _tick\(self.*?\n(?:        .*\n)+", playout_src, re.S)
+    assert tick_block, "no encontré _tick() en playout.py"
+    tb = tick_block.group(0)
+    assert "self.player.fade_out" in tb, \
+        "playout._tick() debe invocar self.player.fade_out() cuando quedan crossfade_duration segundos"
+    assert "crossfade_enabled" in tb or "crossfade" in tb.lower(), \
+        "playout._tick() debe chequear el flag de crossfade del player antes de triggerear el fade-out"
+    assert "self.player.crossfade_duration" in tb or "crossfade_duration" in tb, \
+        "playout._tick() debe usar la duración configurada en el player"
+
+
+def test_main_window_has_crossfade_controls():
+    """v23.0: la UI tiene un toggle de crossfade y un slider de duración,
+    con sus handlers que invocan self.player.set_crossfade() y persisten
+    en settings.
+    """
+    src = _read(WIN)
+    # Toggle
+    assert "self.crossfade_btn" in src, "main_window debe tener self.crossfade_btn (toggle de crossfade)"
+    assert "_crossfade_toggle_changed" in src, \
+        "main_window debe tener el handler _crossfade_toggle_changed"
+    # Slider
+    assert "self.crossfade_duration" in src, "main_window debe tener el slider self.crossfade_duration"
+    assert "_crossfade_duration_changed" in src, \
+        "main_window debe tener el handler _crossfade_duration_changed"
+    # Persistencia en settings
+    assert 'crossfade_enabled' in src, \
+        "main_window debe persistir 'crossfade_enabled' en settings"
+    assert 'crossfade_duration' in src, \
+        "main_window debe persistir 'crossfade_duration' en settings"
+    # Handlers deben llamar al player
+    assert "self.player.set_crossfade" in src, \
+        "los handlers deben invocar self.player.set_crossfade()"
+    # apply_settings debe aplicar el estado desde settings
+    apply = re.search(r"def apply_settings\(self.*?self\._modes_changed\(\)", src, re.S)
+    assert apply, "no encontré el cuerpo de apply_settings"
+    ab = apply.group(0)
+    assert "crossfade_enabled" in ab and "crossfade_duration" in ab, \
+        "apply_settings debe aplicar el estado del crossfade desde settings (crossfade_enabled + crossfade_duration)"
+
+
 if __name__ == "__main__":
     tests = [(name, fn) for name, fn in globals().items() if name.startswith("test_") and callable(fn)]
     failed = 0
