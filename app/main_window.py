@@ -25,7 +25,7 @@ from .config import (DB_PATH, MPV_PATH, FFMPEG_PATH, FFPROBE_PATH, APP_NAME, APP
 from .db import DB
 from .scanner import Scanner
 from .prober import ProbeWorker
-from .mpv_player import MPVPlayer
+from .pyav_player import PyAVPlayer
 from .output import OutputWorker
 from .scheduler import SchedulerService
 from .playout import (PlayoutController, make_item, ST_ONAIR, ST_READY, ST_AIRED, ST_CUT, ST_ERROR, ST_SKIPPED,
@@ -169,7 +169,7 @@ class MainWindow(QMainWindow):
         self._dialogs = {}
 
         self._build()
-        self.player = MPVPlayer(self.video, MPV_PATH, self)
+        self.player = PyAVPlayer(self.video, MPV_PATH, self)
         self.player.status.connect(self._status)
         self.player.levels.connect(self.vu.set_levels)
         self.ctrl = PlayoutController(self.db, self.player, self)
@@ -223,9 +223,10 @@ class MainWindow(QMainWindow):
         self.ui_timer.timeout.connect(self._tick_ui)
         self.ui_timer.start(500)
         self._tick_ui()
-        self._status(f"MPV: {'OK' if MPV_PATH else 'NO ENCONTRADO'} • FFmpeg: {'OK' if FFMPEG_PATH else 'NO ENCONTRADO'} • "
-                     f"ffprobe: {'OK' if FFPROBE_PATH else 'NO'} • Biblioteca: {self.db.count_media()} medios")
-        log.info("%s %s iniciado", APP_NAME, APP_VERSION)
+        self._status(f"PyAV: {'OK' if self.player.available else 'NO INSTALADO'} • Preview mpv: {'OK' if MPV_PATH else 'NO'} • "
+                     f"FFmpeg: {'OK' if FFMPEG_PATH else 'NO ENCONTRADO'} • ffprobe: {'OK' if FFPROBE_PATH else 'NO'} • "
+                     f"Biblioteca: {self.db.count_media()} medios")
+        log.info("%s %s iniciado con PyAV/libav", APP_NAME, APP_VERSION)
         QTimer.singleShot(800, self._autostart)
 
     # ================================================================== UI
@@ -1500,9 +1501,11 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------- señales playout
     def _onair_changed(self, idx):
         onair = idx >= 0
-        self.onair_led.set_active(onair)
-        self.play_btn.setChecked(onair)
-        self.video.set_active(onair, "" if onair else "SIN SEÑAL")
+        is_slate = idx == -2
+        self.onair_led.set_active(onair or is_slate)
+        self.play_btn.setChecked(onair or is_slate)
+        self.video.set_active(False if is_slate else onair,
+                              "TVPlayout PRO\\nPROXIMAMENTE" if is_slate else ("" if onair else "SIN SEÑAL"))
         if not onair:
             self.pause_btn.setChecked(False)
             self.clip_title.setText("Sin evento al aire")

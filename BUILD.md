@@ -6,11 +6,10 @@ Doble clic en `build_exe.bat`. El script:
 
 1. Detecta Python 3.13 / 3.10.
 2. Crea un entorno virtual `.venv-build` (no toca el `.venv` de runtime).
-3. Instala PySide6 y PyInstaller dentro de ese venv.
+3. Instala PySide6, PyAV/libav y PyInstaller dentro de ese venv.
 4. Empaqueta todo en `dist\TVPlayoutPRO.exe`.
-5. Copia `mpv.exe` y `ffmpeg.exe` al lado del .exe si están en sus
-   ubicaciones estándar del proyecto (`mpv-x86_64\mpv.exe` y
-   `ffmpeg\ffmpeg.exe` o `ffmpeg.exe` en la raíz).
+5. Copia `ffmpeg.exe` y `ffprobe.exe` al lado del .exe para la salida RTMP y el análisis.
+   `mpv.exe` es opcional y solo se usa para preview externo.
 
 Tiempo total: 5-10 minutos (depende de la conexión y la CPU).
 
@@ -22,23 +21,24 @@ Tiempo total: 5-10 minutos (depende de la conexión y la CPU).
     del instalador, abajo del todo).
 - **Windows 10/11 64 bits**.
 - **~500 MB libres** en disco (el venv de build + el .exe final pesan).
-- **Conexión a internet** en el momento del build (pip baja PySide6 y
-  PyInstaller, pesan ~200 MB juntos).
+- **Conexión a internet** en el momento del build (pip baja PySide6, PyAV/libav
+  y PyInstaller).
 
 ## Camino manual (si el .bat falla)
 
 ```bat
 py -3.13 -m venv .venv-build
 .venv-build\Scripts\activate
-pip install PySide6==6.7.* PyInstaller==6.*
+pip install -r requirements.txt PyInstaller==6.*
 pyinstaller --noconfirm --clean --windowed --onefile --name TVPlayoutPRO ^
     --collect-submodules app --collect-data app ^
     --hidden-import PySide6.QtSvg --hidden-import PySide6.QtMultimedia ^
+    --hidden-import av --hidden-import app.pyav_player ^
     main.py
 ```
 
-Después copiá `mpv.exe` y `ffmpeg.exe` al lado de
-`dist\TVPlayoutPRO.exe`.
+Después copiá `ffmpeg.exe` y `ffprobe.exe` al lado de
+`dist\TVPlayoutPRO.exe`. mpv es opcional para preview.
 
 ## Estructura final esperada
 
@@ -47,8 +47,9 @@ Una vez generado, la carpeta donde lo pongas tiene que verse así:
 ```
 TVPLAYOUT-PROPY-22.2.3\
 ├── TVPlayoutPRO.exe          (el .exe generado, ~80-120 MB)
-├── mpv.exe                    (binario externo, mismo de antes)
-├── ffmpeg.exe                 (binario externo, mismo de antes)
+├── ffmpeg.exe                 (salida RTMP)
+├── ffprobe.exe                (análisis de medios)
+├── mpv.exe                    (opcional, preview externo)
 ├── tvplayout.db               (la base de datos, se crea sola al iniciar)
 ├── cache\                     (se crea sola)
 └── logs\                      (se crea sola)
@@ -63,7 +64,7 @@ TVPLAYOUT-PROPY-22.2.3\
    internet o pip desactualizado. Probá:
    ```
    .venv-build\Scripts\python.exe -m pip install --upgrade pip
-   .venv-build\Scripts\python.exe -m pip install PySide6==6.7.* PyInstaller==6.* --verbose
+   .venv-build\Scripts\python.exe -m pip install -r requirements.txt PyInstaller==6.* --verbose
    ```
 
 3. **"PyInstaller falló"**: leé el error completo. Lo más común es un
@@ -74,13 +75,10 @@ TVPLAYOUT-PROPY-22.2.3\
    `TVPlayoutPRO.exe` desde ahí (sin doble clic) para ver la traza
    completa. Después mandame el error.
 
-5. **"No se encontró mpv.exe" o "No se encontró ffmpeg.exe"**: la
-   consola principal los busca en subcarpetas estándar. Si no los
-   tenés, descargalos:
-   - mpv: https://mpv.io/installation/ (Windows: build de shinchiro o
-     zhongfly)
-   - ffmpeg: https://ffmpeg.org/download.html#build-windows (cualquier
-     build gpl/shared sirve)
+5. **"No se encontró ffmpeg.exe" o "No se encontró ffprobe.exe"**: la
+   salida RTMP y el análisis no funcionarán. Descargá un build de FFmpeg
+   desde https://ffmpeg.org/download.html#build-windows.
+   mpv no es necesario para el aire local; solo para preview opcional.
 
 ## Desinstalar el venv de build
 

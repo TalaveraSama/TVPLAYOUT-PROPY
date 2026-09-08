@@ -472,18 +472,15 @@ def test_playout_filler_slate_retry_has_limit():
         "_on_loaded debe resetear _filler_fail_count cuando mpv confirma que cargó un archivo"
 
 
-def test_playout_slate_uses_font_on_both_drawtext_filters():
-    """v23.3.1: el segundo filtro drawtext ('PROXIMAMENTE') no llevaba
-    font_path, así que en builds de mpv sin fontconfig ese filtro fallaba
-    solo (aunque el primero, con fontfile explícito, cargara bien) y
-    tumbaba el loadfile completo del slate.
-    """
+def test_playout_slate_is_native():
+    """El fallback de continuidad ya no depende de lavfi, fuentes ni mpv."""
     src = _read(os.path.join(REPO, "app", "playout.py"))
-    slate = re.search(r"slate_url = \((.*?)\n        \)", src, re.S)
-    assert slate, "no encontré la construcción de slate_url en _play_slate"
+    slate = re.search(r"def _play_slate\(self\):(.*?)(?=\n    def fill)", src, re.S)
+    assert slate, "no encontré _play_slate"
     body = slate.group(1)
-    assert body.count("drawtext{font_path}") == 2, \
-        "ambos filtros drawtext del slate deben usar font_path (si no, uno de los dos puede fallar sin fuente)"
+    assert "av://slate:native" in body
+    assert "lavfi" not in body
+    assert "drawtext" not in body
 
 
 def test_main_window_has_filler_setting():
@@ -497,6 +494,26 @@ def test_main_window_has_filler_setting():
     assert apply, "no encontré apply_settings"
     ab = apply.group(0)
     assert "filler_path" in ab, "apply_settings debe cargar filler_path en self.ctrl.filler_path"
+
+
+def test_local_player_is_pyav_not_mpv_ipc():
+    """El aire local debe decodificar con PyAV y no depender de IPC de mpv."""
+    main = _read(WIN)
+    player = _read(os.path.join(REPO, "app", "pyav_player.py"))
+    assert "from .pyav_player import PyAVPlayer" in main
+    assert "self.player = PyAVPlayer" in main
+    assert "import av" in player
+    assert "class PyAVPlayer" in player
+    assert "QVideoWidget" not in player
+    assert "input-ipc-server" not in player
+
+
+def test_pyav_dependencies_and_surface_frame_api():
+    requirements = _read(os.path.join(REPO, "requirements.txt"))
+    widgets = _read(os.path.join(REPO, "app", "widgets.py"))
+    assert "av>=" in requirements, "PyAV debe instalarse como dependencia de runtime"
+    assert "def set_frame" in widgets, "VideoSurface debe aceptar frames decodificados"
+    assert "QImage" in widgets, "VideoSurface debe pintar QImage"
 
 
 if __name__ == "__main__":

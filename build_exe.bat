@@ -51,9 +51,9 @@ set "VENV=.venv-build"
 set "PYEXE=%VENV%\Scripts\python.exe"
 
 REM --- 3. Instalar dependencias de runtime + build ---------------------
-echo [..] Instalando PySide6 y PyInstaller (puede tardar unos minutos)...
+echo [..] Instalando PySide6, PyAV y PyInstaller (puede tardar unos minutos)...
 %PYEXE% -m pip install --upgrade pip >nul 2>&1
-%PYEXE% -m pip install PySide6==6.7.* PyInstaller==6.*
+%PYEXE% -m pip install -r requirements.txt PyInstaller==6.*
 if errorlevel 1 (
     echo [ERROR] Fallo la instalacion de dependencias.
     pause
@@ -79,6 +79,8 @@ echo.
     --collect-data app ^
     --hidden-import "PySide6.QtSvg" ^
     --hidden-import "PySide6.QtMultimedia" ^
+    --hidden-import "av" ^
+    --hidden-import "app.pyav_player" ^
     --exclude-module "tkinter" ^
     --exclude-module "matplotlib" ^
     --exclude-module "numpy" ^
@@ -94,13 +96,12 @@ if errorlevel 1 (
 
 REM --- 6. Copiar binarios externos al lado del .exe --------------------
 echo.
-echo [..] Copiando mpv.exe y ffmpeg.exe al lado del ejecutable...
+echo [..] Copiando binarios opcionales al lado del ejecutable...
 if exist "mpv-x86_64\mpv.exe" (
     copy /Y "mpv-x86_64\mpv.exe" "dist\mpv.exe" >nul
-    echo [OK] mpv.exe copiado.
+    echo [OK] mpv.exe copiado para preview externo.
 ) else (
-    echo [AVISO] No se encontro mpv-x86_64\mpv.exe en el proyecto.
-    echo        Descargalo de https://mpv.io/installation/ y ponelo en mpv-x86_64\
+    echo [INFO] mpv.exe no encontrado: preview externo desactivado.
 )
 if exist "ffmpeg\ffmpeg.exe" (
     copy /Y "ffmpeg\ffmpeg.exe" "dist\ffmpeg.exe" >nul
@@ -110,6 +111,15 @@ if exist "ffmpeg\ffmpeg.exe" (
     echo [OK] ffmpeg.exe copiado.
 ) else (
     echo [AVISO] No se encontro ffmpeg.exe. Descargalo de https://ffmpeg.org/
+)
+if exist "ffmpeg\ffprobe.exe" (
+    copy /Y "ffmpeg\ffprobe.exe" "dist\ffprobe.exe" >nul
+    echo [OK] ffprobe.exe copiado.
+) else if exist "ffprobe.exe" (
+    copy /Y "ffprobe.exe" "dist\ffprobe.exe" >nul
+    echo [OK] ffprobe.exe copiado.
+) else (
+    echo [AVISO] No se encontro ffprobe.exe: no se podra analizar la biblioteca.
 )
 
 REM --- 7. Crear acceso directo e instrucciones -------------------------
@@ -122,9 +132,9 @@ echo Ejecutable:  dist\TVPlayoutPRO.exe
 echo Tamaño aproximado: 80-120 MB
 echo.
 echo Como usar:
-echo   1. Copia dist\TVPlayoutPRO.exe a la carpeta donde corrias v22.1.0
-echo   2. Ahi mismo tiene que estar mpv.exe y ffmpeg.exe (o en subcarpetas
-echo      mpv-x86_64\ y ffmpeg\)
+echo   1. Copia dist\TVPlayoutPRO.exe a la carpeta de emisión
+echo   2. Ahi mismo deben estar ffmpeg.exe y ffprobe.exe
+echo      (mpv.exe es opcional para preview externo)
 echo   3. Doble clic en TVPlayoutPRO.exe
 echo.
 pause

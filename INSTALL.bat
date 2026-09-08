@@ -52,7 +52,7 @@ echo [3/5] Limpiando restos de PySide6...
 if not exist requirements.txt goto :no_requirements
 
 echo.
-echo [4/5] Instalando PySide6 6.8.3 para Python 3.13...
+echo [4/5] Instalando PySide6 + PyAV/libav para Python 3.13...
 "%PYTHON_EXE%" -m pip install --no-cache-dir --only-binary=:all: -r requirements.txt
 if errorlevel 1 goto :error
 
@@ -65,7 +65,7 @@ goto :error
 :verify
 echo.
 echo [5/5] Verificando instalacion...
-"%PYTHON_EXE%" -c "import sys, PySide6; print('Python:',sys.version.split()[0]); print('PySide6:',PySide6.__version__)"
+"%PYTHON_EXE%" -c "import sys, PySide6, av; print('Python:',sys.version.split()[0]); print('PySide6:',PySide6.__version__); print('PyAV:',av.__version__)"
 if errorlevel 1 goto :error
 
 if not exist logs mkdir logs
@@ -76,7 +76,8 @@ echo ================================================
 echo   INSTALACION COMPLETADA CORRECTAMENTE
 echo ================================================
 echo.
-echo Coloca mpv.exe en mpv-x86_64\ y ffmpeg.exe + ffprobe.exe en esta carpeta.
+echo Coloca ffmpeg.exe + ffprobe.exe en esta carpeta para la salida RTMP.
+echo mpv.exe es opcional y solo se usa para preview externo.
 echo Ejecuta INICIAR.bat
 pause
 exit /b 0

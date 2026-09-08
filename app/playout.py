@@ -595,13 +595,13 @@ class PlayoutController(QObject):
         if self.is_on_air:
             idx = self.onair
             self.items[idx]["status"] = ST_ERROR
-            self.items[idx]["note"] = "mpv se cerró"
+            self.items[idx]["note"] = "reproductor local se cerró"
             self.item_changed.emit(idx)
             self.db.air_log_end(self._log_id, ST_ERROR)
             self._log_id = None
             self.onair = -1
             self.onair_changed.emit(-1)
-        self.message.emit("mpv se cerró inesperadamente • pulsa PLAY para reiniciarlo")
+        self.message.emit("El reproductor local se cerró inesperadamente • pulsa PLAY para reiniciarlo")
 
     # ------------------------------------------------------- automatización
     def _end_of_playlist(self, reason):
@@ -638,13 +638,13 @@ class PlayoutController(QObject):
         if self._log_id:
             self.db.air_log_end(self._log_id, ST_AIRED)
             self._log_id = None
-        # usamos el MPVPlayer directamente con loop-file=inf
+        # PyAV decodifica el clip en loop infinito
         self.paused = False
         ok = False
         if hasattr(self.player, "play_loop"):
             ok = self.player.play_loop(self.filler_path)
         else:
-            # fallback: play normal con loop-file
+            # fallback compatible para reproductores alternativos
             ok = self.player.play(self.filler_path, loop=True)
         if not ok:
             return False
@@ -660,43 +660,21 @@ class PlayoutController(QObject):
         return True
 
     def _play_slate(self):
-        """v23.3: slate estático como fallback del filler. Usa la URL
-        lavfi de mpv (`av://lavfi:color=...:drawtext=...`) para generar
-        un patrón negro con texto "TVPlayout PRO — Próximamente" en vivo.
-        No requiere archivos externos ni PIL — mpv lo genera en runtime.
+        """Activa el slate dibujado por el reproductor PyAV.
+
+        El reproductor local no depende de filtros ni de una fuente
+        instalada en Windows: pinta el texto directamente sobre
+        VideoSurface y lo mantiene hasta que vuelve un clip real.
         """
-        # Slate URL: color negro 1920x1080 con texto centrado.
-        # drawtext usa fontfile por default; en Windows buscamos Arial.
-        # Si no hay fuente, mpv cae al default.
-        font_path = ""
-        if os.name == "nt":
-            arial = r"C:\Windows\Fonts\arial.ttf"
-            if os.path.isfile(arial):
-                font_path = f":fontfile='{arial}'"
-        # Construimos la URL lavfi. Usamos comillas simples adentro
-        # porque mpv/ffmpeg parsea con espacios.
-        # v23.3.1: el segundo drawtext no llevaba font_path, así que en
-        # builds de mpv sin fontconfig (portables, sin libfontconfig)
-        # fallaba solo ese filtro y el loadfile completo se rechazaba
-        # (end-file error), lo que alimentaba el loop de reintento de
-        # arriba. Ambos drawtext deben usar el mismo fontfile.
-        slate_url = (
-            "av://lavfi:color=c=black:s=1920x1080:r=30,"
-            f"drawtext{font_path}:text='TVPlayout PRO':"
-            "fontsize=80:fontcolor=white:x=(w-tw)/2:y=(h-th)/2-100,"
-            f"drawtext{font_path}:text='PROXIMAMENTE':"
-            "fontsize=60:fontcolor=gray:x=(w-tw)/2:y=(h-th)/2,"
-            "format=yuv420p"
-        )
         if not hasattr(self.player, "play_loop"):
-            log.error("MPVPlayer no tiene play_loop; slate no soportado")
+            log.error("El reproductor local no soporta slate")
             return False
         if 0 <= self.onair < len(self.items):
             self._finish_current(ST_CUT)
         if self._log_id:
             self.db.air_log_end(self._log_id, ST_AIRED)
             self._log_id = None
-        ok = self.player.play_loop(slate_url)
+        ok = self.player.play_loop("av://slate:native")
         if ok:
             self.onair = -2
             self.filler_active = True
@@ -706,7 +684,7 @@ class PlayoutController(QObject):
             self._started_at = time.time()
             self.onair_changed.emit(-2)
             self.position.emit(0.0, 0.0)
-            log.info("SLATE al aire (lavfi)")
+            log.info("SLATE nativo al aire")
         return ok
 
     def fill(self, category, count, index=None):
@@ -732,9 +710,9 @@ class PlayoutController(QObject):
     def _tick(self):
         # v23.0: crossfade de audio. Cuando quedan crossfade_duration
         # segundos para terminar el clip al aire, aplicamos un fade-out
-        # al audio de mpv para que la transición al próximo clip sea
-        # suave. El fade-in del próximo clip se aplica en player.play()
-        # vía el filter chain (afade=t=in:st=0). Si crossfade_enabled
+        # al audio del reproductor local para que la transición al próximo clip sea
+        # suave. El reproductor local aplica el fade-in del próximo clip.
+        # Si crossfade_enabled
         # es False, no se hace nada (corte directo).
         if (self.is_on_air and not self.paused and self.duration > 0
                 and getattr(self.player, "crossfade_enabled", False)):

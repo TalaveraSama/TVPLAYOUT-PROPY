@@ -1,7 +1,7 @@
 # TVPlayout PRO V22 — Consola de playout 
 
 Playout de televisión 24/7 para Windows con interfaz inspirada en la distribución de **XPlayout** (Axel Technology),
-sin usar código ni recursos propietarios. Reproductor local **mpv** embebido + salida **RTMP/SRT/UDP** con **FFmpeg**.
+sin usar código ni recursos propietarios. Reproductor local **PyAV/libavcodec** + salida **RTMP/SRT/UDP** con **FFmpeg**.
 
 ![Panel principal](docs/panel.png)
 
@@ -17,7 +17,7 @@ sin usar código ni recursos propietarios. Reproductor local **mpv** embebido + 
 | GRAPHIC MODE | La misma playlist con miniaturas |
 | BIBLIOTECA | Buscador + filtro por categoría, añadir al final / tras el aire / en selección / emitir ahora |
 | Botonera | Insertar archivo, Preparar, Editar clip, Subir/Bajar, Quitar, Limpiar emitidos, Ir al aire, Hora fija, Reiniciar estados, Duplicar, Vaciar, Previsualizar, Mezclar pendientes, Playlist Manager |
-| Monitor | VU meter estéreo (dBFS) + vídeo mpv embebido, volumen/mute **solo local**, aspecto |
+| Monitor | VU meter estéreo (dBFS) + vídeo PyAV/libavcodec pintado en Qt, volumen/mute **solo local**, aspecto |
 | FUNCIONES | Playlist Manager · Biblioteca · Programador · Registros As-Run · Fuentes/Categorías · Ajustes del sistema · Escanear · Logo/CG (RTMP) · Dispositivos · 🚨 EMERGENCIA |
 | SALIDA RTMP | URL, INICIAR/DETENER, estado (encoder, resolución, bitrate) |
 | Reloj de estación | Anillo de 60 segundos + HH:MM / SS, bloqueo de consola, minimizar/salir |
@@ -38,7 +38,7 @@ Se pueden **arrastrar archivos o carpetas** desde el Explorador a la grid.
 
 ## Salida RTMP
 
-La salida sigue al playout local: cada vez que empieza un evento en mpv, FFmpeg salta al mismo evento. Se emite clip por clip
+La salida sigue al playout local: cada vez que empieza un evento en PyAV, FFmpeg salta al mismo evento. Se emite clip por clip
 sobre la misma URL (el servidor ve una reconexión breve entre clips). Encoders: AUTO (prueba NVENC → QSV → AMF → x264),
 CPU/x264, NVIDIA NVENC, Intel QSV, AMD AMF. Audio AAC 48 kHz estéreo, pista de audio elegida por preferencia
 (es-MX / es-419 / Latino / spa / es…). Opcional: quemar subtítulos preferidos y superponer un **logo PNG** (posición, tamaño,
@@ -47,9 +47,9 @@ opacidad). También acepta `srt://` y `udp://`.
 ## Instalación (Windows)
 
 1. Instala **Python 3.13 x64** (o 3.11/3.12).
-2. Ejecuta `INSTALL.bat` (crea `.venv` e instala PySide6 6.8.3).
-3. Copia `mpv.exe` en `mpv-x86_64\` (build de mpv para Windows x86_64).
-4. Copia `ffmpeg.exe` y `ffprobe.exe` en la raíz del proyecto (o en `ffmpeg\bin\`, `bin\`).
+2. Ejecuta `INSTALL.bat` (crea `.venv` e instala PySide6 y PyAV/libav).
+3. Copia `ffmpeg.exe` y `ffprobe.exe` en la raíz del proyecto (o en `ffmpeg\bin\`, `bin\`) para RTMP y análisis.
+4. `mpv.exe` es opcional y solo se usa para previsualización externa.
 5. Ejecuta `INICIAR.bat` (`INICIAR_CONSOLA.bat` para ver mensajes de depuración).
 
 Opcional: archivo `.env` con `MPV_PATH=...`, `FFMPEG_PATH=...`, `FFPROBE_PATH=...`, `TVPLAYOUT_DB=...`.
@@ -63,7 +63,8 @@ duración, resolución, códecs, pistas de audio/subtítulos y se generan miniat
 main.py                 punto de entrada
 app/main_window.py      consola principal (layout XPlayout)
 app/playout.py          controlador de continuidad (auto/manual, cue, hora fija, loop, autofill, tandas)
-app/mpv_player.py       mpv embebido por IPC (named pipe / socket), VU meter
+app/pyav_player.py       PyAV/libavcodec: decodificación local de vídeo/audio
+app/mpv_player.py        legado no usado en el aire (solo compatibilidad)
 app/output.py           motor RTMP/SRT/UDP con FFmpeg (sigue al playout local, logo, subtítulos)
 app/prober.py           ffprobe: metadatos, pistas, miniaturas; selección de pista preferida
 app/scanner.py          escaneo recursivo de fuentes
@@ -72,7 +73,7 @@ app/db.py               SQLite: biblioteca, playlists, programaciones, ajustes, 
 app/dialogs*.py         Playlist Manager, Fuentes, Programador, Registros, Ajustes, Logo, Dispositivos
 app/widgets.py          reloj de estación, VU meter, superficie de vídeo, barra de progreso
 app/theme.py            hoja de estilos oscura
-tests/                  pruebas (python tests/test_core.py) y mpv simulado para pruebas
+tests/                  pruebas estáticas y de continuidad del playout
 ```
 
 ## Registro de cambios
@@ -80,9 +81,9 @@ tests/                  pruebas (python tests/test_core.py) y mpv simulado para 
 ### V22
 - Rediseño completo de la interfaz al estilo XPlayout: cabecera con reloj, transporte, contadores, modos, grid coloreada,
   modo gráfico, biblioteca integrada, botonera, VU meter, monitor, funciones, salida RTMP y reloj de estación.
-- Continuidad real: encadenado automático por eventos de mpv (fin de archivo), modo manual con cue, hora fija, loop,
+- Continuidad real: encadenado automático por eventos de fin de PyAV, modo manual con cue, hora fija, loop,
   autofill, tandas, emergencia, bloqueo de consola, as-run log.
-- mpv por IPC bidireccional: posición/duración en tiempo real, VU meter, pista de audio/subtítulos por evento.
+- PyAV/libav decodifica vídeo y audio localmente; QAudioSink entrega PCM y VideoSurface pinta los frames.
 - RTMP sincronizado con el playout local (mismo evento), logo PNG, subtítulos quemados opcionales, SRT/UDP.
 - ffprobe en segundo plano: duración, formato, pistas, miniaturas. Filtro de audio español latino mejorado.
 - Playlist Manager (guardar/cargar/renombrar/exportar/importar M3U/JSON), Fuentes con edición, Programador con próxima
