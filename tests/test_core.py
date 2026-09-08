@@ -26,6 +26,10 @@ def test_fmt_tc():
     assert fmt_tc(0) == "00:00:00"
     assert fmt_tc(3661.4) == "01:01:01"
     assert fmt_tc(-5) == "-00:00:05"
+    assert fmt_tc(None) == "00:00:00"
+    assert fmt_tc(65, show_hours=False) == "01:05"
+    assert fmt_tc(3661, show_hours=False) == "01:01:01"  # las horas se muestran si h>0
+    assert fmt_tc(1.5, frames=True, fps=10.0) == "00:00:01.05"
 
 
 def test_pick_tracks_prefers_latino():
