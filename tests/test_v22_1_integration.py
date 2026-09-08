@@ -446,6 +446,46 @@ def test_playout_has_filler_and_slate():
         "_on_position debe ignorar actualizaciones cuando onair == -2 (filler)"
 
 
+def test_playout_filler_slate_retry_has_limit():
+    """v23.3.1: si ni el filler ni el slate lavfi cargan (mpv rechaza el
+    loadfile y emite end-file de inmediato), _on_ended NO debe reintentar
+    para siempre. Antes de este fix, el bloque `onair == -2` de _on_ended
+    llamaba a _play_filler/_play_slate en cada end-file sin límite,
+    generando un loop infinito loadfile→end-file→loadfile que dejaba el
+    playout "pegado" al terminar la lista (el síntoma reportado por el
+    operador: no avanza y se cuelga al finalizar la playlist).
+    """
+    src = _read(os.path.join(REPO, "app", "playout.py"))
+    on_ended = re.search(r"def _on_ended\(self.*?\n    def _on_player_died", src, re.S)
+    assert on_ended, "no encontré el cuerpo completo de _on_ended"
+    oeb = on_ended.group(0)
+    filler_block = oeb[oeb.find("if idx == -2"):]
+    assert "_filler_fail_count" in filler_block, \
+        "el bloque de reintento del filler (onair == -2) debe contar los fallos consecutivos"
+    assert re.search(r"_filler_fail_count\s*>\s*\d+", filler_block), \
+        "debe existir un tope máximo de reintentos para no loopear para siempre"
+    assert "self.onair = -1" in filler_block, \
+        "al superar el tope de reintentos debe dejar de estar 'al aire' (onair = -1) en vez de seguir reintentando"
+    # El contador debe resetearse cuando un archivo sí carga bien, si no
+    # un fallo viejo aislado terminaría frenando reintentos futuros válidos.
+    assert "_filler_fail_count = 0" in src.split("def _on_loaded")[1].split("\n\n")[0], \
+        "_on_loaded debe resetear _filler_fail_count cuando mpv confirma que cargó un archivo"
+
+
+def test_playout_slate_uses_font_on_both_drawtext_filters():
+    """v23.3.1: el segundo filtro drawtext ('PROXIMAMENTE') no llevaba
+    font_path, así que en builds de mpv sin fontconfig ese filtro fallaba
+    solo (aunque el primero, con fontfile explícito, cargara bien) y
+    tumbaba el loadfile completo del slate.
+    """
+    src = _read(os.path.join(REPO, "app", "playout.py"))
+    slate = re.search(r"slate_url = \((.*?)\n        \)", src, re.S)
+    assert slate, "no encontré la construcción de slate_url en _play_slate"
+    body = slate.group(1)
+    assert body.count("drawtext{font_path}") == 2, \
+        "ambos filtros drawtext del slate deben usar font_path (si no, uno de los dos puede fallar sin fuente)"
+
+
 def test_main_window_has_filler_setting():
     """v23.3: main_window expone filler_path y filler_enabled en
     DEFAULT_SETTINGS, y apply_settings lo carga en self.ctrl.filler_path.

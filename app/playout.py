@@ -93,6 +93,14 @@ class PlayoutController(QObject):
         self.filler_path = ""
         self.filler_active = False  # True mientras el filler está al aire
         self._filler_play_count = 0
+        # v23.3.1: contador de fallos consecutivos al cargar filler/slate.
+        # Si el clip de filler no existe y el slate lavfi tampoco carga
+        # (build de mpv sin lavfi/fontconfig, ver _play_slate), mpv emite
+        # end-file(error) apenas se manda el loadfile. Sin este límite,
+        # _on_ended reintentaba filler→slate en cada end-file, generando
+        # un loop infinito de loadfile/end-file que dejaba el programa
+        # "pegado" al terminar la lista (tick tras tick sin nunca asentarse).
+        self._filler_fail_count = 0
         self._pos = 0.0
         self._dur = 0.0
         self._started_at = 0.0
@@ -474,6 +482,7 @@ class PlayoutController(QObject):
     # ---------------------------------------------------------- eventos mpv
     def _on_loaded(self):
         self._consecutive_errors = 0
+        self._filler_fail_count = 0
 
     def _on_position(self, pos, dur):
         if not self.is_on_air:
@@ -505,6 +514,24 @@ class PlayoutController(QObject):
         # (loop infinito) sin emitir FIN DE PLAYLIST.
         if idx == -2:  # convención: -2 = filler al aire (ver _play_filler)
             self._pos = 0.0
+            self._filler_fail_count += 1
+            if self._filler_fail_count > 3:
+                # v23.3.1: ni el filler ni el slate lavfi cargan (mpv
+                # emite end-file apenas mandamos loadfile). Reintentar
+                # de nuevo solo repite el mismo ciclo end-file→retry sin
+                # parar y "cuelga" el playout. Nos rendimos: dejamos el
+                # monitor realmente detenido (onair=-1) y avisamos al
+                # operador en vez de loopear para siempre.
+                log.error(
+                    "Filler/slate falló %d veces seguidas cargando; se detiene el reintento (monitor en negro).",
+                    self._filler_fail_count,
+                )
+                self.message.emit("ERROR • no se pudo mostrar filler ni slate • monitor detenido")
+                self.filler_active = False
+                self._filler_fail_count = 0
+                self.onair = -1
+                self.onair_changed.emit(-1)
+                return
             if not self._play_filler(reason):
                 # si no se pudo cargar el filler otra vez, caemos al slate
                 self._play_slate()
@@ -648,17 +675,22 @@ class PlayoutController(QObject):
                 font_path = f":fontfile='{arial}'"
         # Construimos la URL lavfi. Usamos comillas simples adentro
         # porque mpv/ffmpeg parsea con espacios.
+        # v23.3.1: el segundo drawtext no llevaba font_path, así que en
+        # builds de mpv sin fontconfig (portables, sin libfontconfig)
+        # fallaba solo ese filtro y el loadfile completo se rechazaba
+        # (end-file error), lo que alimentaba el loop de reintento de
+        # arriba. Ambos drawtext deben usar el mismo fontfile.
         slate_url = (
             "av://lavfi:color=c=black:s=1920x1080:r=30,"
             f"drawtext{font_path}:text='TVPlayout PRO':"
             "fontsize=80:fontcolor=white:x=(w-tw)/2:y=(h-th)/2-100,"
-            "drawtext=text='PROXIMAMENTE':"
+            f"drawtext{font_path}:text='PROXIMAMENTE':"
             "fontsize=60:fontcolor=gray:x=(w-tw)/2:y=(h-th)/2,"
             "format=yuv420p"
         )
         if not hasattr(self.player, "play_loop"):
             log.error("MPVPlayer no tiene play_loop; slate no soportado")
-            return
+            return False
         if 0 <= self.onair < len(self.items):
             self._finish_current(ST_CUT)
         if self._log_id:
@@ -675,6 +707,7 @@ class PlayoutController(QObject):
             self.onair_changed.emit(-2)
             self.position.emit(0.0, 0.0)
             log.info("SLATE al aire (lavfi)")
+        return ok
 
     def fill(self, category, count, index=None):
         exclude = [it["path"] for it in self.items[-50:]]
