@@ -26,14 +26,16 @@ from . import logger
 log = logger.get("pyav-player")
 AUDIO_RATE = 48000
 AUDIO_BYTES_PER_SECOND = AUDIO_RATE * 2 * 2  # s16 estéreo
-AUDIO_BUFFER_BYTES = int(AUDIO_BYTES_PER_SECOND * 0.12)  # baja latencia de monitor
-AUDIO_QUEUE_LIMIT = int(AUDIO_BYTES_PER_SECOND * 0.25)
+AUDIO_PREBUFFER_SECONDS = 6.0
+AUDIO_BUFFER_BYTES = int(AUDIO_BYTES_PER_SECOND * AUDIO_PREBUFFER_SECONDS)
+AUDIO_QUEUE_LIMIT = int(AUDIO_BYTES_PER_SECOND * (AUDIO_PREBUFFER_SECONDS + 0.5))
 
 
 class _DecodeJob(QObject):
     """Trabajo de decodificación ejecutado en un hilo Python separado."""
 
     loaded = Signal(object, int)
+    ready = Signal(int)                             # audio prebuffer listo
     frame = Signal(object, float, float, int)       # QImage, posición, duración, generación
     audio = Signal(object, int)                     # bytes PCM, generación
     levels = Signal(float, float, int)              # dBFS L/R, generación
@@ -123,34 +125,63 @@ class _DecodeJob(QObject):
             "fps": float(rate) if rate else 0.0,
         }
 
-    def _decode_audio(self, packet, resampler):
+    def _decode_audio(self, packet, resampler, emit_from=0.0, stop_at=None, audio_clock=None):
+        """Decodifica PCM y opcionalmente lo limita a una ventana temporal.
+
+        Durante el prebuffer se emiten los primeros seis segundos. En la
+        reproducción normal se omite esa misma ventana porque ya está en la
+        cola del monitor; así el audio no vuelve a empezar desde cero cuando
+        comienza el vídeo.
+        """
+        last_time = audio_clock[0] if audio_clock else 0.0
         try:
             frames = packet.decode()
             for frame in frames:
+                frame_time = frame.time
+                if frame_time is None:
+                    frame_time = last_time
+                frame_time = max(0.0, float(frame_time))
                 converted = resampler.resample(frame)
                 if converted is None:
                     continue
                 if not isinstance(converted, (list, tuple)):
                     converted = [converted]
+                cursor = frame_time
                 for out in converted:
                     if not out.planes:
                         continue
                     raw = bytes(out.planes[0])
-                    try:
-                        samples = array("h")
-                        samples.frombytes(raw)
-                        left = samples[0::2]
-                        right = samples[1::2]
-                        peak_l = max((abs(v) for v in left), default=0) / 32768.0
-                        peak_r = max((abs(v) for v in right), default=0) / 32768.0
-                        db_l = 20.0 * math.log10(max(1e-5, peak_l))
-                        db_r = 20.0 * math.log10(max(1e-5, peak_r))
-                        self.levels.emit(db_l, db_r, self.generation)
-                    except (TypeError, ValueError, OverflowError):
-                        pass
-                    self.audio.emit(raw, self.generation)
+                    out_duration = float(getattr(out, "samples", 0) or 0) / AUDIO_RATE
+                    out_end = cursor + out_duration
+                    if (cursor < (stop_at if stop_at is not None else float("inf"))
+                            and out_end > emit_from):
+                        try:
+                            samples = array("h")
+                            samples.frombytes(raw)
+                            left = samples[0::2]
+                            right = samples[1::2]
+                            peak_l = max((abs(v) for v in left), default=0) / 32768.0
+                            peak_r = max((abs(v) for v in right), default=0) / 32768.0
+                            db_l = 20.0 * math.log10(max(1e-5, peak_l))
+                            db_r = 20.0 * math.log10(max(1e-5, peak_r))
+                            self.levels.emit(db_l, db_r, self.generation)
+                        except (TypeError, ValueError, OverflowError):
+                            pass
+                        self.audio.emit(raw, self.generation)
+                    cursor = out_end
+                    last_time = cursor
+                    if stop_at is not None and cursor >= stop_at:
+                        if audio_clock is not None:
+                            audio_clock[0] = cursor
+                        return cursor, True
+            if audio_clock is not None:
+                audio_clock[0] = last_time
+            return last_time, False
         except Exception as exc:  # noqa: BLE001
             log.debug("audio decode %s: %s", self.path, exc)
+            if audio_clock is not None:
+                audio_clock[0] = last_time
+            return last_time, False
 
     def run(self):
         if av is None:
@@ -180,7 +211,8 @@ class _DecodeJob(QObject):
                         "video": self._stream_info(video_stream),
                         "audio": self._stream_info(audio_stream),
                     }
-                    if first_open:
+                    opening_first = first_open
+                    if opening_first:
                         self.loaded.emit(info, self.generation)
                         first_open = False
                         log.info(
@@ -196,9 +228,45 @@ class _DecodeJob(QObject):
                         resampler = av.audio.resampler.AudioResampler(
                             format="s16", layout="stereo", rate=AUDIO_RATE
                         )
+
+                    # Prebuffer real de seis segundos. El audio se decodifica
+                    # rápido mientras se descartan los paquetes de vídeo; al
+                    # terminar se vuelve al inicio para que vídeo y audio
+                    # comiencen juntos en t=0.
+                    audio_skip_until = 0.0
+                    if opening_first and audio_stream is not None and resampler is not None:
+                        audio_clock = [0.0]
+                        reached = False
+                        for audio_packet in container.demux(audio_stream):
+                            if self.stop_event.is_set():
+                                break
+                            _end, reached = self._decode_audio(
+                                audio_packet, resampler, emit_from=0.0,
+                                stop_at=AUDIO_PREBUFFER_SECONDS, audio_clock=audio_clock,
+                            )
+                            if reached:
+                                audio_skip_until = AUDIO_PREBUFFER_SECONDS
+                                break
+                        if not reached:
+                            # Clip corto: ya quedó toda su pista en la
+                            # cola, por lo que no se debe emitir dos veces.
+                            audio_skip_until = audio_clock[0]
+                        if not self.stop_event.is_set():
+                            container.seek(0, backward=True, any_frame=False)
+                            # El resampler puede conservar muestras de cola;
+                            # reiniciarlo evita repetir audio tras el seek.
+                            resampler = av.audio.resampler.AudioResampler(
+                                format="s16", layout="stereo", rate=AUDIO_RATE
+                            )
+                        log.info("PyAV audio prebuffer gen=%d seconds=%.3f reached=%s",
+                                 self.generation, audio_clock[0], reached)
+                    if not self.stop_event.is_set():
+                        self.ready.emit(self.generation)
+
                     base_raw = None
                     logical_base = 0.0
                     clock_origin = time.monotonic()
+                    audio_clock = [0.0]
                     for packet in container.demux(*streams):
                         if self.stop_event.is_set():
                             break
@@ -211,7 +279,10 @@ class _DecodeJob(QObject):
                             clock_origin = time.monotonic() - requested
                             continue
                         if packet.stream == audio_stream and resampler is not None:
-                            self._decode_audio(packet, resampler)
+                            self._decode_audio(
+                                packet, resampler, emit_from=audio_skip_until,
+                                audio_clock=audio_clock,
+                            )
                             continue
                         if packet.stream != video_stream:
                             continue
@@ -273,9 +344,6 @@ class PyAVPlayer(QObject):
         self.slang = ""
         self.volume = 100
         self.muted = False
-        self.crossfade_enabled = True
-        self.crossfade_duration = 0.5
-        self._fade_out_applied = False
         self._current_path = ""
         self._time = 0.0
         self._duration = 0.0
@@ -290,9 +358,6 @@ class PyAVPlayer(QObject):
         self._audio_sink = None
         self._audio_format = None
         self._target_volume = 1.0
-        self._fade_timer = QTimer(self)
-        self._fade_timer.setInterval(40)
-        self._fade_timer.timeout.connect(self._tick_fade)
         self._audio_timer = QTimer(self)
         self._audio_timer.setInterval(10)
         self._audio_timer.timeout.connect(self._drain_audio)
@@ -325,9 +390,9 @@ class PyAVPlayer(QObject):
             fmt.setSampleFormat(QAudioFormat.SampleFormat.Int16)
             self._audio_format = fmt
             self._audio_sink = QAudioSink(fmt, self)
-            # QAudioSink usa un buffer grande por defecto en algunas
-            # instalaciones de Windows. Para el monitor eso se percibe como
-            # audio atrasado; RTMP no usa este sink.
+            # Preparamos seis segundos en el monitor para que PyAV pueda
+            # alinear el audio PCM con los frames de vídeo. RTMP no usa este
+            # sink y queda completamente independiente.
             self._audio_sink.setBufferSize(AUDIO_BUFFER_BYTES)
             self._audio_sink.setVolume(1.0)
         except Exception as exc:  # noqa: BLE001
@@ -335,7 +400,9 @@ class PyAVPlayer(QObject):
             log.warning("QAudioSink no disponible: %s", exc)
 
     def _start_audio(self):
-        self._audio_queue.clear()
+        # El prebuffer ya está en _audio_queue; no se puede limpiar aquí.
+        # stop()/seek() ya vacían la cola antes de iniciar otra sesión.
+        self._target_volume = max(0.0, min(1.0, float(self.volume) / 100.0))
         if self._audio_sink is None:
             return
         try:
@@ -412,6 +479,7 @@ class PyAVPlayer(QObject):
         self._stop_audio()
         self._job = _DecodeJob(absolute, generation, loop=loop, audio_id=audio_id)
         self._job.loaded.connect(self._on_loaded)
+        self._job.ready.connect(self._on_ready)
         self._job.frame.connect(self._on_frame)
         self._job.audio.connect(self._queue_audio)
         self._job.levels.connect(self._on_levels)
@@ -424,7 +492,6 @@ class PyAVPlayer(QObject):
         self._running = True
         self._paused = False
         self._loop = bool(loop)
-        self._fade_out_applied = False
         self.widget.set_active(True, "")
         self.widget.clear_frame()
         self._thread.start()
@@ -478,12 +545,15 @@ class PyAVPlayer(QObject):
             return
         self._duration = float(info.get("duration", 0.0) or 0.0)
         log.info("PyAV loaded gen=%d duration=%.3fs info=%s", generation, self._duration, info)
-        self._start_audio()
         self.loaded.emit()
         self.position.emit(self._time, self._duration)
         self.idle.emit(False)
-        if self.crossfade_enabled and self.crossfade_duration > 0 and not self.muted:
-            self._start_fade(self._target_volume, self.crossfade_duration, initial=0.0)
+
+    def _on_ready(self, generation):
+        if generation != self._generation:
+            return
+        log.info("PyAV monitor audio ready gen=%d buffer=%.1fs", generation, AUDIO_PREBUFFER_SECONDS)
+        self._start_audio()
 
     def _on_frame(self, image, position, duration, generation):
         if generation != self._generation:
@@ -538,7 +608,7 @@ class PyAVPlayer(QObject):
     def set_volume(self, value):
         self.volume = max(0, min(100, int(value)))
         self._target_volume = self.volume / 100.0
-        if self._audio_sink is not None and not self._fade_timer.isActive():
+        if self._audio_sink is not None:
             self._audio_sink.setVolume(0.0 if self.muted else self._target_volume)
         return True
 
@@ -563,43 +633,6 @@ class PyAVPlayer(QObject):
     def set_track_langs(self, alang, slang):
         self.alang, self.slang = alang, slang
         log.debug("PyAV track preference audio=%s subtitle=%s", alang, slang)
-
-    def set_crossfade(self, enabled=None, duration=None):
-        if enabled is not None:
-            self.crossfade_enabled = bool(enabled)
-        if duration is not None:
-            self.crossfade_duration = max(0.0, min(3.0, float(duration)))
-
-    def _start_fade(self, target, duration=None, initial=None):
-        duration = self.crossfade_duration if duration is None else max(0.0, float(duration))
-        self._fade_from = self._audio_sink.volume() if self._audio_sink is not None and initial is None else float(initial or 0.0)
-        self._fade_to = max(0.0, min(1.0, float(target)))
-        self._fade_started = time.monotonic()
-        self._fade_length = duration
-        if duration <= 0 or self._audio_sink is None:
-            self._fade_timer.stop()
-            if self._audio_sink is not None:
-                self._audio_sink.setVolume(self._fade_to)
-        else:
-            self._fade_timer.start()
-
-    def _tick_fade(self):
-        if self._audio_sink is None or self._fade_length <= 0:
-            self._fade_timer.stop()
-            return
-        frac = (time.monotonic() - self._fade_started) / self._fade_length
-        if frac >= 1.0:
-            self._fade_timer.stop()
-            self._audio_sink.setVolume(0.0 if self.muted else self._fade_to)
-            return
-        self._audio_sink.setVolume(self._fade_from + (self._fade_to - self._fade_from) * frac)
-
-    def fade_out(self, duration):
-        if not self.crossfade_enabled or duration <= 0 or self._fade_out_applied:
-            return False
-        self._fade_out_applied = True
-        self._start_fade(0.0, duration)
-        return True
 
     def open_external_preview(self, path, title="PREVIEW"):
         """La previsualización es opcional y separada del aire PyAV."""
