@@ -1,6 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
 """
-PyInstaller spec para TVPlayout PRO V24.0.0.4.
+PyInstaller spec para TVPlayout PRO V24.0.0.5.
 
 Uso:
     pyinstaller tvplayout.spec --clean --noconfirm

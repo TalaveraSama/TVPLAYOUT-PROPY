@@ -1,4 +1,4 @@
-# TVPlayout PRO V24.0.0.4 — Consola de playout
+# TVPlayout PRO V24.0.0.5 — Consola de playout
 
 Playout de televisión 24/7 para Windows con interfaz inspirada en la distribución de **XPlayout** (Axel Technology),
 sin usar código ni recursos propietarios. Reproductor local **PyAV/libavcodec** + salida **RTMP/SRT/UDP** con **FFmpeg**.
@@ -78,7 +78,8 @@ tests/                  pruebas estáticas y de continuidad del playout
 
 ## Registro de cambios
 
-### V24.0.0.4
+### V24.0.0.5
+- Hotfix: buffer de audio del monitor local reducido para evitar atraso y desfase; la salida RTMP/FFmpeg permanece independiente.
 - Rediseño completo de la interfaz al estilo XPlayout: cabecera con reloj, transporte, contadores, modos, grid coloreada,
   modo gráfico, biblioteca integrada, botonera, VU meter, monitor, funciones, salida RTMP y reloj de estación.
 - Continuidad real: encadenado automático por eventos de fin de PyAV, modo manual con cue, hora fija, loop,

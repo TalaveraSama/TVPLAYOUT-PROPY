@@ -1,6 +1,6 @@
 @echo off
 REM ====================================================================
-REM   TVPlayout PRO V24.0.0.4 - Generador de ejecutable
+REM   TVPlayout PRO V24.0.0.5 - Generador de ejecutable
 REM   Uso: doble clic en este archivo desde la carpeta del proyecto.
 REM   Genera: dist\TVPlayoutPRO.exe
 REM ====================================================================
@@ -8,7 +8,7 @@ setlocal EnableExtensions EnableDelayedExpansion
 cd /d "%~dp0"
 
 echo ================================================
-echo   TVPlayout PRO V24.0.0.4 - BUILD
+echo   TVPlayout PRO V24.0.0.5 - BUILD
 echo ================================================
 echo.
 
@@ -67,7 +67,7 @@ if exist "dist" rmdir /s /q "dist"
 
 REM --- 5. Construir ----------------------------------------------------
 echo.
-echo [..] Empaquetando TVPlayout PRO V24.0.0.4 (esto puede tardar 2-5 minutos)...
+echo [..] Empaquetando TVPlayout PRO V24.0.0.5 (esto puede tardar 2-5 minutos)...
 echo.
 %PYEXE% -m PyInstaller ^
     --noconfirm ^
