@@ -752,16 +752,35 @@ class PlayoutController(QObject):
         # IPC (caso documentado en v22.2.3), el playout no detecta que
         # el clip terminó y queda colgado en el último frame con posición
         # estimada > duración. Este watchdog dispara _on_ended("eof")
-        # cuando elapsed > duration + 2s de tolerancia.
+        # cuando elapsed > duration + tolerancia.
+        #
+        # v23.4: la tolerancia era de sólo 2s, y "duration" puede quedarse
+        # unos segundos corta respecto a la duración real que mpv termina
+        # reproduciendo (metadata de contenedor imprecisa, edit lists,
+        # etc.). Con 2s de margen el watchdog podía disparar mientras mpv
+        # TODAVÍA estaba decodificando el clip saliente (elapsed seguía
+        # subiendo por IPC, no por reloj de pared: ver `elapsed`). Forzar
+        # un loadfile "replace" sobre un mpv que sigue en pleno decode
+        # (hwdec activo) es lo que dejaba el monitor en negro tras el
+        # corte — a diferencia de un end-file real, donde mpv ya está en
+        # idle antes de cargar el siguiente clip. Subimos el margen a 6s
+        # para reducir falsos positivos, y además forzamos un stop()
+        # limpio antes de _on_ended para que el siguiente loadfile
+        # siempre parta de mpv en idle, igual que en una transición
+        # natural.
         if self.is_on_air and not self.paused and self.duration > 0:
             try:
                 pos = float(self.elapsed or 0.0)
-                if pos > self.duration + 2.0:
+                if pos > self.duration + 6.0:
                     log.warning(
                         "Watchdog fin de clip: %.2fs > duración %.2fs (%s)",
                         pos, self.duration, self.current["title"] if self.current else "?",
                     )
                     self.message.emit(f"FIN DE CLIP (watchdog) • {self.current['title'] if self.current else ''}")
+                    try:
+                        self.player.stop()
+                    except Exception:
+                        pass
                     self._on_ended("eof")
                     return
             except Exception:

@@ -1,4 +1,4 @@
-# TVPlayout PRO V23.3 — Consola de playout 
+# TVPlayout PRO V23.4 — Consola de playout 
 
 Playout de televisión 24/7 para Windows con interfaz inspirada en la distribución de **XPlayout** (Axel Technology),
 sin usar código ni recursos propietarios. Reproductor local **mpv** embebido + salida **RTMP/SRT/UDP** con **FFmpeg**.
@@ -76,6 +76,13 @@ tests/                  pruebas (python tests/test_core.py) y mpv simulado para 
 ```
 
 ## Registro de cambios
+
+### V23.4
+- Fix: el monitor podía quedar en negro cuando el watchdog de fin de clip forzaba la carga del
+  siguiente evento mientras mpv todavía estaba decodificando el clip saliente (duración real
+  ligeramente mayor a la detectada). Se amplía el margen de tolerancia del watchdog (2s → 6s) y se
+  fuerza un `stop()` limpio antes de cargar el siguiente clip, para que la transición siempre parta
+  de mpv en idle en vez de interrumpir un decode activo.
 
 ### V23.3
 - Filler automático + slate al fin de playlist: cuando no queda ningún clip por reproducir (sin loop, sin autofill),
