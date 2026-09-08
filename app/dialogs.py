@@ -904,26 +904,35 @@ class EditClipDialog(QDialog):
             self.cat.setCurrentText(item["category"])
         self.fixed = QLineEdit(item.get("fixed_time", ""))
         self.fixed.setPlaceholderText("HH:MM o HH:MM:SS — vacío = secuencial")
-        self.mark_in = QDoubleSpinBox()
-        self.mark_in.setDecimals(3)
-        self.mark_in.setRange(0.0, max(86400.0, self.source_duration))
-        self.mark_in.setSingleStep(0.5)
-        self.mark_in.setSuffix(" s")
-        self.mark_in.setValue(max(0.0, min(self.source_duration, float(item.get("mark_in") or 0))))
-        self.mark_out = QDoubleSpinBox()
-        self.mark_out.setDecimals(3)
-        self.mark_out.setRange(0.0, max(86400.0, self.source_duration))
-        self.mark_out.setSingleStep(0.5)
-        self.mark_out.setSuffix(" s")
-        self.mark_out.setSpecialValueText("Final del video")
-        out = float(item.get("mark_out") or 0)
-        self.mark_out.setValue(max(0.0, min(self.source_duration, out)))
+        trim_max = max(86400.0, self.source_duration)
+        self.trim_start = QDoubleSpinBox()
+        self.trim_start.setDecimals(3)
+        self.trim_start.setRange(0.0, trim_max)
+        self.trim_start.setSingleStep(0.5)
+        self.trim_start.setSuffix(" s")
+        self.trim_start.setToolTip("Segundos que se quitarán al principio del video")
+        self.trim_start.setValue(max(0.0, min(self.source_duration, float(item.get("mark_in") or 0))))
+        self.trim_end = QDoubleSpinBox()
+        self.trim_end.setDecimals(3)
+        self.trim_end.setRange(0.0, trim_max)
+        self.trim_end.setSingleStep(0.5)
+        self.trim_end.setSuffix(" s")
+        self.trim_end.setToolTip("Segundos que se quitarán al final del video; no necesitas calcular la duración total")
+        mark_out = float(item.get("mark_out") or 0)
+        end_to_remove = max(0.0, self.source_duration - mark_out) if mark_out > 0 and self.source_duration > 0 else 0.0
+        self.trim_end.setValue(min(self.source_duration, end_to_remove))
+        self.trim_preview = QLabel()
+        self.trim_preview.setStyleSheet("color:#8fd6a3;")
+        self.trim_start.valueChanged.connect(self._update_trim_preview)
+        self.trim_end.valueChanged.connect(self._update_trim_preview)
         reset = _btn("Restablecer corte", self._reset_trim)
         trim_box = QHBoxLayout()
-        trim_box.addWidget(self.mark_in)
-        trim_box.addWidget(QLabel("hasta"))
-        trim_box.addWidget(self.mark_out)
+        trim_box.addWidget(self.trim_start)
+        trim_box.addWidget(QLabel("inicio"))
+        trim_box.addWidget(self.trim_end)
+        trim_box.addWidget(QLabel("final"))
         trim_box.addWidget(reset)
+        self._update_trim_preview()
         self.audio = QComboBox()
         self.audio.addItem("Por defecto", "")
         self.sub = QComboBox()
@@ -947,8 +956,9 @@ class EditClipDialog(QDialog):
         info.setStyleSheet("color:#9a9a9a;")
         f.addRow("Título", self.title)
         f.addRow("Categoría", self.cat)
+        f.addRow("Recortar (segundos)", trim_box)
+        f.addRow("Resultado", self.trim_preview)
         f.addRow("Hora fija", self.fixed)
-        f.addRow("Corte (segundos)", trim_box)
         f.addRow("Pista de audio", self.audio)
         f.addRow("Subtítulos", self.sub)
         f.addRow("Archivo", path)
@@ -960,17 +970,28 @@ class EditClipDialog(QDialog):
         f.addRow(row)
 
     def _reset_trim(self):
-        self.mark_in.setValue(0.0)
-        self.mark_out.setValue(0.0)
+        self.trim_start.setValue(0.0)
+        self.trim_end.setValue(0.0)
+
+    def _update_trim_preview(self):
+        start = float(self.trim_start.value())
+        end = float(self.trim_end.value())
+        if self.source_duration > 0:
+            result = max(0.0, self.source_duration - start - end)
+            self.trim_preview.setText(
+                f"Original: {fmt_tc(self.source_duration)} • Resultado: {fmt_tc(result)}"
+            )
+        else:
+            self.trim_preview.setText("Duración original no disponible; escanea el archivo para validar el corte.")
 
     def _accept(self):
-        start = float(self.mark_in.value())
-        end = float(self.mark_out.value())
-        if self.source_duration > 0 and start >= self.source_duration:
-            QMessageBox.warning(self, "Corte", "El inicio debe ser menor que la duración del video.")
-            return
-        if end > 0 and end <= start:
-            QMessageBox.warning(self, "Corte", "El final debe ser mayor que el inicio, o dejarse en 0 para usar el final del video.")
+        start = float(self.trim_start.value())
+        end = float(self.trim_end.value())
+        if self.source_duration > 0 and start + end >= self.source_duration:
+            QMessageBox.warning(
+                self, "Corte",
+                "Los segundos quitados al principio y al final deben dejar al menos una fracción de video."
+            )
             return
         self.accept()
 
@@ -983,7 +1004,13 @@ class EditClipDialog(QDialog):
                 ft = f"{h:02d}:{m:02d}" + (f":{s:02d}" if s else "")
             except (ValueError, IndexError):
                 ft = ""
+        trim_start = float(self.trim_start.value())
+        trim_end = float(self.trim_end.value())
+        # El modelo interno conserva mark-out como posición absoluta, pero la
+        # interfaz permite al operador pensar en segundos a recortar desde el
+        # final, sin calcular la duración total del video.
+        mark_out = max(0.0, self.source_duration - trim_end) if trim_end > 0 else 0.0
         return {"title": self.title.text().strip() or self.item.get("title", ""), "category": self.cat.currentText(),
                 "fixed_time": ft, "audio_lang": self.audio.currentData() or "", "subtitle_lang": self.sub.currentData() or "",
-                "mark_in": float(self.mark_in.value()), "mark_out": float(self.mark_out.value()),
+                "mark_in": trim_start, "mark_out": mark_out,
                 "source_duration": self.source_duration}
