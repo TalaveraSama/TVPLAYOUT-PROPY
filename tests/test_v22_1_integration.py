@@ -499,6 +499,19 @@ def test_main_window_has_filler_setting():
     assert "filler_path" in ab, "apply_settings debe cargar filler_path en self.ctrl.filler_path"
 
 
+def test_playout_load_guard_has_timeout_fallback():
+    """La protección de transición no puede bloquear el watchdog si mpv no
+    entrega file-loaded por IPC. Debe expirar por timer y usar generación
+    para no afectar una carga posterior.
+    """
+    src = _read(os.path.join(REPO, "app", "playout.py"))
+    assert "def _begin_load" in src
+    assert "def _finish_load" in src
+    assert "_load_generation" in src
+    assert "QTimer.singleShot(1500" in src
+    assert "_load_pending and reason == \"eof\"" in src
+
+
 if __name__ == "__main__":
     tests = [(name, fn) for name, fn in globals().items() if name.startswith("test_") and callable(fn)]
     failed = 0

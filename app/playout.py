@@ -58,6 +58,11 @@ def make_item(row_or_dict, **extra):
 
 
 class PlayoutController(QObject):
+    # Tolerancia de continuidad cuando mpv no entrega end-file. Dos segundos
+    # dejaban un hueco negro perceptible entre eventos; la duración ya viene
+    # de mpv/ffprobe, por lo que 0.75 s cubre el retraso IPC sin cortar antes.
+    WATCHDOG_GRACE = 0.75
+
     items_changed = Signal()            # estructura de la lista cambió → reconstruir grid
     item_changed = Signal(int)          # una fila cambió (estado/metadatos)
     onair_changed = Signal(int)         # índice al aire (-1 = nada)
@@ -114,6 +119,7 @@ class PlayoutController(QObject):
         # llegar al EOF. Mientras se carga el siguiente archivo ignoramos
         # ese idle transitorio para no cerrar el clip nuevo por error.
         self._load_pending = False
+        self._load_generation = 0
         self.on_start_callbacks = []     # callable(index, item)
         self.on_items_replaced = []      # callable(items, index)
 
@@ -407,10 +413,10 @@ class PlayoutController(QObject):
         # Se marca antes de enviar loadfile: mpv puede emitir idle-active
         # durante el reemplazo del archivo anterior. Ese idle no significa
         # que el nuevo clip terminó.
-        self._load_pending = True
+        self._begin_load()
         ok = self.player.play(item["path"], audio_id=aid, sub_id=sid)
         if not ok:
-            self._load_pending = False
+            self._cancel_load()
             item["status"] = ST_ERROR
             item["note"] = "mpv no disponible"
             self.item_changed.emit(index)
@@ -477,7 +483,7 @@ class PlayoutController(QObject):
         prev = self.onair
         self.onair = -1
         self.filler_active = False
-        self._load_pending = False
+        self._cancel_load()
         self.paused = False
         self._pos = 0.0
         self._dur = 0.0
@@ -500,6 +506,28 @@ class PlayoutController(QObject):
             self.player.seek(frac * self.duration, absolute=True)
 
     # ---------------------------------------------------------- eventos mpv
+    def _begin_load(self):
+        """Marca una transición de mpv sin depender de file-loaded.
+
+        Algunas builds/instalaciones de mpv no entregan `file-loaded` por
+        IPC, aunque sí reproducen el vídeo. El guard debe proteger sólo la
+        ventana corta de `loadfile replace`; si quedara activo todo el clip,
+        el watchdog ignoraría el EOF indefinidamente.
+        """
+        self._load_generation += 1
+        generation = self._load_generation
+        self._load_pending = True
+        QTimer.singleShot(1500, lambda: self._finish_load(generation))
+
+    def _finish_load(self, generation):
+        if generation == self._load_generation and self._load_pending:
+            self._load_pending = False
+            log.warning("mpv no confirmó file-loaded; se libera la transición por timeout")
+
+    def _cancel_load(self):
+        self._load_generation += 1
+        self._load_pending = False
+
     def _on_loaded(self):
         self._consecutive_errors = 0
         self._filler_fail_count = 0
@@ -667,7 +695,7 @@ class PlayoutController(QObject):
             self.onair = -1
             self.filler_active = False
             self.onair_changed.emit(-1)
-        self._load_pending = False
+        self._cancel_load()
         self.message.emit("mpv se cerró inesperadamente • pulsa PLAY para reiniciarlo")
 
     # ------------------------------------------------------- automatización
@@ -709,7 +737,7 @@ class PlayoutController(QObject):
             self._log_id = None
         # usamos el MPVPlayer directamente con loop-file=inf
         self.paused = False
-        self._load_pending = True
+        self._begin_load()
         ok = False
         if hasattr(self.player, "play_loop"):
             ok = self.player.play_loop(self.filler_path)
@@ -717,7 +745,7 @@ class PlayoutController(QObject):
             # fallback: play normal con loop-file
             ok = self.player.play(self.filler_path, loop=True)
         if not ok:
-            self._load_pending = False
+            self._cancel_load()
             return False
         self.onair = -2  # convención: filler al aire
         self.filler_active = True
@@ -769,10 +797,10 @@ class PlayoutController(QObject):
         if self._log_id:
             self.db.air_log_end(self._log_id, ST_AIRED)
             self._log_id = None
-        self._load_pending = True
+        self._begin_load()
         ok = self.player.play_loop(slate_url)
         if not ok:
-            self._load_pending = False
+            self._cancel_load()
         if ok:
             self.onair = -2
             self.filler_active = True
@@ -828,11 +856,11 @@ class PlayoutController(QObject):
         # IPC (caso documentado en v22.2.3), el playout no detecta que
         # el clip terminó y queda colgado en el último frame con posición
         # estimada > duración. Este watchdog dispara _on_ended("eof")
-        # cuando elapsed > duration + 2s de tolerancia.
+        # cuando elapsed > duration + WATCHDOG_GRACE de tolerancia.
         if self.is_on_air and not self.paused and self.duration > 0:
             try:
                 pos = float(self.elapsed or 0.0)
-                if pos > self.duration + 2.0:
+                if pos > self.duration + self.WATCHDOG_GRACE:
                     log.warning(
                         "Watchdog fin de clip: %.2fs > duración %.2fs (%s)",
                         pos, self.duration, self.current["title"] if self.current else "?",
