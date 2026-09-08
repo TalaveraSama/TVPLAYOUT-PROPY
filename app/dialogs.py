@@ -1,4 +1,5 @@
 """Diálogos de funciones: Playlist Manager, Fuentes/Categorías, Programador, Registros, Ajustes, Editar clip."""
+import html
 import json
 import os
 from datetime import datetime
@@ -627,13 +628,18 @@ class LogsDialog(BaseDialog):
             return level == "ERROR"
         return True
 
+    def _append_colored(self, line, level):
+        # QPlainTextEdit no tiene setTextColor (eso es QTextEdit); el color
+        # por línea se hace con appendHtml + un <span>. El texto va escapado.
+        safe = html.escape(line).replace("\n", "<br>")
+        color = self._color_for(level).name()
+        self.sys_text.appendHtml(f'<span style="color:{color}; white-space:pre-wrap">{safe}</span>')
+
     def _refilter(self):
         self.sys_text.clear()
         for line, level in self._sys_buf:
             if self._passes_filter(level):
-                self.sys_text.setTextColor(self._color_for(level))
-                self.sys_text.appendPlainText(line)
-        self.sys_text.setTextColor(self._color_for("INFO"))
+                self._append_colored(line, level)
         sb = self.sys_text.verticalScrollBar()
         sb.setValue(sb.maximum())
 
@@ -643,9 +649,7 @@ class LogsDialog(BaseDialog):
         if len(self._sys_buf) > 3000:
             self._sys_buf = self._sys_buf[-3000:]
         if self._passes_filter(classified[1]):
-            self.sys_text.setTextColor(self._color_for(classified[1]))
-            self.sys_text.appendPlainText(line)
-            self.sys_text.setTextColor(self._color_for("INFO"))
+            self._append_colored(classified[0], classified[1])
             sb = self.sys_text.verticalScrollBar()
             sb.setValue(sb.maximum())
 
