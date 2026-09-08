@@ -1,4 +1,4 @@
-# TVPlayout PRO V22 — Consola de playout 
+# TVPlayout PRO V23.3 — Consola de playout 
 
 Playout de televisión 24/7 para Windows con interfaz inspirada en la distribución de **XPlayout** (Axel Technology),
 sin usar código ni recursos propietarios. Reproductor local **mpv** embebido + salida **RTMP/SRT/UDP** con **FFmpeg**.
@@ -77,7 +77,26 @@ tests/                  pruebas (python tests/test_core.py) y mpv simulado para 
 
 ## Registro de cambios
 
+### V23.3
+- Filler automático + slate al fin de playlist: cuando no queda ningún clip por reproducir (sin loop, sin autofill),
+  se carga en loop infinito un clip de filler configurado o, en su defecto, un slate estático generado en runtime,
+  en vez de dejar el monitor en negro.
+- Fix crítico: loop infinito de filler/slate que podía colgar el playout al llegar al fin de la lista.
+
+### V23.0
+- Crossfade de audio entre clips: fade-out del clip saliente y fade-in del entrante mediante el filtro
+  `lavfi=afade` de mpv, con transición configurable (0.0s–3.0s).
+
+### V22.1 / V22.2.x
+- Sincronización de pausa y seek del playout local con la salida RTMP; watcher de drift entre ambos.
+- Selector de modo RTMP (local/remoto) con chip de estado y reinicio automático ante fallos.
+- Watchdog de fin de clip robusto y VU meter adaptado a las keys nuevas de mpv.
+- Desactivación de `watch_later` y purga de `.cfg` de mpv al arrancar (fix del monitor en negro tras cada corte).
+- Barra POSICIÓN/RESTANTE basada en reloj de pared cuando mpv no reporta `time-pos`.
+- Panel de logs con colores y badge de errores/warnings en el statusBar.
+
 ### V22
+
 - Rediseño completo de la interfaz al estilo XPlayout: cabecera con reloj, transporte, contadores, modos, grid coloreada,
   modo gráfico, biblioteca integrada, botonera, VU meter, monitor, funciones, salida RTMP y reloj de estación.
 - Continuidad real: encadenado automático por eventos de mpv (fin de archivo), modo manual con cue, hora fija, loop,
