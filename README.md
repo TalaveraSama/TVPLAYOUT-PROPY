@@ -83,6 +83,9 @@ tests/                  pruebas (python tests/test_core.py) y mpv simulado para 
   ligeramente mayor a la detectada). Se amplía el margen de tolerancia del watchdog (2s → 6s) y se
   fuerza un `stop()` limpio antes de cargar el siguiente clip, para que la transición siempre parta
   de mpv en idle en vez de interrumpir un decode activo.
+- Fix: al escanear una fuente o soltar una carpeta, el path de cada archivo podía quedar con
+  separadores mezclados (`C:/carpeta\archivo.mp4`) porque Qt entrega la carpeta base con "/" y
+  `os.path.join` la completaba con "\". Se normaliza a "/" en `scanner.py` y en el drop de carpetas.
 
 ### V23.3
 - Filler automático + slate al fin de playlist: cuando no queda ningún clip por reproducir (sin loop, sin autofill),

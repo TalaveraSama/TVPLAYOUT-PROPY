@@ -1212,9 +1212,14 @@ class MainWindow(QMainWindow):
                 for base, _dirs, names in os.walk(p):
                     for n in sorted(names):
                         if Path(n).suffix.lower() in VIDEO_EXTS:
-                            items.append(self._item_from_file(os.path.join(base, n)))
+                            # Qt entrega carpetas soltadas con "/" (toLocalFile), pero
+                            # os.path.join en Windows completa con "\" si la base no
+                            # termina en separador → path final con separadores
+                            # mezclados (ej: "C:/carpeta\archivo.mp4"). Normalizamos a
+                            # "/" para que sea consistente con el resto de la app.
+                            items.append(self._item_from_file(os.path.join(base, n).replace("\\", "/")))
             elif Path(p).suffix.lower() in VIDEO_EXTS:
-                items.append(self._item_from_file(p))
+                items.append(self._item_from_file(p.replace("\\", "/")))
         if not items:
             self._status("No se soltaron archivos de vídeo válidos")
             return

@@ -55,7 +55,12 @@ class Scanner(QThread):
                             if self.stop_requested:
                                 break
                             files += 1
-                            if self._handle(os.path.join(base, name), name, category):
+                            # Las fuentes suelen venir de un QFileDialog (Qt entrega
+                            # "/"), pero os.path.join en Windows usa "\" para unir con
+                            # el nombre de archivo → path final con separadores
+                            # mezclados. Normalizamos a "/" para que sea consistente.
+                            full = os.path.join(base, name).replace("\\", "/")
+                            if self._handle(full, name, category):
                                 media += 1
                         if folders % 5 == 0:
                             self.progress.emit(folders, files, media)
@@ -67,7 +72,7 @@ class Scanner(QThread):
                                 break
                             if e.is_file():
                                 files += 1
-                                if self._handle(e.path, e.name, category):
+                                if self._handle(e.path.replace("\\", "/"), e.name, category):
                                     media += 1
                     self.progress.emit(folders, files, media)
             if self.purge_missing and not self.stop_requested and seen_roots:
