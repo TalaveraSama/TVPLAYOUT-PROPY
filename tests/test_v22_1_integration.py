@@ -23,18 +23,22 @@ def _read(path):
 
 def test_mpv_player_reapplies_volume_in_play():
     src = _read(MPV)
-    # En play() debe haber un set_property("volume", ...) y set_property("mute", ...)
-    play_block = re.search(r"def play\(self.*?\n(?:        .*\n)+", src)
+    # v22.2.7: en lugar de set_property separados (que tenían problemas
+    # de orden vs loadfile), ahora volume/mute/pause/start van embebidos
+    # en el comando loadfile. Verificamos que el comando de loadfile
+    # incluye las opciones correctas.
+    play_block = re.search(r"def play\(self.*?\n(?:        .*\n)+", src, re.S)
     assert play_block, "no encontré el método play()"
     pb = play_block.group(0)
-    assert 'set_property("volume"' in pb, "play() debe re-aplicar volume con set_property"
-    assert 'set_property("mute"' in pb, "play() debe re-aplicar mute con set_property"
-    # El re-set debe ocurrir ANTES del loadfile
-    loadfile_pos = pb.find('"loadfile"')
-    vol_pos = pb.find('set_property("volume"')
-    mute_pos = pb.find('set_property("mute"')
-    assert vol_pos < loadfile_pos, "set_property('volume') debe ir antes del loadfile"
-    assert mute_pos < loadfile_pos, "set_property('mute') debe ir antes del loadfile"
+    # El comando loadfile debe incluir volume=X y mute=yes/no como
+    # opciones embebidas (formato loadfile "path" replace volume=N mute=...)
+    loadfile_idx = pb.find('"loadfile"')
+    assert loadfile_idx > 0, "debe haber un comando loadfile"
+    # Tomar 2500 chars a partir del loadfile para ver el comando entero
+    snippet = pb[loadfile_idx:loadfile_idx + 2500]
+    assert "volume=" in snippet, "loadfile debe incluir volume=X embebido"
+    assert "mute=" in snippet, "loadfile debe incluir mute=yes/no embebido"
+    assert "pause=no" in snippet, "loadfile debe incluir pause=no embebido"
 
 
 def test_apply_settings_sends_volume_to_mpv():

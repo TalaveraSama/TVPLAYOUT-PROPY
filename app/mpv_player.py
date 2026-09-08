@@ -373,23 +373,51 @@ class MPVPlayer(QObject):
         if not self.start():
             return False
         self._current_path = path
-        self.set_property("aid", int(audio_id) + 1 if isinstance(audio_id, int) and audio_id >= 0 else "auto")
-        if sub_id is None:
-            self.set_property("sid", "auto" if self.slang else "no")
-        elif sub_id < 0:
-            self.set_property("sid", "no")
+        # v22.2.7: bug crítico de sincronización. Antes mandábamos 7
+        # set_property ANTES del loadfile (aid/sid/start/loop-file/
+        # volume/mute/pause). Esto causaba tres problemas en builds
+        # modernos de mpv:
+        #  1) set_property("start", "none") podía conservarse del
+        #     archivo anterior (#15544 en mpv repo: loadfile a veces
+        #     ignora start cuando viene de un set_property previo).
+        #  2) set_property("pause", false) ANTES del loadfile hacía
+        #     que el nuevo archivo arrancara con un frame del archivo
+        #     anterior (estado interno de mpv inconsistente).
+        #  3) Los set_property y el loadfile entran en cola en orden,
+        #     pero mpv puede procesarlos fuera de orden. Las propiedades
+        #     de la sesión anterior (volume, mute, start) se aplicaban
+        #     al archivo viejo.
+        # Síntoma: el panel mostraba "AL AIRE" el nuevo clip pero el
+        # monitor seguía mostrando el frame del clip anterior.
+        #
+        # Fix: usar loadfile con opciones embebidas (start, pause, volume,
+        # mute, loop-file, sid, aid) en un solo comando atómico. Las
+        # opciones embebidas en loadfile SÍ se aplican en orden, antes
+        # de decodificar el primer frame del nuevo archivo.
+        cmd = ["loadfile", path, "replace"]
+        # Opciones de pista (solo si difieren del default)
+        if isinstance(audio_id, int) and audio_id >= 0:
+            cmd.append(f"aid={int(audio_id) + 1}")
         else:
-            self.set_property("sid", int(sub_id) + 1)
-        self.set_property("start", f"{float(start):.3f}" if start and start > 0 else "none")
-        self.set_property("loop-file", "inf" if loop else "no")
-        # v22.1: re-aplicar volumen y mute al cargar cada clip. mpv podría haber
-        # perdido el estado si se reconectó el IPC, y este es el momento más
-        # seguro para sincronizar (después del loadfile).
-        # v22.2.5: 'yes'/'no' para mute (no True/False).
-        self.set_property("volume", float(self.volume))
-        self.set_property("mute", "yes" if self.muted else "no")
-        self.set_property("pause", False)
-        ok = self.command(["loadfile", path, "replace"])
+            cmd.append("aid=auto")
+        if sub_id is None:
+            cmd.append(f"sid={'auto' if self.slang else 'no'}")
+        elif sub_id < 0:
+            cmd.append("sid=no")
+        else:
+            cmd.append(f"sid={int(sub_id) + 1}")
+        # start embebido (no mandamos "none", solo si > 0 — un start=0
+        # explícito en el comando resetearía cualquier residuo)
+        if start and start > 0:
+            cmd.append(f"start={float(start):.3f}")
+        # Loop embebido
+        cmd.append(f"loop-file={'inf' if loop else 'no'}")
+        # Pause SIEMPRE no para que arranque decodificando
+        cmd.append("pause=no")
+        # Volumen y mute embebidos (v22.2.5: yes/no)
+        cmd.append(f"volume={float(self.volume):.1f}")
+        cmd.append(f"mute={'yes' if self.muted else 'no'}")
+        ok = self.command(cmd)
         if ok:
             self.status.emit("MPV ▶ " + os.path.basename(path))
         return ok
