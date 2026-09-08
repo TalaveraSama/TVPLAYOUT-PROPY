@@ -133,12 +133,34 @@ class MPVPlayer(QObject):
 
     def _build_cmd(self):
         wid = str(int(self.widget.winId()))
+        # v22.2.10: --no-resume-playback y --no-save-position-on-quit.
+        # Por defecto mpv GUARDA la posición de cada clip en
+        # ~/.config/mpv/watch_later/ cuando termina (o cuando loadfile
+        # replace) y la RESTAURA la próxima vez que ese mismo clip se
+        # carga. En playout eso es desastroso: el operador reproduce un
+        # clip hasta el final, mpv guarda la posición final, después
+        # cuando ese clip se vuelve a cargar en una tanda/horario, mpv
+        # arranca en esa posición guardada (al final del clip) y la
+        # ventana queda en negro. La posición se guarda también como
+        # `start=`, lo que puede ganarle al `start=none` que mandamos
+        # en el play() (la doc oficial dice: "The playback position is
+        # always saved as start, so adding start to this list has no
+        # effect" — el watch_later siempre pisa el start del clip).
+        # En playout SIEMPRE empezamos desde el principio del clip. El
+        # seek lo manejamos nosotros desde la UI con mpv.seek(...).
+        # v22.2.10 además limpia los archivos watch_later viejos al
+        # arrancar para no contaminar clips que ya se reprodujeron en
+        # versiones anteriores de la app. Ver _purge_watch_later().
+        self._purge_watch_later()
         cmd = [self.mpv_path, f"--wid={wid}", "--idle=yes", "--force-window=yes", "--keep-open=no",
                "--input-default-bindings=no", "--input-vo-keyboard=no", "--osc=no", "--osd-level=0",
                "--no-terminal", "--really-quiet", "--cursor-autohide=no",
                "--input-ipc-server=" + self.ipc_path, f"--hwdec={self.hwdec or 'no'}",
                f"--volume={int(self.volume)}", f"--mute={'yes' if self.muted else 'no'}",
-               "--audio-file-auto=no", "--sub-auto=no", "--ytdl=no", "--load-scripts=no"]
+               "--audio-file-auto=no", "--sub-auto=no", "--ytdl=no", "--load-scripts=no",
+               # v22.2.10: claves para que mpv no resture posiciones
+               # guardadas ni guarde la posición al final del clip.
+               "--no-resume-playback", "--no-save-position-on-quit"]
         if self.alang:
             cmd.append(f"--alang={self.alang}")
         if self.slang:
@@ -263,6 +285,60 @@ class MPVPlayer(QObject):
             user32.EnumChildWindows(ctypes.c_void_p(parent), EnumChildProc(cb), 0)
         except Exception as e:  # noqa: BLE001
             log.debug("fit child window: %s", e)
+
+    def _purge_watch_later(self):
+        """v22.2.10: borra los archivos de watch_later que mpv podría usar
+        para restaurar posiciones guardadas.
+
+        Por qué: aunque ya pasamos --no-resume-playback y
+        --no-save-position-on-quit al arrancar mpv, los archivos
+        preexistentes en watch_later pueden interferir si el usuario
+        actualizó desde una versión anterior de la app o si mpv
+        fue arrancado por otra vía. Limpiarlos al startup garantiza
+        que NINGÚN clip va a "arrancar" en una posición guardada.
+
+        En Windows: %APPDATA%/mpv/watch_later/  (o %MPV_HOME%/watch_later/)
+        En Linux:   ~/.config/mpv/watch_later/  o $XDG_STATE_HOME/mpv/watch_later
+        En macOS:   igual que Linux
+
+        Es seguro borrar TODOS los .cfg: mpv los regenera si el
+        operador decide usar Shift+Q. La app no usa esa feature.
+        """
+        try:
+            import shutil
+            # Buscar en orden: MPV_HOME (override), XDG_STATE_HOME,
+            # APPDATA (Windows), ~/.config (Linux), ~/.local/state (Linux)
+            candidates = []
+            mpv_home = os.environ.get("MPV_HOME")
+            if mpv_home:
+                candidates.append(os.path.join(mpv_home, "watch_later"))
+            xdg_state = os.environ.get("XDG_STATE_HOME")
+            if xdg_state:
+                candidates.append(os.path.join(xdg_state, "mpv", "watch_later"))
+            appdata = os.environ.get("APPDATA")
+            if appdata:
+                candidates.append(os.path.join(appdata, "mpv", "watch_later"))
+            home = os.path.expanduser("~")
+            if home:
+                if os.name == "nt":
+                    candidates.append(os.path.join(home, "AppData", "Roaming", "mpv", "watch_later"))
+                else:
+                    candidates.append(os.path.join(home, ".config", "mpv", "watch_later"))
+                    candidates.append(os.path.join(home, ".local", "state", "mpv", "watch_later"))
+            for wl_dir in candidates:
+                if os.path.isdir(wl_dir):
+                    purged = 0
+                    for name in os.listdir(wl_dir):
+                        if name.endswith(".cfg"):
+                            try:
+                                os.remove(os.path.join(wl_dir, name))
+                                purged += 1
+                            except OSError:
+                                pass
+                    if purged:
+                        log.info("watch_later purgado: %d archivos en %s", purged, wl_dir)
+        except Exception as e:  # noqa: BLE001
+            log.debug("purge watch_later: %s", e)
 
     # ----------------------------------------------------------------- IPC
     def command(self, cmd, callback=None):

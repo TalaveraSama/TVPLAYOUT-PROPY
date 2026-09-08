@@ -271,6 +271,43 @@ def test_rtmp_mode_initial_uses_self_settings():
         "initial_mode debe usar self.settings.get('rtmp_mode', 'local'), no 's.get(...)'"
 
 
+# --- v22.2.10: monitor negro post-cut por watch_later restore ---
+
+def test_mpv_player_disables_watch_later():
+    """v22.2.10: --no-resume-playback y --no-save-position-on-quit en
+    la línea de comando de mpv, y un método _purge_watch_later que
+    limpia archivos .cfg de watch_later al arrancar.
+    """
+    src = _read(MPV)
+    # _build_cmd debe incluir los dos flags
+    build = re.search(r"def _build_cmd\(self.*?\n(?:        .*\n)+", src, re.S)
+    assert build, "no encontré _build_cmd()"
+    bb = build.group(0)
+    assert "--no-resume-playback" in bb, \
+        "_build_cmd debe pasar --no-resume-playback a mpv (sino mpv restaura la posición guardada al cargar el clip)"
+    assert "--no-save-position-on-quit" in bb, \
+        "_build_cmd debe pasar --no-save-position-on-quit a mpv (sino mpv guarda la posición al terminar y la usa la próxima vez)"
+    # Debe existir un método _purge_watch_later que limpia los .cfg
+    assert "def _purge_watch_later" in src, \
+        "debe existir _purge_watch_later() que limpia los archivos watch_later al arrancar"
+    # _purge_watch_later debe llamarse desde _build_cmd
+    assert "_purge_watch_later()" in bb, \
+        "_build_cmd debe invocar _purge_watch_later() antes de armar la línea de comando"
+    # El método _purge_watch_later debe buscar APPDATA (Windows) y ~/.config (Linux)
+    purge = re.search(r"def _purge_watch_later\(self.*?\n(?:        .*\n)+", src, re.S)
+    assert purge, "no encontré el cuerpo de _purge_watch_later"
+    pb = purge.group(0)
+    assert "APPDATA" in pb or "appdata" in pb, \
+        "_purge_watch_later debe buscar %APPDATA%/mpv/watch_later/ en Windows"
+    assert ".config" in pb or "XDG_STATE" in pb, \
+        "_purge_watch_later debe buscar ~/.config/mpv/watch_later/ o $XDG_STATE_HOME en Linux/macOS"
+    # Debe borrar archivos .cfg específicamente
+    assert ".cfg" in pb, "_purge_watch_later debe borrar archivos .cfg de watch_later"
+    # Debe usar os.remove u os.unlink (no shutil.rmtree — sería demasiado)
+    assert "os.remove" in pb or "os.unlink" in pb or "shutil.rmtree" in pb, \
+        "_purge_watch_later debe usar os.remove/unlink o shutil.rmtree para borrar"
+
+
 if __name__ == "__main__":
     tests = [(name, fn) for name, fn in globals().items() if name.startswith("test_") and callable(fn)]
     failed = 0
