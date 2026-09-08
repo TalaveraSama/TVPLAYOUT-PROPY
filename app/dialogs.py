@@ -7,7 +7,7 @@ from PySide6.QtCore import Qt, QTime, QDate, Signal
 from PySide6.QtGui import QColor, QBrush
 from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QGridLayout, QFormLayout, QLabel, QPushButton,
                                QTableWidget, QTableWidgetItem, QAbstractItemView, QHeaderView, QLineEdit, QComboBox,
-                               QSpinBox, QCheckBox, QTimeEdit, QDateEdit, QMessageBox, QFileDialog, QInputDialog,
+                               QSpinBox, QDoubleSpinBox, QCheckBox, QTimeEdit, QDateEdit, QMessageBox, QFileDialog, QInputDialog,
                                QPlainTextEdit, QTabWidget, QWidget, QListWidget, QListWidgetItem, QGroupBox)
 
 from . import logger
@@ -162,6 +162,10 @@ class PlaylistManagerDialog(BaseDialog):
                         f.write(f"#EXTINF:{int(it['duration'] or -1)},{it['title']}\n")
                         if it.get("fixed_time"):
                             f.write(f"#EXT-X-TVPLAYOUT-FIXED:{it['fixed_time']}\n")
+                        if float(it.get("mark_in") or 0) > 0:
+                            f.write(f"#EXT-X-TVPLAYOUT-MARKIN:{float(it['mark_in']):.3f}\n")
+                        if float(it.get("mark_out") or 0) > 0:
+                            f.write(f"#EXT-X-TVPLAYOUT-MARKOUT:{float(it['mark_out']):.3f}\n")
                         f.write(it["path"] + "\n")
             self.parent().statusBar().showMessage("Playlist exportada: " + path)
         except OSError as e:
@@ -181,27 +185,61 @@ class PlaylistManagerDialog(BaseDialog):
                             row = self.db.media_by_path(d["path"])
                             base = make_item(row) if row else make_item(d)
                             base["fixed_time"] = d.get("fixed_time", "") or ""
+                            base["mark_in"] = max(0.0, float(d.get("mark_in") or 0))
+                            base["mark_out"] = max(0.0, float(d.get("mark_out") or 0))
+                            if base.get("source_duration"):
+                                from .playout import trim_bounds
+                                start, end, effective = trim_bounds(base)
+                                base["mark_in"], base["mark_out"], base["duration"] = start, (end if end < base["source_duration"] else 0.0), effective
                             items.append(base)
             else:
                 title = ""
                 fixed = ""
+                m3u_duration = 0.0
+                mark_in = 0.0
+                mark_out = 0.0
                 with open(path, encoding="utf-8", errors="replace") as f:
                     for line in f:
                         line = line.strip()
                         if not line:
                             continue
                         if line.startswith("#EXTINF"):
-                            title = line.split(",", 1)[1] if "," in line else ""
+                            head, title = (line.split(",", 1) + [""])[:2] if "," in line else (line, "")
+                            try:
+                                m3u_duration = max(0.0, float(head.split(":", 1)[1]))
+                            except (ValueError, IndexError):
+                                m3u_duration = 0.0
                         elif line.startswith("#EXT-X-TVPLAYOUT-FIXED:"):
                             fixed = line.split(":", 1)[1]
+                        elif line.startswith("#EXT-X-TVPLAYOUT-MARKIN:"):
+                            try:
+                                mark_in = max(0.0, float(line.split(":", 1)[1]))
+                            except ValueError:
+                                mark_in = 0.0
+                        elif line.startswith("#EXT-X-TVPLAYOUT-MARKOUT:"):
+                            try:
+                                mark_out = max(0.0, float(line.split(":", 1)[1]))
+                            except ValueError:
+                                mark_out = 0.0
                         elif line.startswith("#"):
                             continue
                         else:
                             row = self.db.media_by_path(line)
-                            it = make_item(row) if row else make_item({"path": line, "title": title or os.path.splitext(os.path.basename(line))[0]})
+                            it = make_item(row) if row else make_item({
+                                "path": line,
+                                "title": title or os.path.splitext(os.path.basename(line))[0],
+                                "duration": m3u_duration,
+                                "source_duration": m3u_duration,
+                            })
                             it["fixed_time"] = fixed
+                            it["mark_in"] = mark_in
+                            it["mark_out"] = mark_out
+                            if it.get("source_duration"):
+                                from .playout import trim_bounds
+                                start, end, effective = trim_bounds(it)
+                                it["mark_in"], it["mark_out"], it["duration"] = start, (end if end < it["source_duration"] else 0.0), effective
                             items.append(it)
-                            title, fixed = "", ""
+                            title, fixed, m3u_duration, mark_in, mark_out = "", "", 0.0, 0.0, 0.0
         except (OSError, ValueError) as e:
             QMessageBox.critical(self, "Importar", str(e))
             return
@@ -855,8 +893,9 @@ class EditClipDialog(QDialog):
     def __init__(self, parent, item, categories):
         super().__init__(parent)
         self.setWindowTitle("Editar evento")
-        self.resize(520, 300)
+        self.resize(560, 430)
         self.item = item
+        self.source_duration = max(0.0, float(item.get("source_duration") or item.get("duration") or 0))
         f = QFormLayout(self)
         self.title = QLineEdit(item.get("title", ""))
         self.cat = QComboBox()
@@ -865,6 +904,26 @@ class EditClipDialog(QDialog):
             self.cat.setCurrentText(item["category"])
         self.fixed = QLineEdit(item.get("fixed_time", ""))
         self.fixed.setPlaceholderText("HH:MM o HH:MM:SS — vacío = secuencial")
+        self.mark_in = QDoubleSpinBox()
+        self.mark_in.setDecimals(3)
+        self.mark_in.setRange(0.0, max(86400.0, self.source_duration))
+        self.mark_in.setSingleStep(0.5)
+        self.mark_in.setSuffix(" s")
+        self.mark_in.setValue(max(0.0, min(self.source_duration, float(item.get("mark_in") or 0))))
+        self.mark_out = QDoubleSpinBox()
+        self.mark_out.setDecimals(3)
+        self.mark_out.setRange(0.0, max(86400.0, self.source_duration))
+        self.mark_out.setSingleStep(0.5)
+        self.mark_out.setSuffix(" s")
+        self.mark_out.setSpecialValueText("Final del video")
+        out = float(item.get("mark_out") or 0)
+        self.mark_out.setValue(max(0.0, min(self.source_duration, out)))
+        reset = _btn("Restablecer corte", self._reset_trim)
+        trim_box = QHBoxLayout()
+        trim_box.addWidget(self.mark_in)
+        trim_box.addWidget(QLabel("hasta"))
+        trim_box.addWidget(self.mark_out)
+        trim_box.addWidget(reset)
         self.audio = QComboBox()
         self.audio.addItem("Por defecto", "")
         self.sub = QComboBox()
@@ -889,6 +948,7 @@ class EditClipDialog(QDialog):
         f.addRow("Título", self.title)
         f.addRow("Categoría", self.cat)
         f.addRow("Hora fija", self.fixed)
+        f.addRow("Corte (segundos)", trim_box)
         f.addRow("Pista de audio", self.audio)
         f.addRow("Subtítulos", self.sub)
         f.addRow("Archivo", path)
@@ -896,8 +956,23 @@ class EditClipDialog(QDialog):
         row = QHBoxLayout()
         row.addStretch()
         row.addWidget(_btn("Cancelar", self.reject))
-        row.addWidget(_btn("Aceptar", self.accept, "primary"))
+        row.addWidget(_btn("Aceptar", self._accept, "primary"))
         f.addRow(row)
+
+    def _reset_trim(self):
+        self.mark_in.setValue(0.0)
+        self.mark_out.setValue(0.0)
+
+    def _accept(self):
+        start = float(self.mark_in.value())
+        end = float(self.mark_out.value())
+        if self.source_duration > 0 and start >= self.source_duration:
+            QMessageBox.warning(self, "Corte", "El inicio debe ser menor que la duración del video.")
+            return
+        if end > 0 and end <= start:
+            QMessageBox.warning(self, "Corte", "El final debe ser mayor que el inicio, o dejarse en 0 para usar el final del video.")
+            return
+        self.accept()
 
     def values(self):
         ft = self.fixed.text().strip()
@@ -909,4 +984,6 @@ class EditClipDialog(QDialog):
             except (ValueError, IndexError):
                 ft = ""
         return {"title": self.title.text().strip() or self.item.get("title", ""), "category": self.cat.currentText(),
-                "fixed_time": ft, "audio_lang": self.audio.currentData() or "", "subtitle_lang": self.sub.currentData() or ""}
+                "fixed_time": ft, "audio_lang": self.audio.currentData() or "", "subtitle_lang": self.sub.currentData() or "",
+                "mark_in": float(self.mark_in.value()), "mark_out": float(self.mark_out.value()),
+                "source_duration": self.source_duration}

@@ -1184,6 +1184,7 @@ class MainWindow(QMainWindow):
                 from .prober import probe_file
                 info = probe_file(path, timeout=10)
                 item.update({k: info[k] for k in ("duration", "width", "height", "fps", "video_codec", "audio_codec", "tracks")})
+                item["source_duration"] = item.get("duration") or 0
             except Exception as e:  # noqa: BLE001
                 log.info("probe rápido falló para %s: %s", path, e)
         return item

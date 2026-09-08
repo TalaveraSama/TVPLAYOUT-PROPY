@@ -5,7 +5,7 @@ import shutil
 
 ROOT = Path(__file__).resolve().parent.parent
 APP_NAME = "TVPlayout PRO"
-APP_VERSION = "V24.0.1.8"
+APP_VERSION = "V24.0.1.9"
 IS_WINDOWS = os.name == "nt"
 
 

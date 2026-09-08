@@ -42,12 +42,14 @@ class _DecodeJob(QObject):
     finished = Signal(str, int)                     # eof | stop | error, generación
     error = Signal(str, int)
 
-    def __init__(self, path, generation, loop=False, audio_id=None, parent=None):
+    def __init__(self, path, generation, loop=False, audio_id=None, start_at=0.0, end_at=0.0, parent=None):
         super().__init__(parent)
         self.path = str(path)
         self.generation = generation
         self.loop = bool(loop)
         self.audio_id = audio_id
+        self.start_at = max(0.0, float(start_at or 0.0))
+        self.end_at = max(0.0, float(end_at or 0.0))
         self.stop_event = threading.Event()
         self._condition = threading.Condition()
         self._paused = False
@@ -154,65 +156,75 @@ class _DecodeJob(QObject):
         except (AttributeError, TypeError, ValueError, IndexError):
             return b""
 
-    def _decode_audio(self, packet, resampler, emit_from=0.0, stop_at=None, audio_clock=None):
-        """Decodifica PCM y opcionalmente lo limita a una ventana temporal.
+    def _decode_audio(self, packet, resampler, emit_from=0.0, stop_at=None,
+                      audio_clock=None, timeline_start=0.0):
+        """Decodifica PCM usando una línea de tiempo relativa al corte.
 
-        Durante el prebuffer se emiten los primeros seis segundos. En la
-        reproducción normal se omite esa misma ventana porque ya está en la
-        cola del monitor; así el audio no vuelve a empezar desde cero cuando
-        comienza el vídeo.
+        ``frame.time`` es absoluto dentro del archivo; ``timeline_start``
+        permite que el prebuffer comience en mark-in sin reproducir el audio
+        anterior al corte. ``emit_from`` y ``stop_at`` están expresados en
+        segundos relativos a ese mark-in.
         """
-        last_time = audio_clock[0] if audio_clock else 0.0
+        last_relative = audio_clock[0] if audio_clock else 0.0
         try:
             frames = packet.decode()
             for frame in frames:
                 frame_time = frame.time
                 if frame_time is None:
-                    frame_time = last_time
+                    frame_time = timeline_start + last_relative
                 frame_time = max(0.0, float(frame_time))
                 converted = resampler.resample(frame)
                 if converted is None:
                     continue
                 if not isinstance(converted, (list, tuple)):
                     converted = [converted]
-                cursor = frame_time
+                cursor = frame_time - timeline_start
                 for out in converted:
                     if not out.planes:
                         continue
                     raw = self._pcm_bytes(out)
                     if not raw:
                         continue
-                    out_duration = float(getattr(out, "samples", 0) or 0) / AUDIO_RATE
+                    out_samples = int(getattr(out, "samples", 0) or 0)
+                    out_duration = float(out_samples) / AUDIO_RATE
                     out_end = cursor + out_duration
-                    if (cursor < (stop_at if stop_at is not None else float("inf"))
-                            and out_end > emit_from):
-                        try:
-                            samples = array("h")
-                            samples.frombytes(raw)
-                            left = samples[0::2]
-                            right = samples[1::2]
-                            peak_l = max((abs(v) for v in left), default=0) / 32768.0
-                            peak_r = max((abs(v) for v in right), default=0) / 32768.0
-                            db_l = 20.0 * math.log10(max(1e-5, peak_l))
-                            db_r = 20.0 * math.log10(max(1e-5, peak_r))
-                            self.levels.emit(db_l, db_r, self.generation)
-                        except (TypeError, ValueError, OverflowError):
-                            pass
-                        self.audio.emit(raw, self.generation)
+                    window_end = stop_at if stop_at is not None else out_end
+                    if cursor < window_end and out_end > emit_from:
+                        # El seek puede devolver un frame que cruza mark-in o
+                        # el límite del prebuffer. Recortar por muestras evita
+                        # unos milisegundos fuera del corte y evita duplicar
+                        # la muestra que cruza la frontera de 6 segundos.
+                        first_sample = max(0, int(math.ceil((emit_from - cursor) * AUDIO_RATE - 1e-9)))
+                        last_sample = min(out_samples, int(math.ceil((window_end - cursor) * AUDIO_RATE - 1e-9)))
+                        if last_sample > first_sample:
+                            pcm = raw[first_sample * 4:last_sample * 4]
+                            try:
+                                samples = array("h")
+                                samples.frombytes(pcm)
+                                left = samples[0::2]
+                                right = samples[1::2]
+                                peak_l = max((abs(v) for v in left), default=0) / 32768.0
+                                peak_r = max((abs(v) for v in right), default=0) / 32768.0
+                                db_l = 20.0 * math.log10(max(1e-5, peak_l))
+                                db_r = 20.0 * math.log10(max(1e-5, peak_r))
+                                self.levels.emit(db_l, db_r, self.generation)
+                            except (TypeError, ValueError, OverflowError):
+                                pass
+                            self.audio.emit(pcm, self.generation)
                     cursor = out_end
-                    last_time = cursor
+                    last_relative = cursor
                     if stop_at is not None and cursor >= stop_at:
                         if audio_clock is not None:
                             audio_clock[0] = cursor
                         return cursor, True
             if audio_clock is not None:
-                audio_clock[0] = last_time
-            return last_time, False
+                audio_clock[0] = last_relative
+            return last_relative, False
         except Exception as exc:  # noqa: BLE001
             log.debug("audio decode %s: %s", self.path, exc)
             if audio_clock is not None:
-                audio_clock[0] = last_time
-            return last_time, False
+                audio_clock[0] = last_relative
+            return last_relative, False
 
     def run(self):
         if av is None:
@@ -236,9 +248,19 @@ class _DecodeJob(QObject):
                     audio_stream = audios[0] if audios else None
                     if isinstance(self.audio_id, int) and 0 <= self.audio_id < len(audios):
                         audio_stream = audios[self.audio_id]
-                    duration = self._duration(container, video_stream, audio_stream)
+                    source_duration = self._duration(container, video_stream, audio_stream)
+                    start_at = min(self.start_at, source_duration) if source_duration > 0 else self.start_at
+                    end_at = self.end_at if self.end_at > 0 else source_duration
+                    if source_duration > 0:
+                        end_at = min(end_at, source_duration)
+                    if end_at > 0 and end_at < start_at:
+                        end_at = start_at
+                    duration = max(0.0, end_at - start_at) if end_at > 0 else 0.0
                     info = {
                         "duration": duration,
+                        "source_duration": source_duration,
+                        "mark_in": start_at,
+                        "mark_out": end_at if end_at < source_duration else 0.0,
                         "video": self._stream_info(video_stream),
                         "audio": self._stream_info(audio_stream),
                     }
@@ -260,59 +282,67 @@ class _DecodeJob(QObject):
                             format="s16", layout="stereo", rate=AUDIO_RATE
                         )
 
-                    # Prebuffer real de seis segundos. El audio se decodifica
-                    # rápido mientras se descartan los paquetes de vídeo; al
-                    # terminar se vuelve al inicio para que vídeo y audio
-                    # comiencen juntos en t=0.
+                    # Prebuffer real de seis segundos, comenzando en
+                    # mark-in. El archivo original nunca se modifica: sólo
+                    # se desplaza la línea de tiempo de lectura.
                     audio_skip_until = 0.0
                     if opening_first and audio_stream is not None and resampler is not None:
                         audio_clock = [0.0]
                         reached = False
+                        container.seek(int(start_at * float(av.time_base)), backward=True, any_frame=False)
+                        prebuffer_limit = min(AUDIO_PREBUFFER_SECONDS, duration) if duration > 0 else AUDIO_PREBUFFER_SECONDS
                         for audio_packet in container.demux(audio_stream):
                             if self.stop_event.is_set():
                                 break
                             _end, reached = self._decode_audio(
                                 audio_packet, resampler, emit_from=0.0,
-                                stop_at=AUDIO_PREBUFFER_SECONDS, audio_clock=audio_clock,
+                                stop_at=prebuffer_limit, audio_clock=audio_clock,
+                                timeline_start=start_at,
                             )
                             if reached:
-                                audio_skip_until = AUDIO_PREBUFFER_SECONDS
+                                audio_skip_until = prebuffer_limit
                                 break
                         if not reached:
-                            # Clip corto: ya quedó toda su pista en la
-                            # cola, por lo que no se debe emitir dos veces.
+                            # Clip corto o sin duración declarada: ya quedó
+                            # toda la pista disponible en la cola.
                             audio_skip_until = audio_clock[0]
                         if not self.stop_event.is_set():
-                            container.seek(0, backward=True, any_frame=False)
+                            container.seek(int(start_at * float(av.time_base)), backward=True, any_frame=False)
                             # El resampler puede conservar muestras de cola;
                             # reiniciarlo evita repetir audio tras el seek.
                             resampler = av.audio.resampler.AudioResampler(
                                 format="s16", layout="stereo", rate=AUDIO_RATE
                             )
-                        log.info("PyAV audio prebuffer gen=%d seconds=%.3f reached=%s",
-                                 self.generation, audio_clock[0], reached)
+                        log.info("PyAV audio prebuffer gen=%d start=%.3f seconds=%.3f reached=%s",
+                                 self.generation, start_at, audio_clock[0], reached)
                     if not self.stop_event.is_set():
                         self.ready.emit(self.generation)
 
-                    base_raw = None
-                    logical_base = 0.0
+                    base_raw = start_at
                     clock_origin = time.monotonic()
-                    audio_clock = [0.0]
+                    audio_clock = [audio_skip_until]
+                    clip_finished = False
                     for packet in container.demux(*streams):
                         if self.stop_event.is_set():
                             break
                         requested = self._take_seek()
                         if requested is not None:
+                            requested = max(start_at, float(requested))
+                            if end_at > 0:
+                                requested = min(requested, end_at)
                             log.info("PyAV seek gen=%d target=%.3f", self.generation, requested)
                             container.seek(int(requested * float(av.time_base)), backward=True, any_frame=False)
-                            base_raw = None
-                            logical_base = requested
-                            clock_origin = time.monotonic() - requested
+                            base_raw = start_at
+                            audio_skip_until = max(0.0, requested - start_at)
+                            audio_clock = [audio_skip_until]
+                            clock_origin = time.monotonic() - audio_skip_until
                             continue
                         if packet.stream == audio_stream and resampler is not None:
                             self._decode_audio(
                                 packet, resampler, emit_from=audio_skip_until,
+                                stop_at=duration if duration > 0 else None,
                                 audio_clock=audio_clock,
+                                timeline_start=start_at,
                             )
                             continue
                         if packet.stream != video_stream:
@@ -322,16 +352,21 @@ class _DecodeJob(QObject):
                                 break
                             raw_time = frame.time
                             if raw_time is None:
-                                raw_time = 0.0 if base_raw is None else base_raw
+                                raw_time = base_raw
                             raw_time = float(raw_time)
-                            if base_raw is None:
-                                base_raw = raw_time
-                            position = max(0.0, logical_base + raw_time - base_raw)
+                            if raw_time < start_at:
+                                continue
+                            if end_at > 0 and raw_time >= end_at:
+                                clip_finished = True
+                                break
+                            position = max(0.0, raw_time - start_at)
                             clock_origin = self._wait_until(position, clock_origin)
                             if self.stop_event.is_set():
                                 break
                             image = self._frame_image(frame)
                             self.frame.emit(image, position, duration, self.generation)
+                        if clip_finished:
+                            break
                     if self.stop_event.is_set():
                         break
                     if not self.loop:
@@ -381,6 +416,8 @@ class PyAVPlayer(QObject):
         self._running = False
         self._paused = False
         self._loop = False
+        self._trim_start = 0.0
+        self._trim_end = 0.0
         self._generation = 0
         self._job = None
         self._thread = None
@@ -505,7 +542,7 @@ class PyAVPlayer(QObject):
             return False
         return True
 
-    def _begin(self, path, loop=False, audio_id=None):
+    def _begin(self, path, loop=False, audio_id=None, start=0.0, end=0.0):
         absolute = os.path.abspath(path)
         if not os.path.isfile(absolute):
             log.error("PyAV source missing path=%s", absolute)
@@ -515,7 +552,10 @@ class PyAVPlayer(QObject):
         generation = self._generation
         self._disconnect_job(self._job)
         self._stop_audio()
-        self._job = _DecodeJob(absolute, generation, loop=loop, audio_id=audio_id)
+        self._trim_start = max(0.0, float(start or 0.0))
+        self._trim_end = max(0.0, float(end or 0.0))
+        self._job = _DecodeJob(absolute, generation, loop=loop, audio_id=audio_id,
+                               start_at=self._trim_start, end_at=self._trim_end)
         self._job.loaded.connect(self._on_loaded)
         self._job.ready.connect(self._on_ready)
         self._job.frame.connect(self._on_frame)
@@ -537,13 +577,12 @@ class PyAVPlayer(QObject):
         self.status.emit("PyAV ▶ " + os.path.basename(absolute))
         return True
 
-    def play(self, path, audio_id=None, sub_id=None, start=0.0, loop=False):
+    def play(self, path, audio_id=None, sub_id=None, start=0.0, end=0.0, loop=False):
         if not self.start():
             return False
-        ok = self._begin(path, loop=loop, audio_id=audio_id)
-        log.debug("PyAV track request gen=%d audio_id=%s subtitle_id=%s", self._generation, audio_id, sub_id)
-        if ok and start and self._job:
-            self._job.seek(float(start))
+        ok = self._begin(path, loop=loop, audio_id=audio_id, start=start, end=end)
+        log.debug("PyAV track request gen=%d audio_id=%s subtitle_id=%s trim=%.3f..%.3f",
+                  self._generation, audio_id, sub_id, self._trim_start, self._trim_end)
         return ok
 
     def play_loop(self, path):
@@ -570,6 +609,8 @@ class PyAVPlayer(QObject):
         self._stop_audio()
         self._running = False
         self._current_path = ""
+        self._trim_start = 0.0
+        self._trim_end = 0.0
         self.widget.clear_frame()
         self.idle.emit(True)
         return True
@@ -653,14 +694,18 @@ class PyAVPlayer(QObject):
     def seek(self, seconds, absolute=False):
         target = float(seconds) if absolute else self._time + float(seconds)
         target = max(0.0, target)
+        if self._duration > 0:
+            target = min(target, self._duration)
+        source_target = self._trim_start + target
         if self._job:
-            self._job.seek(target)
+            self._job.seek(source_target)
             self._time = target
             self._stop_audio()
             if self._running:
                 self._start_audio()
             self.position.emit(self._time, self._duration)
-        log.info("PyAV seek gen=%d target=%.3f absolute=%s", self._generation, target, absolute)
+        log.info("PyAV seek gen=%d target=%.3f source=%.3f absolute=%s",
+                 self._generation, target, source_target, absolute)
         return True
 
     def set_property(self, name, value):

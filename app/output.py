@@ -181,6 +181,24 @@ class OutputWorker(QThread):
         except Exception:
             raise RuntimeError("Resolución inválida")
         label, codec = self._resolve_encoder(self.encoder)
+        try:
+            mark_in = max(0.0, float(item.get("mark_in") or 0.0))
+            mark_out = max(0.0, float(item.get("mark_out") or 0.0))
+            source_duration = max(0.0, float(item.get("source_duration") or item.get("duration") or 0.0))
+            if source_duration > 0:
+                mark_in = min(mark_in, source_duration)
+                if mark_out > 0:
+                    mark_out = min(mark_out, source_duration)
+            if mark_out > 0 and mark_out < mark_in:
+                mark_out = mark_in
+            has_trim = mark_in > 0 or mark_out > 0
+            trim_duration = (mark_out - mark_in) if mark_out > 0 else max(0.0, source_duration - mark_in)
+            local_offset = max(0.0, float(offset or 0.0))
+            source_offset = mark_in + local_offset
+            remaining_duration = (max(0.0, trim_duration - local_offset)
+                                  if has_trim and trim_duration > 0 else 0.0)
+        except (TypeError, ValueError):
+            mark_in = mark_out = source_offset = local_offset = trim_duration = remaining_duration = 0.0
         tracks = self._tracks_of(item)
         aid = pick_audio(tracks, item.get("audio_lang") or self.audio_preference)
         sid = pick_subtitle(tracks, item.get("subtitle_lang") or self.subtitle_preference) if self.subtitle_burn else -1
@@ -191,8 +209,10 @@ class OutputWorker(QThread):
             vf.insert(0, f"subtitles='{_ffmpeg_filter_path(source)}':si={sid}")
         gop = int(round(float(self.fps) * 2))
         cmd = [self.ffmpeg, "-hide_banner", "-loglevel", "warning", "-nostdin", "-re"]
-        if offset and offset > 0:
-            cmd += ["-ss", f"{offset:.3f}"]
+        if source_offset > 0:
+            # offset es relativo al corte de playlist; FFmpeg debe buscar en
+            # la posición absoluta mark-in + offset dentro del archivo.
+            cmd += ["-ss", f"{source_offset:.3f}"]
         cmd += ["-i", source]
         logo = self.logo if (self.logo and os.path.isfile(self.logo.get("path", ""))) else None
         amap = f"0:a:{aid}?" if isinstance(aid, int) and aid >= 0 else "0:a:0?"
@@ -221,6 +241,10 @@ class OutputWorker(QThread):
         elif codec == "h264_amf":
             cmd += ["-quality", "balanced", "-rc", "cbr", "-profile:v", "high"]
         cmd += ["-c:a", "aac", "-b:a", f"{self.audio_bitrate}k", "-ar", "48000", "-ac", "2", "-af", "aresample=async=1:first_pts=0"]
+        if remaining_duration > 0:
+            # -t es una duración de salida: no corta el archivo fuente y
+            # hace efectivo el mark-out también para RTMP/SRT/UDP.
+            cmd += ["-t", f"{remaining_duration:.3f}"]
         if self.extra_args.strip():
             cmd += self.extra_args.split()
         if low.startswith(("rtmp://", "rtmps://")):

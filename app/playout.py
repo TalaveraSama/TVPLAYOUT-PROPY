@@ -23,6 +23,38 @@ ST_SKIPPED = "OMITIDO"
 DONE_STATES = {ST_AIRED, ST_CUT, ST_ERROR, ST_SKIPPED}
 
 
+def trim_bounds(item_or_duration, mark_in=0.0, mark_out=0.0):
+    """Normaliza marcas y devuelve (inicio, fin, duración efectiva).
+
+    Las marcas son metadatos de la entrada de playlist: nunca se escribe ni
+    se modifica el archivo original. ``mark_out=0`` significa hasta el final.
+    """
+    if isinstance(item_or_duration, dict):
+        source = item_or_duration.get("source_duration") or item_or_duration.get("duration") or 0
+        mark_in = item_or_duration.get("mark_in", mark_in)
+        mark_out = item_or_duration.get("mark_out", mark_out)
+    else:
+        source = item_or_duration
+    try:
+        source = max(0.0, float(source or 0))
+    except (TypeError, ValueError):
+        source = 0.0
+    try:
+        start = max(0.0, float(mark_in or 0))
+        end = max(0.0, float(mark_out or 0))
+    except (TypeError, ValueError):
+        start, end = 0.0, 0.0
+    if source > 0:
+        start = min(start, source)
+        if end > 0:
+            end = min(end, source)
+    if end <= 0:
+        end = source
+    if end < start:
+        end = start
+    return start, end, max(0.0, end - start)
+
+
 def make_item(row_or_dict, **extra):
     """Normaliza una fila de la BD o un dict a un evento de playlist."""
     src = dict(row_or_dict) if not isinstance(row_or_dict, dict) else dict(row_or_dict)
@@ -32,12 +64,19 @@ def make_item(row_or_dict, **extra):
             tracks = json.loads(tracks or "[]")
         except ValueError:
             tracks = []
+    source_duration = float(src.get("source_duration") or src.get("duration") or 0)
+    mark_in, mark_out, effective_duration = trim_bounds(
+        source_duration, src.get("mark_in", 0), src.get("mark_out", 0)
+    )
     item = {
         "media_id": src.get("media_id") if "media_id" in src else src.get("id"),
         "path": src.get("path", ""),
         "title": src.get("title") or Path(src.get("path", "")).stem,
         "category": src.get("category") or "Otros",
-        "duration": float(src.get("duration") or 0),
+        "duration": effective_duration,
+        "source_duration": source_duration,
+        "mark_in": mark_in,
+        "mark_out": mark_out if mark_out < source_duration or source_duration <= 0 else 0.0,
         "width": int(src.get("width") or 0),
         "height": int(src.get("height") or 0),
         "fps": float(src.get("fps") or 0),
@@ -268,6 +307,17 @@ class PlayoutController(QObject):
     def update_item(self, index, **fields):
         if not (0 <= index < len(self.items)):
             return
+        if any(k in fields for k in ("mark_in", "mark_out", "source_duration")):
+            preview = dict(self.items[index])
+            preview.update(fields)
+            start, end, effective = trim_bounds(preview)
+            source = float(preview.get("source_duration") or 0)
+            fields.update({
+                "source_duration": source,
+                "mark_in": start,
+                "mark_out": end if end < source else 0.0,
+                "duration": effective,
+            })
         self.items[index].update(fields)
         self.item_changed.emit(index)
         self._mark_dirty()
@@ -279,7 +329,10 @@ class PlayoutController(QObject):
         meta = make_item(row)
         for i, it in enumerate(self.items):
             if it["path"] == path:
-                for k in ("duration", "width", "height", "fps", "video_codec", "audio_codec", "tracks", "thumb"):
+                it["source_duration"] = meta.get("source_duration") or meta.get("duration") or 0
+                start, end, effective = trim_bounds(it)
+                it["mark_in"], it["mark_out"], it["duration"] = start, (end if end < it["source_duration"] else 0.0), effective
+                for k in ("width", "height", "fps", "video_codec", "audio_codec", "tracks", "thumb"):
                     it[k] = meta[k]
                 self.item_changed.emit(i)
 
@@ -391,13 +444,23 @@ class PlayoutController(QObject):
         self._finish_current(ST_CUT)
         aid = pick_audio(item.get("tracks"), item.get("audio_lang") or self.audio_pref)
         sid = pick_subtitle(item.get("tracks"), item.get("subtitle_lang") or self.sub_pref)
+        trim_start, trim_end, effective_duration = trim_bounds(item)
+        item["mark_in"] = trim_start
+        item["mark_out"] = trim_end if trim_end < (item.get("source_duration") or 0) else 0.0
+        item["duration"] = effective_duration
         self.paused = False
-        ok = self.player.play(item["path"], audio_id=aid, sub_id=sid)
+        try:
+            ok = self.player.play(item["path"], audio_id=aid, sub_id=sid,
+                                  start=trim_start, end=trim_end)
+        except TypeError:
+            # Compatibilidad con reproductores alternativos que aún no
+            # exponen el argumento end; el aire activo es PyAVPlayer.
+            ok = self.player.play(item["path"], audio_id=aid, sub_id=sid, start=trim_start)
         if not ok:
             item["status"] = ST_ERROR
-            item["note"] = "mpv no disponible"
+            item["note"] = "reproductor local no disponible"
             self.item_changed.emit(index)
-            self.message.emit("No se pudo iniciar mpv. Revisa Ajustes del sistema.")
+            self.message.emit("No se pudo iniciar el reproductor local. Revisa PyAV/INSTALL.bat.")
             return False
         if index == self.cue:
             self.cue = -1

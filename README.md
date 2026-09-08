@@ -1,4 +1,4 @@
-# TVPlayout PRO V24.0.1.8 — Consola de playout
+# TVPlayout PRO V24.0.1.9 — Consola de playout
 
 Playout de televisión 24/7 para Windows con interfaz inspirada en la distribución de **XPlayout** (Axel Technology),
 sin usar código ni recursos propietarios. Reproductor local **PyAV/libavcodec** + salida **RTMP/SRT/UDP** con **FFmpeg**.
@@ -16,7 +16,7 @@ sin usar código ni recursos propietarios. Reproductor local **PyAV/libavcodec**
 | GRID MODE | Playlist con filas coloreadas por categoría: #, Día, Hora (estimada), Hora real, Duración, Categoría, Título, Estado, ⏰ hora fija, Archivo, Formato. Fila azul = AL AIRE, lila = LISTO (cue), gris = emitido |
 | GRAPHIC MODE | La misma playlist con miniaturas |
 | BIBLIOTECA | Buscador + filtro por categoría, añadir al final / tras el aire / en selección / emitir ahora |
-| Botonera | Insertar archivo, Preparar, Editar clip, Subir/Bajar, Quitar, Limpiar emitidos, Ir al aire, Hora fija, Reiniciar estados, Duplicar, Vaciar, Previsualizar, Mezclar pendientes, Playlist Manager |
+| Botonera | Insertar archivo, Preparar, Editar clip (título, pistas y corte no destructivo), Subir/Bajar, Quitar, Limpiar emitidos, Ir al aire, Hora fija, Reiniciar estados, Duplicar, Vaciar, Previsualizar, Mezclar pendientes, Playlist Manager |
 | Monitor | VU meter estéreo (dBFS) + vídeo PyAV/libavcodec pintado en Qt, volumen/mute **solo local**, aspecto |
 | FUNCIONES | Playlist Manager · Biblioteca · Programador · Registros As-Run · Fuentes/Categorías · Ajustes del sistema · Escanear · Logo/CG (RTMP) · Dispositivos · 🚨 EMERGENCIA |
 | SALIDA RTMP | URL, INICIAR/DETENER, estado (encoder, resolución, bitrate) |
@@ -77,6 +77,10 @@ tests/                  pruebas estáticas y de continuidad del playout
 ```
 
 ## Registro de cambios
+
+### V24.0.1.9
+- Se agregaron cortes no destructivos por evento: mark-in/mark-out se guardan en la playlist y se aplican al monitor PyAV y a la salida FFmpeg.
+- El archivo original nunca se modifica; el corte se realiza en tiempo de reproducción y el tiempo efectivo aparece en la playlist.
 
 ### V24.0.1.8
 - RTMP ya no selecciona NVENC/QSV/AMF solo porque FFmpeg los liste: prueba el encoder y usa CPU/x264 si falta la GPU o el controlador.

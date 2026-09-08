@@ -117,6 +117,9 @@ class DB:
             ("category", "TEXT DEFAULT ''"),
             ("fixed_time", "TEXT DEFAULT ''"),
             ("duration", "REAL DEFAULT 0"),
+            ("source_duration", "REAL DEFAULT 0"),
+            ("mark_in", "REAL DEFAULT 0"),
+            ("mark_out", "REAL DEFAULT 0"),
         ]:
             if name not in pi:
                 self.conn.execute(f"ALTER TABLE playlist_items ADD COLUMN {name} {ddl}")
@@ -336,11 +339,13 @@ class DB:
             pid = self.conn.execute("SELECT id FROM playlists WHERE name=?", (name,)).fetchone()[0]
             self.conn.execute("DELETE FROM playlist_items WHERE playlist_id=?", (pid,))
             self.conn.executemany(
-                """INSERT INTO playlist_items(playlist_id,media_id,position,audio_lang,subtitle_lang,path,title,category,fixed_time,duration)
-                   VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                """INSERT INTO playlist_items(playlist_id,media_id,position,audio_lang,subtitle_lang,path,title,category,fixed_time,duration,source_duration,mark_in,mark_out)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 [(pid, int(it.get("media_id") or 0), pos, it.get("audio_lang", "") or "", it.get("subtitle_lang", "") or "",
                   it.get("path", ""), it.get("title", ""), it.get("category", ""), it.get("fixed_time", "") or "",
-                  float(it.get("duration") or 0)) for pos, it in enumerate(items, 1)])
+                  float(it.get("duration") or 0), float(it.get("source_duration") or it.get("duration") or 0),
+                  max(0.0, float(it.get("mark_in") or 0)), max(0.0, float(it.get("mark_out") or 0)))
+                 for pos, it in enumerate(items, 1)])
             self.conn.commit()
             return pid
 
@@ -358,12 +363,18 @@ class DB:
                     media = self.conn.execute("SELECT * FROM media WHERE id=?", (d["media_id"],)).fetchone()
                 if media is None and d.get("path"):
                     media = self.conn.execute("SELECT * FROM media WHERE path=?", (d["path"],)).fetchone()
+                source_duration = (d.get("source_duration") or
+                                   (media["duration"] if media and media["duration"] else 0) or
+                                   d.get("duration") or 0)
                 item = {
                     "media_id": media["id"] if media else d.get("media_id"),
                     "path": (media["path"] if media else d.get("path")) or "",
                     "title": d.get("title") or (media["title"] if media else "") or Path(d.get("path") or "").stem,
                     "category": d.get("category") or (media["category"] if media else "") or "Otros",
-                    "duration": (media["duration"] if media and media["duration"] else d.get("duration")) or 0,
+                    "duration": d.get("duration") or source_duration,
+                    "source_duration": source_duration,
+                    "mark_in": max(0.0, float(d.get("mark_in") or 0)),
+                    "mark_out": max(0.0, float(d.get("mark_out") or 0)),
                     "audio_lang": d.get("audio_lang") or "",
                     "subtitle_lang": d.get("subtitle_lang") or "",
                     "fixed_time": d.get("fixed_time") or "",

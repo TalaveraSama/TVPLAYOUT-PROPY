@@ -471,6 +471,21 @@ def test_pyav_audio_discards_ffmpeg_alignment_padding():
     assert "raw = self._pcm_bytes(out)" in player
 
 
+def test_playlist_trim_is_persisted_and_applied_to_both_outputs():
+    """El corte es metadato de playlist: no reescribe el archivo y afecta PyAV/FFmpeg."""
+    db = _read(os.path.join(REPO, "app", "db.py"))
+    playout = _read(os.path.join(REPO, "app", "playout.py"))
+    player = _read(os.path.join(REPO, "app", "pyav_player.py"))
+    output = _read(OUT)
+    dialog = _read(os.path.join(REPO, "app", "dialogs.py"))
+    assert '"mark_in"' in db and '"mark_out"' in db
+    assert "source_duration" in db
+    assert "trim_bounds" in playout and "start=trim_start, end=trim_end" in playout
+    assert "start_at=self._trim_start" in player and "self.end_at" in player
+    assert '"-t", f"{remaining_duration:.3f}"' in output
+    assert "QDoubleSpinBox" in dialog and "Restablecer corte" in dialog
+
+
 if __name__ == "__main__":
     tests = [(name, fn) for name, fn in globals().items() if name.startswith("test_") and callable(fn)]
     failed = 0
