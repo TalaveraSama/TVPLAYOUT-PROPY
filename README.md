@@ -1,4 +1,4 @@
-# TVPlayout PRO V22 — Consola de playout estilo XPlayout
+# TVPlayout PRO V22 — Consola de playout 
 
 Playout de televisión 24/7 para Windows con interfaz inspirada en la distribución de **XPlayout** (Axel Technology),
 sin usar código ni recursos propietarios. Reproductor local **mpv** embebido + salida **RTMP/SRT/UDP** con **FFmpeg**.
