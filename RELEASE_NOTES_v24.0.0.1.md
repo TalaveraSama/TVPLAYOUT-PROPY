@@ -7,7 +7,12 @@ pero la playlist no avanzaba correctamente al siguiente evento.
 
 ### Cambios principales
 
-- El encadenado automático usa `end-file` como evento principal.
+- El monitor local usa un reproductor nativo de QtMultimedia/QVideoWidget,
+  sin depender del IPC, named pipe o ventana embebida de mpv para el aire.
+- mpv queda sólo como preview externo opcional.
+- El encadenado automático usa el fin nativo de `QMediaPlayer` como evento principal.
+- El encadenado automático conserva respaldo con `idle-active` en el backend
+  compatible y watchdog de continuidad.
 - Se agregó un respaldo con `idle-active` para builds de mpv que no entregan
   correctamente el evento de fin de archivo.
 - Se agregó protección durante `loadfile replace` para ignorar eventos atrasados
@@ -24,7 +29,7 @@ pero la playlist no avanzaba correctamente al siguiente evento.
 
 - Compilación Python correcta.
 - Scheduler: 10/10 pruebas correctas.
-- Integración: 27/27 pruebas correctas.
+- Integración: 29/29 pruebas correctas.
 - Simulación de continuidad: clip 1 → clip 2 → clip 3.
 
 ## Instalación

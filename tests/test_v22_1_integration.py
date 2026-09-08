@@ -486,6 +486,18 @@ def test_playout_slate_uses_font_on_both_drawtext_filters():
         "ambos filtros drawtext del slate deben usar font_path (si no, uno de los dos puede fallar sin fuente)"
 
 
+def test_main_uses_native_qt_player():
+    """V24.0.0.1: el aire local debe usar QtMultimedia y no depender del
+    IPC/named pipe de mpv para encadenar eventos 24/7.
+    """
+    win = _read(WIN)
+    native = _read(os.path.join(REPO, "app", "native_player.py"))
+    assert "from .native_player import NativePlayer" in win
+    assert "NativePlayer(self.video, MPV_PATH, self)" in win
+    assert "QMediaPlayer" in native and "QVideoWidget" in native
+    assert "mediaStatusChanged" in native and "EndOfMedia" in native
+
+
 def test_main_window_has_filler_setting():
     """v23.3: main_window expone filler_path y filler_enabled en
     DEFAULT_SETTINGS, y apply_settings lo carga en self.ctrl.filler_path.

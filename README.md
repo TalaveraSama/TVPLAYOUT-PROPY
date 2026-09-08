@@ -1,7 +1,7 @@
 # TVPlayout PRO V24.0.0.1 — Consola de playout
 
 Playout de televisión 24/7 para Windows con interfaz inspirada en la distribución de **XPlayout** (Axel Technology),
-sin usar código ni recursos propietarios. Reproductor local **mpv** embebido + salida **RTMP/SRT/UDP** con **FFmpeg**.
+sin usar código ni recursos propietarios. Reproductor local nativo **QtMultimedia** + salida **RTMP/SRT/UDP** con **FFmpeg**.
 
 ![Panel principal](docs/panel.png)
 
@@ -63,7 +63,8 @@ duración, resolución, códecs, pistas de audio/subtítulos y se generan miniat
 main.py                 punto de entrada
 app/main_window.py      consola principal (layout XPlayout)
 app/playout.py          controlador de continuidad (auto/manual, cue, hora fija, loop, autofill, tandas)
-app/mpv_player.py       mpv embebido por IPC (named pipe / socket), VU meter
+app/native_player.py    reproductor local nativo QtMultimedia/QVideoWidget
+app/mpv_player.py       compatibilidad y preview externo con mpv
 app/output.py           motor RTMP/SRT/UDP con FFmpeg (sigue al playout local, logo, subtítulos)
 app/prober.py           ffprobe: metadatos, pistas, miniaturas; selección de pista preferida
 app/scanner.py          escaneo recursivo de fuentes

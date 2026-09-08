@@ -79,6 +79,7 @@ echo.
     --collect-data app ^
     --hidden-import "PySide6.QtSvg" ^
     --hidden-import "PySide6.QtMultimedia" ^
+    --hidden-import "PySide6.QtMultimediaWidgets" ^
     --exclude-module "tkinter" ^
     --exclude-module "matplotlib" ^
     --exclude-module "numpy" ^

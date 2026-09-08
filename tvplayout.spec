@@ -23,6 +23,7 @@ a = Analysis(
     hiddenimports=[
         'PySide6.QtSvg',
         'PySide6.QtMultimedia',
+        'PySide6.QtMultimediaWidgets',
         'app.config',
         'app.db',
         'app.dialogs',
@@ -30,6 +31,7 @@ a = Analysis(
         'app.logger',
         'app.main_window',
         'app.mpv_player',
+        'app.native_player',
         'app.output',
         'app.playout',
         'app.prober',
