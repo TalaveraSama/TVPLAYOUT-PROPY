@@ -24,6 +24,10 @@ from PySide6.QtMultimedia import QAudioFormat, QAudioSink
 from . import logger
 
 log = logger.get("pyav-player")
+AUDIO_RATE = 48000
+AUDIO_BYTES_PER_SECOND = AUDIO_RATE * 2 * 2  # s16 estéreo
+AUDIO_BUFFER_BYTES = int(AUDIO_BYTES_PER_SECOND * 0.12)  # baja latencia de monitor
+AUDIO_QUEUE_LIMIT = int(AUDIO_BYTES_PER_SECOND * 0.25)
 
 
 class _DecodeJob(QObject):
@@ -190,7 +194,7 @@ class _DecodeJob(QObject):
                     resampler = None
                     if audio_stream is not None:
                         resampler = av.audio.resampler.AudioResampler(
-                            format="s16", layout="stereo", rate=48000
+                            format="s16", layout="stereo", rate=AUDIO_RATE
                         )
                     base_raw = None
                     logical_base = 0.0
@@ -316,11 +320,15 @@ class PyAVPlayer(QObject):
     def _setup_audio(self):
         try:
             fmt = QAudioFormat()
-            fmt.setSampleRate(48000)
+            fmt.setSampleRate(AUDIO_RATE)
             fmt.setChannelCount(2)
             fmt.setSampleFormat(QAudioFormat.SampleFormat.Int16)
             self._audio_format = fmt
             self._audio_sink = QAudioSink(fmt, self)
+            # QAudioSink usa un buffer grande por defecto en algunas
+            # instalaciones de Windows. Para el monitor eso se percibe como
+            # audio atrasado; RTMP no usa este sink.
+            self._audio_sink.setBufferSize(AUDIO_BUFFER_BYTES)
             self._audio_sink.setVolume(1.0)
         except Exception as exc:  # noqa: BLE001
             self._audio_sink = None
@@ -335,7 +343,8 @@ class PyAVPlayer(QObject):
             self._audio_sink.setVolume(0.0 if self.muted else self._target_volume)
             self._audio_io = self._audio_sink.start()
             self._audio_timer.start()
-            log.debug("QAudioSink iniciado rate=48000 channels=2 volume=%.2f", self._target_volume)
+            log.debug("QAudioSink iniciado rate=%d channels=2 buffer=%dB volume=%.2f",
+                      AUDIO_RATE, AUDIO_BUFFER_BYTES, self._target_volume)
         except Exception as exc:  # noqa: BLE001
             self._audio_io = None
             log.warning("No se pudo iniciar QAudioSink: %s", exc)
@@ -356,9 +365,11 @@ class PyAVPlayer(QObject):
         # Mantener como máximo aproximadamente un segundo de PCM para que un
         # decoder lento no acumule latencia infinita.
         self._audio_queue.extend(bytes(data))
-        max_bytes = 48000 * 2 * 2 * 2
-        if len(self._audio_queue) > max_bytes:
-            del self._audio_queue[:-max_bytes]
+        if len(self._audio_queue) > AUDIO_QUEUE_LIMIT:
+            # Nunca conservar un segundo completo de audio: ese backlog se
+            # escucha como desfase. Se conserva solo la ventana corta del
+            # monitor local y la salida RTMP queda completamente separada.
+            del self._audio_queue[:-AUDIO_QUEUE_LIMIT]
 
     def _drain_audio(self):
         if not self._audio_io or self._audio_sink is None or not self._audio_queue:
