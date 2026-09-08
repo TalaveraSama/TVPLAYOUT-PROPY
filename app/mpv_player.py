@@ -472,6 +472,34 @@ class MPVPlayer(QObject):
         self.levels.emit(left, right)
 
     # ------------------------------------------------------------ control
+    def play_loop(self, path):
+        """v23.3: reproduce un clip (o URL) en loop infinito. Usado por el
+        filler automático. Aplica crossfade=no (el filler debe ser continuo)
+        y loop-file=inf. No requiere audio_id/sub_id.
+        Acepta tanto paths (ej: C:/filler.mp4) como URLs lavfi
+        (ej: av://lavfi:color=c=black:s=1920x1080:...,drawtext=...).
+        """
+        if not self.start():
+            return False
+        self._current_path = path
+        self._fade_out_applied = False
+        # sacar filtros de crossfade que pudieran estar de un clip anterior
+        self.command(["af", "remove", "@fadein"])
+        self.command(["af", "remove", "@fadeout"])
+        # setear las propiedades clave ANTES del loadfile (v22.2.8)
+        self.set_property("aid", "auto")
+        self.set_property("sid", "no")
+        self.set_property("start", "none")
+        self.set_property("loop-file", "inf")  # v23.3: loop infinito
+        self.set_property("loop-playlist", "inf")
+        self.set_property("volume", float(self.volume))
+        self.set_property("mute", "yes" if self.muted else "no")
+        ok = self.command(["loadfile", path, "replace"])
+        if ok:
+            self.status.emit("FILLER ▶ " + (os.path.basename(path) if not path.startswith("av://") else path))
+            log.info("play_loop: %s", path)
+        return ok
+
     def play(self, path, audio_id=None, sub_id=None, start=0.0, loop=False):
         if not self.start():
             return False

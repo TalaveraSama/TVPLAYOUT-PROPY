@@ -384,6 +384,81 @@ def test_main_window_has_crossfade_controls():
         "apply_settings debe aplicar el estado del crossfade desde settings (crossfade_enabled + crossfade_duration)"
 
 
+# --- v23.3: filler automático + slate fallback ---
+
+def test_mpv_player_supports_play_loop():
+    """v23.3: MPVPlayer.play_loop(path) reproduce en loop infinito,
+    sacando los filtros de crossfade residuales y usando loop-file=inf.
+    """
+    src = _read(MPV)
+    # Encontrar play_loop buscando desde la firma hasta la siguiente def
+    idx = src.find("def play_loop(self")
+    assert idx > 0, "no encontré el método play_loop()"
+    end = src.find("\n    def ", idx + 20)
+    if end < 0:
+        end = idx + 2500
+    plb = src[idx:end]
+    # El método debe tener loop-file=inf
+    assert "loop-file" in plb and "inf" in plb, \
+        "play_loop debe setear loop-file=inf en mpv"
+    # Debe usar loadfile para arrancar el clip
+    assert "loadfile" in plb, "play_loop debe usar loadfile para arrancar el clip"
+    # Debe sacar los filtros de crossfade residuales (no aplicarlos nuevos)
+    assert 'af", "remove"' in plb, \
+        "play_loop debe sacar los filtros de crossfade residuales (@fadein/@fadeout) antes de arrancar"
+    # No debe agregar filtros nuevos de afade. Buscamos el patrón de
+    # apply (afade=) o remove (afade) solo en líneas de código (no en
+    # docstring). Las líneas de código tienen exactamente 8 espacios de
+    # indentación.
+    code_lines = [l for l in plb.splitlines() if l.startswith("        ") and not l.startswith("         ")]
+    code = "\n".join(code_lines)
+    assert 'afade=' not in code, \
+        "play_loop NO debe agregar filtros nuevos de afade (el filler es continuo, sin crossfade)"
+
+
+def test_playout_has_filler_and_slate():
+    """v23.3: PlayoutController expone filler_path, filler_active,
+    _play_filler y _play_slate. _on_ended los invoca cuando no hay
+    próximo clip, en lugar de quedar con monitor en negro.
+    """
+    src = _read(os.path.join(REPO, "app", "playout.py"))
+    # Atributos de instancia
+    assert "self.filler_path" in src, "PlayoutController debe tener self.filler_path"
+    assert "self.filler_active" in src, "PlayoutController debe tener self.filler_active"
+    # Métodos
+    assert "def _play_filler" in src, "PlayoutController debe tener _play_filler()"
+    assert "def _play_slate" in src, "PlayoutController debe tener _play_slate()"
+    # _on_ended debe invocar _play_filler y _play_slate cuando no hay
+    # más clips disponibles
+    on_ended = re.search(r"def _on_ended\(self.*?\n(?:        .*\n)+", src, re.S)
+    assert on_ended, "no encontré _on_ended"
+    oeb = on_ended.group(0)
+    assert "self._play_filler" in oeb and "self._play_slate" in oeb, \
+        "_on_ended debe invocar _play_filler y _play_slate como fallback al fin de playlist"
+    # Convención: -2 significa filler al aire
+    assert "self.onair = -2" in src, \
+        "PlayoutController debe usar self.onair = -2 como convención para filler al aire"
+    # _on_position debe ignorar actualizaciones del filler
+    on_pos = re.search(r"def _on_position\(self.*?\n(?:        .*\n)+", src, re.S)
+    assert on_pos, "no encontré _on_position"
+    opb = on_pos.group(0)
+    assert "self.onair == -2" in opb, \
+        "_on_position debe ignorar actualizaciones cuando onair == -2 (filler)"
+
+
+def test_main_window_has_filler_setting():
+    """v23.3: main_window expone filler_path y filler_enabled en
+    DEFAULT_SETTINGS, y apply_settings lo carga en self.ctrl.filler_path.
+    """
+    src = _read(WIN)
+    assert '"filler_path"' in src, "DEFAULT_SETTINGS debe tener 'filler_path'"
+    assert '"filler_enabled"' in src, "DEFAULT_SETTINGS debe tener 'filler_enabled'"
+    apply = re.search(r"def apply_settings\(self.*?self\._modes_changed\(\)", src, re.S)
+    assert apply, "no encontré apply_settings"
+    ab = apply.group(0)
+    assert "filler_path" in ab, "apply_settings debe cargar filler_path en self.ctrl.filler_path"
+
+
 if __name__ == "__main__":
     tests = [(name, fn) for name, fn in globals().items() if name.startswith("test_") and callable(fn)]
     failed = 0

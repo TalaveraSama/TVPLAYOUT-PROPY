@@ -55,6 +55,11 @@ DEFAULT_SETTINGS = {
     "volume": 100, "muted": False, "emergency_clip": "", "splitter": [1120, 430],
     "logo_enabled": False, "logo_path": "", "logo_position": "arriba-derecha", "logo_scale": 12, "logo_opacity": 90,
     "logo_margin": 24,
+    # v23.3: filler automático. Cuando se acaba la lista, se carga el
+    # clip de filler en loop infinito para que el monitor nunca quede
+    # en negro. Si no hay filler configurado, se muestra un slate
+    # estático generado con lavfi (texto "TVPlayout PRO — Próximamente").
+    "filler_path": "", "filler_enabled": True,
 }
 
 
@@ -716,6 +721,13 @@ class MainWindow(QMainWindow):
         self.ctrl.autofill_count = int(s.get("autofill_count", 10))
         self.ctrl.tandas_category = s.get("tandas_category", "Publicidad")
         self.ctrl.tandas_count = int(s.get("tandas_count", 2))
+        # v23.3: filler automático. El operador configura el path a un
+        # clip de filler en settings (filler_path). Si está vacío, se usa
+        # el slate lavfi. Si filler_enabled es False, no se carga nada
+        # y el playout queda con monitor en negro al acabar (legacy).
+        self.ctrl.filler_path = str(s.get("filler_path", "") or "")
+        # filler_enabled: si está en False, el playout NO carga filler
+        # ni slate — comportamiento legacy (monitor en negro).
         self.player.hwdec = s.get("hwdec", "auto-safe")
         self.player.audio_device = s.get("audio_device", "")
         pref = s.get("audio_pref", "")
