@@ -2,10 +2,25 @@
 from pathlib import Path
 import os
 import shutil
+import sys
 
-ROOT = Path(__file__).resolve().parent.parent
+
+def _runtime_root():
+    """Carpeta persistente de la aplicación, también dentro de PyInstaller.
+
+    En modo desarrollo ``__file__`` apunta al checkout. En un ejecutable
+    congelado no se debe usar ``sys._MEIPASS``: en onefile es temporal y se
+    borra al cerrar, lo que perdería la base, logs y cache. La carpeta del
+    ejecutable es la raíz portable estable.
+    """
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent.parent
+
+
+ROOT = _runtime_root()
 APP_NAME = "TVPlayout PRO"
-APP_VERSION = "V24.0.1.9"
+APP_VERSION = "V24.0.2.0"
 IS_WINDOWS = os.name == "nt"
 
 

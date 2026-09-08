@@ -486,6 +486,18 @@ def test_playlist_trim_is_persisted_and_applied_to_both_outputs():
     assert "QDoubleSpinBox" in dialog and "Restablecer corte" in dialog
 
 
+def test_portable_build_keeps_runtime_root_and_external_tools_at_exe_level():
+    """La distribución portable debe conservar datos y descubrir FFmpeg junto al EXE."""
+    config = _read(os.path.join(REPO, "app", "config.py"))
+    build = _read(os.path.join(REPO, "build_exe.bat"))
+    spec = _read(os.path.join(REPO, "tvplayout.spec"))
+    launcher = _read(os.path.join(REPO, "INICIAR_EXE.bat"))
+    assert "frozen" in config and "sys.executable" in config
+    assert "TVPlayoutPRO.exe" in build and "ffmpeg.exe" in build and "ffprobe.exe" in build
+    assert "collect_all(\"av\")" in spec and "COLLECT(" in spec
+    assert "TVPlayoutPRO.exe" in launcher
+
+
 if __name__ == "__main__":
     tests = [(name, fn) for name, fn in globals().items() if name.startswith("test_") and callable(fn)]
     failed = 0

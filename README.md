@@ -1,4 +1,4 @@
-# TVPlayout PRO V24.0.1.9 — Consola de playout
+# TVPlayout PRO V24.0.2.0 — Consola de playout
 
 Playout de televisión 24/7 para Windows con interfaz inspirada en la distribución de **XPlayout** (Axel Technology),
 sin usar código ni recursos propietarios. Reproductor local **PyAV/libavcodec** + salida **RTMP/SRT/UDP** con **FFmpeg**.
@@ -78,9 +78,13 @@ tests/                  pruebas estáticas y de continuidad del playout
 
 ## Registro de cambios
 
-### V24.0.1.9
+### V24.0.2.0
 - Se agregaron cortes no destructivos por evento: mark-in/mark-out se guardan en la playlist y se aplican al monitor PyAV y a la salida FFmpeg.
 - El archivo original nunca se modifica; el corte se realiza en tiempo de reproducción y el tiempo efectivo aparece en la playlist.
+
+### V24.0.1.9
+- Cortes no destructivos por evento con mark-in/mark-out, persistidos en SQLite, JSON y M3U8.
+- PyAV y FFmpeg respetan el mismo segmento; el archivo fuente nunca se sobrescribe.
 
 ### V24.0.1.8
 - RTMP ya no selecciona NVENC/QSV/AMF solo porque FFmpeg los liste: prueba el encoder y usa CPU/x264 si falta la GPU o el controlador.
