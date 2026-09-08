@@ -125,6 +125,35 @@ class _DecodeJob(QObject):
             "fps": float(rate) if rate else 0.0,
         }
 
+    @staticmethod
+    def _pcm_bytes(frame):
+        """Devuelve solo las muestras útiles del plano PCM empaquetado.
+
+        FFmpeg alinea la memoria de los ``AudioFrame`` y PyAV puede exponer
+        esos bytes de relleno al convertir el plano a ``bytes``. Si el relleno
+        llega a QAudioSink, se reproduce como ruido y además puede desfasar el
+        siguiente bloque de muestras. El resampler de abajo siempre produce
+        s16 estéreo empaquetado, por lo que el tamaño válido es exactamente
+        ``samples * 2 canales * 2 bytes``.
+        """
+        try:
+            samples = int(getattr(frame, "samples", 0) or 0)
+            useful = samples * 2 * 2
+            if samples <= 0 or not getattr(frame, "planes", None):
+                return b""
+            plane = frame.planes[0]
+            raw = plane.to_bytes() if hasattr(plane, "to_bytes") else bytes(plane)
+            if len(raw) < useful:
+                log.warning(
+                    "PCM incompleto: %d bytes para %d muestras (%d esperados)",
+                    len(raw), samples, useful,
+                )
+                return b""
+            # No enviar el padding de alineación de FFmpeg al dispositivo.
+            return raw[:useful]
+        except (AttributeError, TypeError, ValueError, IndexError):
+            return b""
+
     def _decode_audio(self, packet, resampler, emit_from=0.0, stop_at=None, audio_clock=None):
         """Decodifica PCM y opcionalmente lo limita a una ventana temporal.
 
@@ -150,7 +179,9 @@ class _DecodeJob(QObject):
                 for out in converted:
                     if not out.planes:
                         continue
-                    raw = bytes(out.planes[0])
+                    raw = self._pcm_bytes(out)
+                    if not raw:
+                        continue
                     out_duration = float(getattr(out, "samples", 0) or 0) / AUDIO_RATE
                     out_end = cursor + out_duration
                     if (cursor < (stop_at if stop_at is not None else float("inf"))

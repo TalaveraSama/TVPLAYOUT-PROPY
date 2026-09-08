@@ -452,6 +452,15 @@ def test_pyav_dependencies_and_surface_frame_api():
     assert "QImage" in widgets, "VideoSurface debe pintar QImage"
 
 
+def test_pyav_audio_discards_ffmpeg_alignment_padding():
+    """El PCM local no debe enviar al altavoz el padding de alineación de FFmpeg."""
+    player = _read(os.path.join(REPO, "app", "pyav_player.py"))
+    assert "def _pcm_bytes(frame)" in player
+    assert "useful = samples * 2 * 2" in player
+    assert "return raw[:useful]" in player
+    assert "raw = self._pcm_bytes(out)" in player
+
+
 if __name__ == "__main__":
     tests = [(name, fn) for name, fn in globals().items() if name.startswith("test_") and callable(fn)]
     failed = 0
