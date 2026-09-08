@@ -91,6 +91,7 @@ class PlayoutController(QObject):
         # Ajustes (filler_path). Si no hay filler, se muestra un slate
         # estático generado en runtime.
         self.filler_path = ""
+        self.filler_enabled = True
         self.filler_active = False  # True mientras el filler está al aire
         self._filler_play_count = 0
         # v23.3.1: contador de fallos consecutivos al cargar filler/slate.
@@ -108,12 +109,23 @@ class PlayoutController(QObject):
         self._consecutive_errors = 0
         self._fixed_fired = set()
         self._dirty = False
+        # Estado de transición del reproductor. `end-file` es el camino
+        # normal, pero algunas builds de mpv sólo notifican idle-active al
+        # llegar al EOF. Mientras se carga el siguiente archivo ignoramos
+        # ese idle transitorio para no cerrar el clip nuevo por error.
+        self._load_pending = False
         self.on_start_callbacks = []     # callable(index, item)
         self.on_items_replaced = []      # callable(items, index)
 
         player.ended.connect(self._on_ended)
         player.loaded.connect(self._on_loaded)
         player.position.connect(self._on_position)
+        # Red de seguridad: si el build de mpv no entrega end-file, el
+        # cambio a idle-active=True igualmente permite continuar la tanda.
+        try:
+            player.idle.connect(self._on_player_idle)
+        except AttributeError:
+            pass
         player.process_died.connect(self._on_player_died)
 
         self._tick_timer = QTimer(self)
@@ -392,8 +404,13 @@ class PlayoutController(QObject):
         aid = pick_audio(item.get("tracks"), item.get("audio_lang") or self.audio_pref)
         sid = pick_subtitle(item.get("tracks"), item.get("subtitle_lang") or self.sub_pref)
         self.paused = False
+        # Se marca antes de enviar loadfile: mpv puede emitir idle-active
+        # durante el reemplazo del archivo anterior. Ese idle no significa
+        # que el nuevo clip terminó.
+        self._load_pending = True
         ok = self.player.play(item["path"], audio_id=aid, sub_id=sid)
         if not ok:
+            self._load_pending = False
             item["status"] = ST_ERROR
             item["note"] = "mpv no disponible"
             self.item_changed.emit(index)
@@ -403,6 +420,7 @@ class PlayoutController(QObject):
             self.cue = -1
             self.cue_changed.emit(-1)
         self.onair = index
+        self.filler_active = False
         self._pos = 0.0
         self._dur = item["duration"] or 0.0
         self._started_at = time.time()
@@ -458,6 +476,8 @@ class PlayoutController(QObject):
         self.player.stop()
         prev = self.onair
         self.onair = -1
+        self.filler_active = False
+        self._load_pending = False
         self.paused = False
         self._pos = 0.0
         self._dur = 0.0
@@ -483,9 +503,42 @@ class PlayoutController(QObject):
     def _on_loaded(self):
         self._consecutive_errors = 0
         self._filler_fail_count = 0
+        self._load_pending = False
+
+    def _on_player_idle(self, is_idle):
+        """Continúa la secuencia cuando mpv sólo informa idle-active.
+
+        `end-file` sigue siendo la señal principal. Esta ruta cubre builds
+        que, con ciertos contenedores o decodificadores, llegan a idle sin
+        entregar el evento de fin por IPC. `_load_pending` evita tomar como
+        EOF el idle que ocurre mientras se reemplaza el clip anterior.
+        """
+        if not is_idle or self._load_pending or self.paused:
+            return
+        # Confirmar en el siguiente ciclo evita que el idle-active del clip
+        # saliente cierre el clip nuevo cuando ambos eventos llegan juntos.
+        QTimer.singleShot(150, self._confirm_player_idle)
+
+    def _confirm_player_idle(self):
+        if self._load_pending or self.paused:
+            return
+        # MPVPlayer mantiene este estado y lo pone en False en file-loaded.
+        # Si el fake/player no lo expone, la condición por defecto permite
+        # usar igualmente la red de seguridad.
+        if getattr(self.player, "_idle_active", True) is False:
+            return
+        if self.is_on_air:
+            self._on_ended("eof")
+        elif self.filler_active and self.onair == -2:
+            self._on_ended("eof")
 
     def _on_position(self, pos, dur):
-        if not self.is_on_air:
+        # Descarta posición/duración que pudiera pertenecer al clip
+        # saliente mientras esperamos file-loaded del nuevo. Sin este
+        # guard, una respuesta IPC retrasada puede sobrescribir la
+        # duración del siguiente evento y disparar el watchdog demasiado
+        # pronto.
+        if self._load_pending or not self.is_on_air:
             return
         # v23.3: si el filler está al aire (onair == -2), no actualizamos
         # _pos/_dur — el filler es loop infinito y no tiene duración
@@ -506,7 +559,13 @@ class PlayoutController(QObject):
     def _on_ended(self, reason):
         if reason not in ("eof", "error"):
             return
-        if not self.is_on_air:
+        # Al reemplazar un archivo mpv puede notificar un EOF residual antes
+        # de file-loaded. No debe cerrar el clip que todavía se está
+        # cargando; los errores sí se procesan para poder saltar al próximo.
+        if self._load_pending and reason == "eof":
+            return
+        filler_ended = self.filler_active and self.onair == -2
+        if not self.is_on_air and not filler_ended:
             return
         idx = self.onair
         # v23.3: si el clip que terminó era el filler, NO disparamos el
@@ -534,7 +593,10 @@ class PlayoutController(QObject):
                 return
             if not self._play_filler(reason):
                 # si no se pudo cargar el filler otra vez, caemos al slate
-                self._play_slate()
+                if not self._play_slate() and not self.filler_enabled:
+                    self.filler_active = False
+                    self.onair = -1
+                    self.onair_changed.emit(-1)
             return
         item = self.items[idx]
         if reason == "error":
@@ -601,6 +663,11 @@ class PlayoutController(QObject):
             self._log_id = None
             self.onair = -1
             self.onair_changed.emit(-1)
+        elif self.filler_active and self.onair == -2:
+            self.onair = -1
+            self.filler_active = False
+            self.onair_changed.emit(-1)
+        self._load_pending = False
         self.message.emit("mpv se cerró inesperadamente • pulsa PLAY para reiniciarlo")
 
     # ------------------------------------------------------- automatización
@@ -630,6 +697,8 @@ class PlayoutController(QObject):
         mientras el filler está al aire, así _on_ended sabe que
         debe re-cargar el filler (no buscar el siguiente clip).
         """
+        if not self.filler_enabled:
+            return False
         if not self.filler_path or not os.path.isfile(self.filler_path):
             return False
         # cerramos el item actual (sea clip normal, otro filler, o nada)
@@ -640,6 +709,7 @@ class PlayoutController(QObject):
             self._log_id = None
         # usamos el MPVPlayer directamente con loop-file=inf
         self.paused = False
+        self._load_pending = True
         ok = False
         if hasattr(self.player, "play_loop"):
             ok = self.player.play_loop(self.filler_path)
@@ -647,6 +717,7 @@ class PlayoutController(QObject):
             # fallback: play normal con loop-file
             ok = self.player.play(self.filler_path, loop=True)
         if not ok:
+            self._load_pending = False
             return False
         self.onair = -2  # convención: filler al aire
         self.filler_active = True
@@ -665,6 +736,8 @@ class PlayoutController(QObject):
         un patrón negro con texto "TVPlayout PRO — Próximamente" en vivo.
         No requiere archivos externos ni PIL — mpv lo genera en runtime.
         """
+        if not self.filler_enabled:
+            return False
         # Slate URL: color negro 1920x1080 con texto centrado.
         # drawtext usa fontfile por default; en Windows buscamos Arial.
         # Si no hay fuente, mpv cae al default.
@@ -696,7 +769,10 @@ class PlayoutController(QObject):
         if self._log_id:
             self.db.air_log_end(self._log_id, ST_AIRED)
             self._log_id = None
+        self._load_pending = True
         ok = self.player.play_loop(slate_url)
+        if not ok:
+            self._load_pending = False
         if ok:
             self.onair = -2
             self.filler_active = True

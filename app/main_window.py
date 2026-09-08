@@ -726,6 +726,7 @@ class MainWindow(QMainWindow):
         # el slate lavfi. Si filler_enabled es False, no se carga nada
         # y el playout queda con monitor en negro al acabar (legacy).
         self.ctrl.filler_path = str(s.get("filler_path", "") or "")
+        self.ctrl.filler_enabled = bool(s.get("filler_enabled", True))
         # filler_enabled: si está en False, el playout NO carga filler
         # ni slate — comportamiento legacy (monitor en negro).
         self.player.hwdec = s.get("hwdec", "auto-safe")
@@ -1499,19 +1500,24 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------- señales playout
     def _onair_changed(self, idx):
+        # -2 es el filler/slate: no pertenece a la playlist, pero sí hay
+        # vídeo al aire. Antes se trataba como "SIN SEÑAL" y el monitor se
+        # desactivaba aunque mpv siguiera reproduciendo correctamente.
         onair = idx >= 0
-        self.onair_led.set_active(onair)
-        self.play_btn.setChecked(onair)
-        self.video.set_active(onair, "" if onair else "SIN SEÑAL")
+        filler = idx == -2
+        live = onair or filler
+        self.onair_led.set_active(live)
+        self.play_btn.setChecked(live)
+        self.video.set_active(live, "" if live else "SIN SEÑAL")
         if not onair:
             self.pause_btn.setChecked(False)
-            self.clip_title.setText("Sin evento al aire")
-            self.clip_path.setText("")
-            self.clip_info.setText("")
+            self.clip_title.setText("Filler / slate al aire" if filler else "Sin evento al aire")
+            self.clip_path.setText(self.ctrl.filler_path if filler else "")
+            self.clip_info.setText("Continuidad automática" if filler else "")
             self._set_thumb("")
             for f in (self.f_dur, self.f_pos, self.f_rem):
                 f.setText("--:--:--")
-            self.f_cat.setText("—")
+            self.f_cat.setText("FILLER" if filler else "—")
             self.f_codec.setText("—")
             self.f_delay.setText("—")
             self.progress.set_progress(0, 0)
