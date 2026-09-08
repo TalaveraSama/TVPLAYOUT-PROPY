@@ -342,7 +342,11 @@ class MPVPlayer(QObject):
         if ok:
             self._vu_timer.start()
         else:
-            log.info("VU meter no disponible en este mpv")
+            # v22.2.5: el VU usa el filtro lavfi=astats, que no está en
+            # todos los builds de mpv (especialmente los recortados). Si
+            # falla, lo dejamos en WARNING para que el operador se entere
+            # de que tiene que actualizar el binario de mpv.
+            log.warning("VU meter no disponible en este mpv (lavfi/astats no soportado). Actualizá mpv a una build con lavfi (shinchiro/zhongfly).")
 
     def _poll_vu(self):
         if not self._vu_state or not self.running:
@@ -381,8 +385,9 @@ class MPVPlayer(QObject):
         # v22.1: re-aplicar volumen y mute al cargar cada clip. mpv podría haber
         # perdido el estado si se reconectó el IPC, y este es el momento más
         # seguro para sincronizar (después del loadfile).
+        # v22.2.5: 'yes'/'no' para mute (no True/False).
         self.set_property("volume", float(self.volume))
-        self.set_property("mute", bool(self.muted))
+        self.set_property("mute", "yes" if self.muted else "no")
         self.set_property("pause", False)
         ok = self.command(["loadfile", path, "replace"])
         if ok:
@@ -397,8 +402,11 @@ class MPVPlayer(QObject):
         return self.set_property("pause", bool(paused))
 
     def set_mute(self, muted):
+        # v22.2.5: mpv acepta 'yes'/'no' para propiedades booleanas. Antes
+        # mandábamos True/False como JSON, que mpv puede rechazar según
+        # la versión, dejando el audio sin silenciar.
         self.muted = bool(muted)
-        return self.set_property("mute", bool(muted))
+        return self.set_property("mute", "yes" if muted else "no")
 
     def set_volume(self, value):
         self.volume = int(value)

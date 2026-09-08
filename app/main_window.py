@@ -1779,6 +1779,23 @@ class MainWindow(QMainWindow):
         self.f_plrem.setText(fmt_tc(self.ctrl.playlist_remaining()))
         if int(now.timestamp() * 2) % 2 == 0:
             self._update_times()
+        # v22.2.5: la barra de progreso y POSICIÓN/RESTANTE dependían sólo
+        # de la señal `position` de mpv (que necesita time-pos por IPC). Si
+        # mpv no emite time-pos, _pos queda en 0 y la barra nunca avanza.
+        # Como _tick_ui corre cada 500ms, refrescamos acá usando elapsed
+        # (que tiene fallback al reloj de pared).
+        if self.ctrl.is_on_air and not self.ctrl.paused:
+            try:
+                pos = float(self.ctrl.elapsed or 0.0)
+                dur = float(self.ctrl.duration or 0.0)
+                if dur > 0:
+                    rem = max(0.0, dur - pos)
+                    self.f_pos.setText(fmt_tc(pos))
+                    self.f_dur.setText(fmt_tc(dur))
+                    self.f_rem.setText(fmt_tc(rem))
+                    self.progress.set_progress(pos, dur)
+            except Exception:
+                pass
         if self.ctrl.is_on_air and self.ctrl.paused:
             self.onair_led.setText("PAUSA" if int(now.timestamp()) % 2 else "ON-AIR")
         elif self.onair_led.text() != "ON-AIR":
