@@ -4,16 +4,13 @@ Columna izquierda: cabecera (título/reloj/fecha), transporte, contadores, modos
 (+ modo gráfico + biblioteca) y botonera. Columna derecha: VU + preview, funciones, salida RTMP,
 reloj de estación y bloqueo.
 """
-import logging
 import os
-import platform
 import subprocess
 import sys
-import traceback
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer, QSize, QtMsgType, qInstallMessageHandler, qVersion
+from PySide6.QtCore import Qt, QTimer, QSize
 from PySide6.QtGui import QColor, QBrush, QPixmap, QKeySequence, QShortcut, QPalette, QPainter, QFont
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel,
                                QPushButton, QSplitter, QTableWidget, QTableWidgetItem, QAbstractItemView, QHeaderView,
@@ -28,31 +25,16 @@ from .config import (DB_PATH, MPV_PATH, FFMPEG_PATH, FFPROBE_PATH, APP_NAME, APP
 from .db import DB
 from .scanner import Scanner
 from .prober import ProbeWorker
-from .native_player import NativePlayer
+from .mpv_player import MPVPlayer
 from .output import OutputWorker
 from .scheduler import SchedulerService
 from .playout import (PlayoutController, make_item, ST_ONAIR, ST_READY, ST_AIRED, ST_CUT, ST_ERROR, ST_SKIPPED,
                       ST_PENDING, DONE_STATES)
 from .widgets import StationClock, VUMeter, VideoSurface, LedLabel, ProgressBarThin, fmt_tc
-from .dialogs import (PlaylistManagerDialog, SourcesDialog, SchedulerDialog, LogsDialog, DebugConsoleDialog,
-                      SettingsDialog, EditClipDialog)
+from .dialogs import (PlaylistManagerDialog, SourcesDialog, SchedulerDialog, LogsDialog, SettingsDialog, EditClipDialog)
 from .theme import QSS
 
 log = logger.get("ui")
-
-
-def _qt_message_handler(mode, context, message):
-    """Conserva avisos del backend Qt/Media Foundation en el diagnóstico."""
-    level = {
-        QtMsgType.QtDebugMsg: "debug",
-        QtMsgType.QtInfoMsg: "info",
-        QtMsgType.QtWarningMsg: "warning",
-        QtMsgType.QtCriticalMsg: "error",
-        QtMsgType.QtFatalMsg: "error",
-    }.get(mode, "warning")
-    source = getattr(context, "file", None) or getattr(context, "category", None) or "qt"
-    logger.get("qt").log(getattr(logging, level.upper()), "%s: %s", source, message)
-
 
 DAYS_ES = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"]
 MONTHS_ES = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"]
@@ -187,9 +169,7 @@ class MainWindow(QMainWindow):
         self._dialogs = {}
 
         self._build()
-        # Reproductor local nativo QtMultimedia: no depende del IPC de mpv
-        # para continuidad 24/7. mpv queda sólo para Preview externo.
-        self.player = NativePlayer(self.video, MPV_PATH, self)
+        self.player = MPVPlayer(self.video, MPV_PATH, self)
         self.player.status.connect(self._status)
         self.player.levels.connect(self.vu.set_levels)
         self.ctrl = PlayoutController(self.db, self.player, self)
@@ -243,13 +223,9 @@ class MainWindow(QMainWindow):
         self.ui_timer.timeout.connect(self._tick_ui)
         self.ui_timer.start(500)
         self._tick_ui()
-        self._status(f"Player nativo Qt: OK • Preview MPV: {'OK' if MPV_PATH else 'NO'} • "
-                     f"FFmpeg: {'OK' if FFMPEG_PATH else 'NO ENCONTRADO'} • "
+        self._status(f"MPV: {'OK' if MPV_PATH else 'NO ENCONTRADO'} • FFmpeg: {'OK' if FFMPEG_PATH else 'NO ENCONTRADO'} • "
                      f"ffprobe: {'OK' if FFPROBE_PATH else 'NO'} • Biblioteca: {self.db.count_media()} medios")
         log.info("%s %s iniciado", APP_NAME, APP_VERSION)
-        log.info("diagnóstico: OS=%s release=%s Python=%s Qt=%s QtMultimedia=native MPV_PREVIEW=%s FFmpeg=%s FFprobe=%s",
-                 platform.system(), platform.release(), platform.python_version(), qVersion(),
-                 bool(MPV_PATH), bool(FFMPEG_PATH), bool(FFPROBE_PATH))
         QTimer.singleShot(800, self._autostart)
 
     # ================================================================== UI
@@ -282,8 +258,7 @@ class MainWindow(QMainWindow):
         f.setBold(True)
         self._logs_status.setFont(f)
         self._logs_status.setCursor(Qt.PointingHandCursor)
-        self._logs_status.setToolTip("Abrir Consola Debug en vivo (F12)")
-        self._logs_status.mousePressEvent = lambda _e: self.open_debug_console()
+        self._logs_status.mousePressEvent = lambda _e: self.open_logs()
         self.statusBar().addPermanentWidget(self._logs_status)
 
     # ---------------------------------------------------------------- left
@@ -636,7 +611,7 @@ class MainWindow(QMainWindow):
                  ("Programador", self.open_scheduler), ("Registros\nAs-Run", self.open_logs),
                  ("Fuentes /\nCategorías", self.open_sources), ("Ajustes del\nsistema", self.open_settings),
                  ("Escanear\nbiblioteca", self.start_scan), ("Logo / CG\n(RTMP)", self.open_logo),
-                 ("Dispositivos", self.open_devices), ("Consola\nDebug", self.open_debug_console)]
+                 ("Dispositivos", self.open_devices)]
         self._fn_buttons = []
         for i, (text, slot) in enumerate(funcs):
             b = _btn(text, slot, "funcBtn")
@@ -645,7 +620,7 @@ class MainWindow(QMainWindow):
             self._fn_buttons.append(b)
         self.emergency_btn = _btn("🚨 EMERGENCIA", self.emergency, "danger", "Emite inmediatamente el clip de emergencia configurado")
         self.emergency_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        g.addWidget(self.emergency_btn, 4, 0, 1, 3)
+        g.addWidget(self.emergency_btn, 3, 0, 1, 3)
         fv.addLayout(g)
         rv.addWidget(fn)
 
@@ -728,7 +703,7 @@ class MainWindow(QMainWindow):
         for key, slot in (("F1", self.on_play), ("F2", self.on_pause), ("F3", self.on_stop), ("F4", self.on_next),
                           ("F5", self.on_cue), ("Ctrl+L", self.lock_btn.click), ("Ctrl+F", self._focus_search),
                           ("Ctrl+Up", lambda: self.move_selected(-1)), ("Ctrl+Down", lambda: self.move_selected(1)),
-                          ("F11", self.toggle_fullscreen), ("F12", self.open_debug_console)):
+                          ("F11", self.toggle_fullscreen)):
             QShortcut(QKeySequence(key), self, activated=slot)
         QShortcut(QKeySequence(Qt.Key_Delete), self.grid, activated=self.remove_selected)
         QShortcut(QKeySequence(Qt.Key_Return), self.library, activated=lambda: self.add_library_selected("end"))
@@ -751,7 +726,6 @@ class MainWindow(QMainWindow):
         # el slate lavfi. Si filler_enabled es False, no se carga nada
         # y el playout queda con monitor en negro al acabar (legacy).
         self.ctrl.filler_path = str(s.get("filler_path", "") or "")
-        self.ctrl.filler_enabled = bool(s.get("filler_enabled", True))
         # filler_enabled: si está en False, el playout NO carga filler
         # ni slate — comportamiento legacy (monitor en negro).
         self.player.hwdec = s.get("hwdec", "auto-safe")
@@ -1525,24 +1499,19 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------- señales playout
     def _onair_changed(self, idx):
-        # -2 es el filler/slate: no pertenece a la playlist, pero sí hay
-        # vídeo al aire. Antes se trataba como "SIN SEÑAL" y el monitor se
-        # desactivaba aunque mpv siguiera reproduciendo correctamente.
         onair = idx >= 0
-        filler = idx == -2
-        live = onair or filler
-        self.onair_led.set_active(live)
-        self.play_btn.setChecked(live)
-        self.video.set_active(live, "" if live else "SIN SEÑAL")
+        self.onair_led.set_active(onair)
+        self.play_btn.setChecked(onair)
+        self.video.set_active(onair, "" if onair else "SIN SEÑAL")
         if not onair:
             self.pause_btn.setChecked(False)
-            self.clip_title.setText("Filler / slate al aire" if filler else "Sin evento al aire")
-            self.clip_path.setText(self.ctrl.filler_path if filler else "")
-            self.clip_info.setText("Continuidad automática" if filler else "")
+            self.clip_title.setText("Sin evento al aire")
+            self.clip_path.setText("")
+            self.clip_info.setText("")
             self._set_thumb("")
             for f in (self.f_dur, self.f_pos, self.f_rem):
                 f.setText("--:--:--")
-            self.f_cat.setText("FILLER" if filler else "—")
+            self.f_cat.setText("—")
             self.f_codec.setText("—")
             self.f_delay.setText("—")
             self.progress.set_progress(0, 0)
@@ -1837,9 +1806,6 @@ class MainWindow(QMainWindow):
     def open_logs(self):
         self._show_dialog("logs", lambda: LogsDialog(self, self.db))
 
-    def open_debug_console(self):
-        self._show_dialog("debug", lambda: DebugConsoleDialog(self))
-
     def open_settings(self):
         d = SettingsDialog(self, self.settings)
         if d.exec() == QDialog.Accepted:
@@ -1875,9 +1841,7 @@ class MainWindow(QMainWindow):
 
     # ================================================================ varios
     def _status(self, msg):
-        text = str(msg)
-        log.info("STATUS: %s", text)
-        self.statusBar().showMessage(text, 15000)
+        self.statusBar().showMessage(str(msg), 15000)
 
     def _tick_ui(self):
         now = datetime.now()
@@ -1957,14 +1921,6 @@ class MainWindow(QMainWindow):
 
 def main():
     logger.setup()
-
-    def _uncaught(exc_type, exc_value, exc_tb):
-        text = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
-        log.error("Excepción no controlada en callback Qt:\n%s", text)
-        sys.__excepthook__(exc_type, exc_value, exc_tb)
-
-    sys.excepthook = _uncaught
-    qInstallMessageHandler(_qt_message_handler)
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setStyle("Fusion")

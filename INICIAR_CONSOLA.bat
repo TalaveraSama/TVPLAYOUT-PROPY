@@ -1,9 +1,7 @@
 @echo off
 setlocal
 cd /d "%~dp0"
-title TVPlayout PRO V24.0.0.2 (consola de depuracion)
-set "TVPLAYOUT_DEBUG=1"
-set "PYTHONUNBUFFERED=1"
+title TVPlayout PRO V22 (consola de depuracion)
 if not exist ".venv\Scripts\python.exe" (
   echo No existe el entorno virtual. Ejecuta INSTALL.bat primero.
   pause

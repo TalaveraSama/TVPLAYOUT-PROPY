@@ -1,14 +1,13 @@
 """Registro del sistema (logs/tvplayout.log con rotación) + buffer en memoria para la ventana de registros."""
 import collections
 import logging
-import os
 import threading
 from logging.handlers import RotatingFileHandler
 
 from .config import LOG_DIR
 
 LOG_FILE = LOG_DIR / "tvplayout.log"
-_buffer = collections.deque(maxlen=10000)
+_buffer = collections.deque(maxlen=2000)
 _lock = threading.Lock()
 _listeners = []
 
@@ -33,10 +32,7 @@ def setup():
     root = logging.getLogger()
     if getattr(root, "_tvplayout_ready", False):
         return root
-    # En modo debug se conserva todo el detalle, incluyendo eventos de
-    # QtMultimedia/IPC. El archivo y la consola nunca pierden DEBUG; la UI
-    # puede filtrar por nivel.
-    root.setLevel(logging.DEBUG)
+    root.setLevel(logging.INFO)
     fmt = logging.Formatter("%(asctime)s  %(levelname)-7s  %(name)s: %(message)s", "%Y-%m-%d %H:%M:%S")
     try:
         fh = RotatingFileHandler(str(LOG_FILE), maxBytes=2_000_000, backupCount=3, encoding="utf-8")
@@ -47,13 +43,6 @@ def setup():
     mh = _MemoryHandler()
     mh.setFormatter(fmt)
     root.addHandler(mh)
-    # INICIAR_CONSOLA.bat activa TVPLAYOUT_DEBUG=1 para que el operador
-    # pueda copiar el diagnóstico también desde la ventana de consola.
-    if os.environ.get("TVPLAYOUT_DEBUG", "").lower() in ("1", "true", "yes", "on"):
-        sh = logging.StreamHandler()
-        sh.setLevel(logging.DEBUG)
-        sh.setFormatter(fmt)
-        root.addHandler(sh)
     root._tvplayout_ready = True  # type: ignore[attr-defined]
     return root
 

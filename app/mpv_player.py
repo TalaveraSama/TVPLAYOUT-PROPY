@@ -98,7 +98,6 @@ class MPVPlayer(QObject):
         self._lock = threading.Lock()
         self._time = 0.0
         self._duration = 0.0
-        self._idle_active = True
         self._vu_state = None      # None = sin intentar, True = activo, False = no disponible
         self._current_path = ""
         self.hwdec = "auto-safe"
@@ -417,16 +416,9 @@ class MPVPlayer(QObject):
                     self._duration = float(data)
                     self.position.emit(self._time, self._duration)
             elif name == "idle-active":
-                self._idle_active = bool(data)
-                self.idle.emit(self._idle_active)
+                self.idle.emit(bool(data))
         elif ev == "file-loaded":
-            # mpv conserva algunas propiedades entre loadfile replace. Si no
-            # limpiamos la duración aquí, un clip sin metadata (o con un
-            # `duration` retrasado) puede heredar la duración del anterior y
-            # el watchdog lo da por terminado antes de tiempo.
             self._time = 0.0
-            self._duration = 0.0
-            self._idle_active = False
             self.loaded.emit()
             if self._vu_state is None:
                 self._vu_state = False
@@ -435,7 +427,6 @@ class MPVPlayer(QObject):
             reason = msg.get("reason", "unknown")
             if reason == "error":
                 log.warning("mpv error de archivo: %s", msg.get("file_error", ""))
-            self._idle_active = True
             self._current_path = ""
             self.ended.emit(reason)
 
@@ -490,9 +481,6 @@ class MPVPlayer(QObject):
         """
         if not self.start():
             return False
-        self._time = 0.0
-        self._duration = 0.0
-        self._idle_active = False
         self._current_path = path
         self._fade_out_applied = False
         # sacar filtros de crossfade que pudieran estar de un clip anterior
@@ -504,7 +492,6 @@ class MPVPlayer(QObject):
         self.set_property("start", "none")
         self.set_property("loop-file", "inf")  # v23.3: loop infinito
         self.set_property("loop-playlist", "inf")
-        self.set_property("pause", False)
         self.set_property("volume", float(self.volume))
         self.set_property("mute", "yes" if self.muted else "no")
         ok = self.command(["loadfile", path, "replace"])
@@ -516,13 +503,6 @@ class MPVPlayer(QObject):
     def play(self, path, audio_id=None, sub_id=None, start=0.0, loop=False):
         if not self.start():
             return False
-        # La duración/posición pertenecen al archivo anterior hasta que
-        # mpv emite file-loaded para el nuevo. Limpiarlas antes del
-        # loadfile evita que la continuidad use metadata vieja durante la
-        # transición (especialmente con clips sin ffprobe).
-        self._time = 0.0
-        self._duration = 0.0
-        self._idle_active = False
         self._current_path = path
         # v23.0: reset del flag de fade-out. Cuando el próximo clip
         # entre, queremos aplicar el fade-in (vía el filter chain) y
@@ -566,7 +546,6 @@ class MPVPlayer(QObject):
         # start=0 → "none" para que mpv no herede offset anterior
         self.set_property("start", f"{float(start):.3f}" if start and start > 0 else "none")
         self.set_property("loop-file", "inf" if loop else "no")
-        self.set_property("pause", False)
         self.set_property("volume", float(self.volume))
         self.set_property("mute", "yes" if self.muted else "no")
         # v23.0: crossfade de audio. Si está habilitado, agregamos el
@@ -615,15 +594,13 @@ class MPVPlayer(QObject):
         if not self.running:
             return
         try:
-            self.set_property("pause", False)
+            self.set_property("pause", "no")
             self.set_property("volume", float(self.volume))
             self.set_property("mute", "yes" if self.muted else "no")
         except Exception as e:  # noqa: BLE001
             log.debug("post_load_apply: %s", e)
 
     def set_pause(self, paused):
-        # JSON booleano es el tipo nativo de la propiedad pause de mpv y
-        # evita que una build interprete la cadena "no" como verdadera.
         return self.set_property("pause", bool(paused))
 
     def set_mute(self, muted):

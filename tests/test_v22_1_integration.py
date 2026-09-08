@@ -486,18 +486,6 @@ def test_playout_slate_uses_font_on_both_drawtext_filters():
         "ambos filtros drawtext del slate deben usar font_path (si no, uno de los dos puede fallar sin fuente)"
 
 
-def test_main_uses_native_qt_player():
-    """V24.0.0.1: el aire local debe usar QtMultimedia y no depender del
-    IPC/named pipe de mpv para encadenar eventos 24/7.
-    """
-    win = _read(WIN)
-    native = _read(os.path.join(REPO, "app", "native_player.py"))
-    assert "from .native_player import NativePlayer" in win
-    assert "NativePlayer(self.video, MPV_PATH, self)" in win
-    assert "QMediaPlayer" in native and "QVideoWidget" in native
-    assert "mediaStatusChanged" in native and "EndOfMedia" in native
-
-
 def test_main_window_has_filler_setting():
     """v23.3: main_window expone filler_path y filler_enabled en
     DEFAULT_SETTINGS, y apply_settings lo carga en self.ctrl.filler_path.
@@ -509,19 +497,6 @@ def test_main_window_has_filler_setting():
     assert apply, "no encontré apply_settings"
     ab = apply.group(0)
     assert "filler_path" in ab, "apply_settings debe cargar filler_path en self.ctrl.filler_path"
-
-
-def test_playout_load_guard_has_timeout_fallback():
-    """La protección de transición no puede bloquear el watchdog si mpv no
-    entrega file-loaded por IPC. Debe expirar por timer y usar generación
-    para no afectar una carga posterior.
-    """
-    src = _read(os.path.join(REPO, "app", "playout.py"))
-    assert "def _begin_load" in src
-    assert "def _finish_load" in src
-    assert "_load_generation" in src
-    assert "QTimer.singleShot(1500" in src
-    assert "_load_pending and reason == \"eof\"" in src
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
 """
-PyInstaller spec para TVPlayout PRO V24.0.0.2.
+PyInstaller spec para TVPlayout PRO V22.
 
 Uso:
     pyinstaller tvplayout.spec --clean --noconfirm
@@ -23,7 +23,6 @@ a = Analysis(
     hiddenimports=[
         'PySide6.QtSvg',
         'PySide6.QtMultimedia',
-        'PySide6.QtMultimediaWidgets',
         'app.config',
         'app.db',
         'app.dialogs',
@@ -31,7 +30,6 @@ a = Analysis(
         'app.logger',
         'app.main_window',
         'app.mpv_player',
-        'app.native_player',
         'app.output',
         'app.playout',
         'app.prober',

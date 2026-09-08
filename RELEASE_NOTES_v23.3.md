@@ -74,9 +74,10 @@ En `DEFAULT_SETTINGS` (settings del usuario):
 `app/main_window.py`:
 
 - `DEFAULT_SETTINGS` agrega `filler_path` y `filler_enabled`.
-- `apply_settings` carga ambos valores en el controller; cuando
-  `filler_enabled` es `False`, se omiten tanto el filler configurado como
-  el slate lavfi.
+- `apply_settings` carga `filler_path` en `self.ctrl.filler_path`.
+  (El `filler_enabled` es leído pero no aplicado al controller —
+  siempre True por default. Si en el futuro hay UI para togglear,
+  se conectará acá.)
 
 ### Tests
 
