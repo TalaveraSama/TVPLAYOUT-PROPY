@@ -8,7 +8,7 @@ setlocal EnableExtensions EnableDelayedExpansion
 cd /d "%~dp0"
 
 echo ================================================
-echo   TVPlayout PRO V22 - BUILD
+echo   TVPlayout PRO V24.0.0.1 - BUILD
 echo ================================================
 echo.
 
@@ -67,7 +67,7 @@ if exist "dist" rmdir /s /q "dist"
 
 REM --- 5. Construir ----------------------------------------------------
 echo.
-echo [..] Empaquetando TVPlayout PRO V22 (esto puede tardar 2-5 minutos)...
+echo [..] Empaquetando TVPlayout PRO V24.0.0.1 (esto puede tardar 2-5 minutos)...
 echo.
 %PYEXE% -m PyInstaller ^
     --noconfirm ^
