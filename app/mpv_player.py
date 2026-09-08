@@ -230,8 +230,8 @@ class MPVPlayer(QObject):
         self._vu_state = None
         self._reader = threading.Thread(target=self._read_loop, args=(conn,), name="mpv-ipc", daemon=True)
         self._reader.start()
-        for name, pid in PROP_IDS.items():
-            self.command(["observe_property", pid, name])
+        sent = [self.command(["observe_property", pid, name]) for name, pid in PROP_IDS.items()]
+        log.info("IPC conectado; %d/%d observe_property enviados OK", sum(bool(x) for x in sent), len(sent))
         self._watch.start()
 
     def _kill(self):
@@ -364,7 +364,7 @@ class MPVPlayer(QObject):
             conn.send((json.dumps({"command": cmd, "request_id": rid, "async": True}) + "\n").encode("utf-8"))
             return True
         except Exception as e:  # noqa: BLE001
-            log.debug("IPC send falló: %s", e)
+            log.warning("IPC send falló (%s): %r", cmd[0] if cmd else "?", e)
             with self._lock:
                 self._pending.pop(rid, None)
             return False
@@ -374,12 +374,17 @@ class MPVPlayer(QObject):
 
     def _read_loop(self, conn):
         buf = b""
+        rx = 0
+        why = "conn reemplazada"
+        log.debug("hilo IPC iniciado")
         while conn is self._conn:
             try:
                 data = conn.recv()
-            except Exception:  # noqa: BLE001
+            except Exception as e:  # noqa: BLE001
+                why = "recv() lanzó %r" % (e,)
                 break
             if not data:
+                why = "recv() devolvió vacío (mpv cerró el pipe)"
                 break
             buf += data
             while b"\n" in buf:
@@ -390,12 +395,16 @@ class MPVPlayer(QObject):
                 try:
                     msg = json.loads(line.decode("utf-8", "replace"))
                 except ValueError:
+                    log.debug("IPC línea no-JSON: %r", line[:200])
                     continue
+                rx += 1
+                if rx <= 8 or rx % 200 == 0:
+                    log.debug("IPC rx #%d: %s", rx, line[:200].decode("utf-8", "replace"))
                 try:
                     self._handle(msg)
                 except Exception as e:  # noqa: BLE001
                     log.debug("evento mpv: %s", e)
-        log.debug("hilo IPC finalizado")
+        log.info("hilo IPC finalizado tras %d eventos (%s)", rx, why)
 
     def _handle(self, msg):
         if "request_id" in msg and "event" not in msg:
@@ -419,12 +428,14 @@ class MPVPlayer(QObject):
                 self.idle.emit(bool(data))
         elif ev == "file-loaded":
             self._time = 0.0
+            log.info("IPC: file-loaded")
             self.loaded.emit()
             if self._vu_state is None:
                 self._vu_state = False
                 self.command(["af", "add", VU_FILTER], self._vu_added)
         elif ev == "end-file":
             reason = msg.get("reason", "unknown")
+            log.info("IPC: end-file (reason=%s)", reason)
             if reason == "error":
                 log.warning("mpv error de archivo: %s", msg.get("file_error", ""))
             self._current_path = ""
