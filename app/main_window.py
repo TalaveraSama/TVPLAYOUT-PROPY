@@ -703,7 +703,8 @@ class MainWindow(QMainWindow):
         for key, slot in (("F1", self.on_play), ("F2", self.on_pause), ("F3", self.on_stop), ("F4", self.on_next),
                           ("F5", self.on_cue), ("Ctrl+L", self.lock_btn.click), ("Ctrl+F", self._focus_search),
                           ("Ctrl+Up", lambda: self.move_selected(-1)), ("Ctrl+Down", lambda: self.move_selected(1)),
-                          ("F11", self.toggle_fullscreen)):
+                          ("F11", self.toggle_fullscreen),
+                          ("F12", self.open_logs), ("Ctrl+Shift+D", self._toggle_debug)):
             QShortcut(QKeySequence(key), self, activated=slot)
         QShortcut(QKeySequence(Qt.Key_Delete), self.grid, activated=self.remove_selected)
         QShortcut(QKeySequence(Qt.Key_Return), self.library, activated=lambda: self.add_library_selected("end"))
@@ -1806,6 +1807,12 @@ class MainWindow(QMainWindow):
     def open_logs(self):
         self._show_dialog("logs", lambda: LogsDialog(self, self.db))
 
+    def _toggle_debug(self):
+        on = not logger.is_debug()
+        logger.set_debug(on)
+        self.statusBar().showMessage(f"Log DEBUG {'ACTIVADO' if on else 'desactivado'}", 4000)
+        self.open_logs()
+
     def open_settings(self):
         d = SettingsDialog(self, self.settings)
         if d.exec() == QDialog.Accepted:
@@ -1921,6 +1928,7 @@ class MainWindow(QMainWindow):
 
 def main():
     logger.setup()
+    logger.install_excepthooks()
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setStyle("Fusion")

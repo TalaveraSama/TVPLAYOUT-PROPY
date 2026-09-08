@@ -23,7 +23,8 @@ sin usar código ni recursos propietarios. Reproductor local **mpv** embebido + 
 | Reloj de estación | Anillo de 60 segundos + HH:MM / SS, bloqueo de consola, minimizar/salir |
 
 Atajos: **F1** Play · **F2** Pausa · **F3** Stop · **F4** Siguiente · **F5** Preparar · **Supr** quitar · **Ctrl+↑/↓** mover ·
-**Ctrl+F** buscar en biblioteca · **Ctrl+L** bloquear · **F11** pantalla completa. Doble clic en una fila = emitir ahora.
+**Ctrl+F** buscar en biblioteca · **Ctrl+L** bloquear · **F11** pantalla completa · **F12** consola de registros ·
+**Ctrl+Shift+D** activar/desactivar nivel DEBUG. Doble clic en una fila = emitir ahora.
 Se pueden **arrastrar archivos o carpetas** desde el Explorador a la grid.
 
 ## Continuidad
@@ -52,7 +53,8 @@ opacidad). También acepta `srt://` y `udp://`.
 4. Copia `ffmpeg.exe` y `ffprobe.exe` en la raíz del proyecto (o en `ffmpeg\bin\`, `bin\`).
 5. Ejecuta `INICIAR.bat` (`INICIAR_CONSOLA.bat` para ver mensajes de depuración).
 
-Opcional: archivo `.env` con `MPV_PATH=...`, `FFMPEG_PATH=...`, `FFPROBE_PATH=...`, `TVPLAYOUT_DB=...`.
+Opcional: archivo `.env` con `MPV_PATH=...`, `FFMPEG_PATH=...`, `FFPROBE_PATH=...`, `TVPLAYOUT_DB=...`,
+`TVPLAYOUT_DEBUG=1` (arranca con nivel DEBUG y registra las excepciones no controladas de Qt y de los hilos).
 
 Primer uso: **Fuentes / Categorías** → añadir carpetas (locales o UNC) → **Escanear biblioteca**. Con ffprobe se analizan
 duración, resolución, códecs, pistas de audio/subtítulos y se generan miniaturas (en `cache\thumbs`).

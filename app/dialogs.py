@@ -4,7 +4,7 @@ import os
 from datetime import datetime
 
 from PySide6.QtCore import Qt, QTime, QDate, Signal
-from PySide6.QtGui import QColor, QBrush
+from PySide6.QtGui import QColor, QBrush, QGuiApplication
 from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QGridLayout, QFormLayout, QLabel, QPushButton,
                                QTableWidget, QTableWidgetItem, QAbstractItemView, QHeaderView, QLineEdit, QComboBox,
                                QSpinBox, QCheckBox, QTimeEdit, QDateEdit, QMessageBox, QFileDialog, QInputDialog,
@@ -557,8 +557,17 @@ class LogsDialog(BaseDialog):
         self.filter_level.addItems(["TODO", "INFO+", "WARNING+", "SOLO ERROR"])
         self.filter_level.currentIndexChanged.connect(self._refilter)
         filt.addWidget(self.filter_level)
+        # v23.4: consola de debug. La casilla activa el nivel DEBUG del
+        # logger en caliente (aparecen los log.debug de mpv/IPC, etc.).
+        # "Copiar todo" vuelca la vista al portapapeles para pegarla en
+        # un reporte sin tener que abrir INICIAR_CONSOLA.bat.
+        self.dbg_chk = QCheckBox("DEBUG")
+        self.dbg_chk.setChecked(logger.is_debug())
+        self.dbg_chk.toggled.connect(self._on_debug_toggled)
+        filt.addWidget(self.dbg_chk)
         filt.addStretch()
-        filt.addWidget(QLabel(f"Archivo: {logger.LOG_FILE}"))
+        filt.addWidget(_btn("📋 Copiar todo", self._copy_sys))
+        filt.addWidget(_btn("💾 Guardar…", self._save_sys))
         filt.addWidget(_btn("📂 Abrir carpeta", self._open_log_dir))
         filt.addWidget(_btn("Limpiar vista", self._clear_sys))
         sl.addLayout(filt)
@@ -655,6 +664,26 @@ class LogsDialog(BaseDialog):
         # Limpia la vista Y el buffer local (no toca el archivo de log).
         self._sys_buf.clear()
         self.sys_text.clear()
+
+    def _on_debug_toggled(self, on):
+        logger.set_debug(on)
+        if on and self.filter_level.currentIndex() == 2:
+            self.filter_level.setCurrentIndex(1)  # que DEBUG sea visible
+
+    def _copy_sys(self):
+        QGuiApplication.clipboard().setText(self.sys_text.toPlainText())
+        self.parent().statusBar().showMessage("Registro copiado al portapapeles", 3000)
+
+    def _save_sys(self):
+        path, _ = QFileDialog.getSaveFileName(self, "Guardar registro", str(ROOT / "tvplayout_debug.txt"), "Texto (*.txt)")
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(self.sys_text.toPlainText())
+            self.parent().statusBar().showMessage("Registro guardado: " + path, 4000)
+        except OSError as e:
+            QMessageBox.critical(self, "Guardar", str(e))
 
     def closeEvent(self, event):
         logger.remove_listener(self._listener)
