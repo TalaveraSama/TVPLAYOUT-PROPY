@@ -243,6 +243,18 @@ class MainWindow(QMainWindow):
         except (TypeError, ValueError):
             self.splitter.setSizes([1120, 430])
         self.statusBar().showMessage("Listo")
+        # v22.2.6: indicador permanente de errores/warnings recientes.
+        # Se actualiza en _tick_ui. Click para abrir el dialog de logs.
+        from PySide6.QtGui import QFont
+        from . import logger as _logger
+        self._logs_status = QLabel("Logs: 0")
+        self._logs_status.setStyleSheet("padding: 0 8px; color: #b0bec5;")
+        f = QFont()
+        f.setBold(True)
+        self._logs_status.setFont(f)
+        self._logs_status.setCursor(Qt.PointingHandCursor)
+        self._logs_status.mousePressEvent = lambda _e: self.open_logs()
+        self.statusBar().addPermanentWidget(self._logs_status)
 
     # ---------------------------------------------------------------- left
     def _build_left(self):
@@ -1777,6 +1789,25 @@ class MainWindow(QMainWindow):
         self.date_lbl.setText(f"{DAYS_ES[now.weekday()]} {now.day:02d} {MONTHS_ES[now.month - 1]} {now.year}")
         self.fps_chip.setText(f"{self.settings.get('resolution', '')}\n{self.settings.get('fps', '')} fps")
         self.f_plrem.setText(fmt_tc(self.ctrl.playlist_remaining()))
+        # v22.2.6: indicador de logs (errores/warnings) en el statusBar.
+        try:
+            from . import logger as _logger
+            counts = _logger.count_by_level(500)
+            err = counts["ERROR"]
+            warn = counts["WARNING"]
+            if err > 0:
+                txt = f"⛔ {err} error{'es' if err != 1 else ''}  ⚠ {warn}"
+                color = "#ff5050"
+            elif warn > 0:
+                txt = f"⚠ {warn} warning{'s' if warn != 1 else ''}"
+                color = "#ffb84d"
+            else:
+                txt = "✓ sin errores"
+                color = "#81c784"
+            self._logs_status.setText(txt)
+            self._logs_status.setStyleSheet(f"padding: 0 8px; color: {color};")
+        except Exception:
+            pass
         if int(now.timestamp() * 2) % 2 == 0:
             self._update_times()
         # v22.2.5: la barra de progreso y POSICIÓN/RESTANTE dependían sólo

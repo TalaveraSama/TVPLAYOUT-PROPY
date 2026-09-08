@@ -548,28 +548,113 @@ class LogsDialog(BaseDialog):
 
         w2 = QWidget()
         sl = QVBoxLayout(w2)
+        # v22.2.6: filtros por nivel + colorear líneas para ver errores
+        # de un vistazo. Antes el QPlainTextEdit mostraba todo en un solo
+        # color y era difícil detectar ERROR/WARNING entre la maraña de INFO.
+        filt = QHBoxLayout()
+        filt.addWidget(QLabel("Nivel:"))
+        self.filter_level = QComboBox()
+        self.filter_level.addItems(["TODO", "INFO+", "WARNING+", "SOLO ERROR"])
+        self.filter_level.currentIndexChanged.connect(self._refilter)
+        filt.addWidget(self.filter_level)
+        filt.addStretch()
+        filt.addWidget(QLabel(f"Archivo: {logger.LOG_FILE}"))
+        filt.addWidget(_btn("📂 Abrir carpeta", self._open_log_dir))
+        filt.addWidget(_btn("Limpiar vista", self._clear_sys))
+        sl.addLayout(filt)
         self.sys_text = QPlainTextEdit()
         self.sys_text.setReadOnly(True)
         self.sys_text.setMaximumBlockCount(3000)
         self.sys_text.setStyleSheet("font-family: Consolas, 'DejaVu Sans Mono', monospace; font-size: 11px;")
         sl.addWidget(self.sys_text, 1)
-        r2 = QHBoxLayout()
-        r2.addWidget(QLabel(f"Archivo: {logger.LOG_FILE}"))
-        r2.addStretch()
-        r2.addWidget(_btn("Limpiar vista", self.sys_text.clear))
-        sl.addLayout(r2)
+        # Buffer de líneas recientes (con su nivel). El listener de logger
+        # las guarda acá; el filtro decide cuáles pintar.
+        self._sys_buf = []
         tabs.addTab(w2, "SISTEMA")
 
         bottom = QHBoxLayout()
         bottom.addStretch()
         bottom.addWidget(_btn("Cerrar", self.accept))
         v.addLayout(bottom)
-        self.sys_text.setPlainText("\n".join(logger.recent_lines(1000)))
-        self.sys_text.verticalScrollBar().setValue(self.sys_text.verticalScrollBar().maximum())
-        self.line_received.connect(self.sys_text.appendPlainText)
+        # Cargar últimas líneas con su nivel
+        for line in logger.recent_lines(1000):
+            self._sys_buf.append(self._classify(line))
+        self._refilter()
+        self.line_received.connect(self._on_log_line)
         self._listener = self.line_received.emit
         logger.add_listener(self._listener)
         self.reload_air()
+
+    def _classify(self, line):
+        """Devuelve (line, level) donde level in {INFO, WARNING, ERROR, DEBUG}."""
+        up = line.upper()
+        if "ERROR" in up:
+            return (line, "ERROR")
+        if "WARNING" in up:
+            return (line, "WARNING")
+        if "DEBUG" in up:
+            return (line, "DEBUG")
+        return (line, "INFO")
+
+    def _color_for(self, level):
+        return {
+            "ERROR":   QColor("#ff5050"),
+            "WARNING": QColor("#ffb84d"),
+            "DEBUG":   QColor("#808080"),
+            "INFO":    QColor("#cfd8dc"),
+        }.get(level, QColor("#cfd8dc"))
+
+    def _passes_filter(self, level):
+        idx = self.filter_level.currentIndex()
+        order = ["INFO", "DEBUG", "WARNING", "ERROR"]
+        # TODO:0, INFO+:1 (todo), WARNING+:2, SOLO ERROR:3
+        if idx == 0:
+            return True
+        if idx == 1:
+            return level in ("INFO", "DEBUG", "WARNING", "ERROR")
+        if idx == 2:
+            return level in ("WARNING", "ERROR")
+        if idx == 3:
+            return level == "ERROR"
+        return True
+
+    def _refilter(self):
+        self.sys_text.clear()
+        for line, level in self._sys_buf:
+            if self._passes_filter(level):
+                self.sys_text.setTextColor(self._color_for(level))
+                self.sys_text.appendPlainText(line)
+        self.sys_text.setTextColor(self._color_for("INFO"))
+        sb = self.sys_text.verticalScrollBar()
+        sb.setValue(sb.maximum())
+
+    def _on_log_line(self, line):
+        classified = self._classify(line)
+        self._sys_buf.append(classified)
+        if len(self._sys_buf) > 3000:
+            self._sys_buf = self._sys_buf[-3000:]
+        if self._passes_filter(classified[1]):
+            self.sys_text.setTextColor(self._color_for(classified[1]))
+            self.sys_text.appendPlainText(line)
+            self.sys_text.setTextColor(self._color_for("INFO"))
+            sb = self.sys_text.verticalScrollBar()
+            sb.setValue(sb.maximum())
+
+    def _open_log_dir(self):
+        try:
+            import os, subprocess
+            p = os.path.dirname(str(logger.LOG_FILE))
+            if os.name == "nt":
+                os.startfile(p)  # type: ignore[attr-defined]
+            else:
+                subprocess.Popen(["xdg-open", p])
+        except Exception as e:  # noqa: BLE001
+            QMessageBox.warning(self, "Logs", f"No se pudo abrir la carpeta: {e}")
+
+    def _clear_sys(self):
+        # Limpia la vista Y el buffer local (no toca el archivo de log).
+        self._sys_buf.clear()
+        self.sys_text.clear()
 
     def closeEvent(self, event):
         logger.remove_listener(self._listener)
