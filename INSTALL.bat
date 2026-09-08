@@ -6,7 +6,7 @@ set "VENV=.venv"
 set "PYTHON_EXE=%VENV%\Scripts\python.exe"
 
 echo ================================================
-echo   TVPlayout PRO V24.0.0.5 - INSTALADOR
+echo   TVPlayout PRO V24.0.0.6 - INSTALADOR
 echo ================================================
 echo.
 
