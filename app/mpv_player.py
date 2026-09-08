@@ -394,37 +394,64 @@ class MPVPlayer(QObject):
         # mute, loop-file, sid, aid) en un solo comando atómico. Las
         # opciones embebidas en loadfile SÍ se aplican en orden, antes
         # de decodificar el primer frame del nuevo archivo.
-        cmd = ["loadfile", path, "replace"]
-        # Opciones de pista (solo si difieren del default)
+        # v22.2.8: NO usar opciones embebidas en loadfile — mpv las
+        # rechaza (issue #5770). Volvemos a set_property separados.
+        # El método _post_load_apply se encarga de reaplicar las
+        # propiedades críticas 200ms después del loadfile.
         if isinstance(audio_id, int) and audio_id >= 0:
-            cmd.append(f"aid={int(audio_id) + 1}")
+            self.set_property("aid", int(audio_id) + 1)
         else:
-            cmd.append("aid=auto")
+            self.set_property("aid", "auto")
         if sub_id is None:
-            cmd.append(f"sid={'auto' if self.slang else 'no'}")
+            self.set_property("sid", "auto" if self.slang else "no")
         elif sub_id < 0:
-            cmd.append("sid=no")
+            self.set_property("sid", "no")
         else:
-            cmd.append(f"sid={int(sub_id) + 1}")
-        # start embebido (no mandamos "none", solo si > 0 — un start=0
-        # explícito en el comando resetearía cualquier residuo)
-        if start and start > 0:
-            cmd.append(f"start={float(start):.3f}")
-        # Loop embebido
-        cmd.append(f"loop-file={'inf' if loop else 'no'}")
-        # Pause SIEMPRE no para que arranque decodificando
-        cmd.append("pause=no")
-        # Volumen y mute embebidos (v22.2.5: yes/no)
-        cmd.append(f"volume={float(self.volume):.1f}")
-        cmd.append(f"mute={'yes' if self.muted else 'no'}")
-        ok = self.command(cmd)
+            self.set_property("sid", int(sub_id) + 1)
+        # start=0 → "none" para que mpv no herede offset anterior
+        self.set_property("start", f"{float(start):.3f}" if start and start > 0 else "none")
+        self.set_property("loop-file", "inf" if loop else "no")
+        self.set_property("volume", float(self.volume))
+        self.set_property("mute", "yes" if self.muted else "no")
+        ok = self.command(["loadfile", path, "replace"])
         if ok:
             self.status.emit("MPV ▶ " + os.path.basename(path))
+            # v22.2.8: reaplicar pause/volume/mute 200ms después del
+            # loadfile. Cubre el caso donde mpv procesa los
+            # set_property que llegaron antes que el loadfile y los
+            # aplica al archivo anterior.
+            from PySide6.QtCore import QTimer
+            QTimer.singleShot(200, self._post_load_apply)
         return ok
 
     def stop(self):
         self._current_path = ""
         return self.command(["stop"])
+
+    def _post_load_apply(self):
+        """v22.2.8: reaplica pause/volume/mute 200ms después del loadfile.
+
+        Por qué: en v22.2.1-v22.2.6 mandábamos los set_property ANTES del
+        loadfile. En algunos builds de mpv, esos set_property se aplicaban
+        al archivo anterior (que estaba saliendo) y el nuevo archivo
+        quedaba con el frame del anterior, mute, o pause.
+        En v22.2.7 intentamos embeber las opciones en el loadfile, pero
+        mpv RECHAZA opciones embebidas (issue #5770: "loadfile sólo
+        acepta 3 opciones"). El loadfile fallaba silenciosamente.
+
+        La solución: mandar los set_property ANTES (como hasta v22.2.6) y
+        REPETIRLOS 200ms después con un QTimer.singleShot. Eso cubre
+        ambos casos: builds que procesan los set_property antes del
+        loadfile (v22.2.1) y builds que los procesan después (v22.2.7).
+        """
+        if not self.running:
+            return
+        try:
+            self.set_property("pause", "no")
+            self.set_property("volume", float(self.volume))
+            self.set_property("mute", "yes" if self.muted else "no")
+        except Exception as e:  # noqa: BLE001
+            log.debug("post_load_apply: %s", e)
 
     def set_pause(self, paused):
         return self.set_property("pause", bool(paused))

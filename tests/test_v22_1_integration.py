@@ -23,22 +23,30 @@ def _read(path):
 
 def test_mpv_player_reapplies_volume_in_play():
     src = _read(MPV)
-    # v22.2.7: en lugar de set_property separados (que tenían problemas
-    # de orden vs loadfile), ahora volume/mute/pause/start van embebidos
-    # en el comando loadfile. Verificamos que el comando de loadfile
-    # incluye las opciones correctas.
+    # v22.2.8: el bug de v22.2.7 (opciones embebidas en loadfile que mpv
+    # rechaza con issue #5770) y el bug de v22.2.1 (set_property antes
+    # del loadfile aplicados al archivo anterior) se resuelven con una
+    # estrategia combinada:
+    #  - set_property ANTES del loadfile (volumen, mute, aid, sid, start, loop-file)
+    #  - comando loadfile "path" replace (3 args, sin opciones embebidas)
+    #  - _post_load_apply: set_property DESPUÉS del loadfile (200ms
+    #    después vía QTimer.singleShot) para los críticos: pause, volume, mute
+    #  - método _post_load_apply existe en el módulo
     play_block = re.search(r"def play\(self.*?\n(?:        .*\n)+", src, re.S)
     assert play_block, "no encontré el método play()"
     pb = play_block.group(0)
-    # El comando loadfile debe incluir volume=X y mute=yes/no como
-    # opciones embebidas (formato loadfile "path" replace volume=N mute=...)
-    loadfile_idx = pb.find('"loadfile"')
-    assert loadfile_idx > 0, "debe haber un comando loadfile"
-    # Tomar 2500 chars a partir del loadfile para ver el comando entero
-    snippet = pb[loadfile_idx:loadfile_idx + 2500]
-    assert "volume=" in snippet, "loadfile debe incluir volume=X embebido"
-    assert "mute=" in snippet, "loadfile debe incluir mute=yes/no embebido"
-    assert "pause=no" in snippet, "loadfile debe incluir pause=no embebido"
+    # set_property para volume y mute ANTES del loadfile
+    assert 'set_property("volume"' in pb, "play() debe setear volume antes del loadfile"
+    assert 'set_property("mute"' in pb, "play() debe setear mute antes del loadfile"
+    # el loadfile debe ser de 3 args (sin opciones embebidas)
+    assert '"loadfile", path, "replace"' in pb or '["loadfile", path, "replace"]' in pb, \
+        "play() debe usar loadfile con 3 argumentos (mpv rechaza opciones embebidas, issue #5770)"
+    # el módulo debe definir _post_load_apply
+    assert "def _post_load_apply" in src, \
+        "el módulo debe tener _post_load_apply que reaplica pause/volume/mute tras el loadfile"
+    # play() debe llamar a _post_load_apply vía QTimer.singleShot
+    assert "QTimer.singleShot" in pb and "_post_load_apply" in pb, \
+        "play() debe programar _post_load_apply con QTimer.singleShot tras el loadfile"
 
 
 def test_apply_settings_sends_volume_to_mpv():
