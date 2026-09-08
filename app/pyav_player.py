@@ -443,13 +443,20 @@ class PyAVPlayer(QObject):
             return
         try:
             free = max(0, int(self._audio_sink.bytesFree()))
-            while free and self._audio_queue:
-                n = min(free, len(self._audio_queue), 16384)
+            # QAudioSink/Media Foundation puede devolver MF_E_NOTACCEPTING
+            # (0xC00D36B5) si recibe los seis segundos de prebuffer de golpe.
+            # Transferimos solo un intervalo de audio por tick: la cola de
+            # seis segundos permanece en Python, pero el dispositivo recibe
+            # PCM a velocidad real y no se desborda el resampler de Windows.
+            budget = max(1, int(AUDIO_BYTES_PER_SECOND * 0.010))
+            while free and self._audio_queue and budget > 0:
+                n = min(free, len(self._audio_queue), budget)
                 written = int(self._audio_io.write(bytes(self._audio_queue[:n])))
                 if written <= 0:
                     break
                 del self._audio_queue[:written]
                 free -= written
+                budget -= written
         except Exception as exc:  # noqa: BLE001
             log.debug("QAudioSink write: %s", exc)
 
