@@ -394,6 +394,8 @@ class PlayoutController(QObject):
         if not (0 <= index < len(self.items)):
             return False
         item = self.items[index]
+        log.info("play_index request index=%d reason=%s mode=%s title=%s path=%s",
+                 index, reason, self.mode, item.get("title", ""), item.get("path", ""))
         if not item.get("path") or not os.path.isfile(item["path"]):
             item["status"] = ST_ERROR
             item["note"] = "archivo no encontrado"
@@ -517,6 +519,7 @@ class PlayoutController(QObject):
         self._load_generation += 1
         generation = self._load_generation
         self._load_pending = True
+        log.debug("begin load generation=%d", generation)
         QTimer.singleShot(1500, lambda: self._finish_load(generation))
 
     def _finish_load(self, generation):
@@ -527,8 +530,10 @@ class PlayoutController(QObject):
     def _cancel_load(self):
         self._load_generation += 1
         self._load_pending = False
+        log.debug("cancel load generation=%d", self._load_generation)
 
     def _on_loaded(self):
+        log.info("player loaded generation=%d onair=%s pending=%s", self._load_generation, self.onair, self._load_pending)
         self._consecutive_errors = 0
         self._filler_fail_count = 0
         self._load_pending = False
@@ -585,6 +590,7 @@ class PlayoutController(QObject):
         self.position.emit(self._pos, self._dur)
 
     def _on_ended(self, reason):
+        log.info("player ended reason=%s onair=%s pending=%s mode=%s", reason, self.onair, self._load_pending, self.mode)
         if reason not in ("eof", "error"):
             return
         # Al reemplazar un archivo mpv puede notificar un EOF residual antes

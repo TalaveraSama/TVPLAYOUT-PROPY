@@ -66,6 +66,7 @@ class NativePlayer(QObject):
         self._fade_to = 1.0
         self._fade_started = 0.0
         self._fade_length = 0.0
+        self._last_diag_second = -1
 
         # QVideoWidget es un hijo del VideoSurface. Se oculta cuando no hay
         # señal para que VideoSurface pueda pintar el slate "SIN SEÑAL".
@@ -102,6 +103,8 @@ class NativePlayer(QObject):
         self._fade_timer = QTimer(self)
         self._fade_timer.setInterval(40)
         self._fade_timer.timeout.connect(self._tick_fade)
+        log.info("QtMultimedia NativePlayer inicializado • QMediaPlayer=%s QAudioOutput volume=%.2f muted=%s QVideoWidget object=%s",
+                 self._player, self._audio.volume(), self._audio.isMuted(), self._video.objectName())
 
     # ------------------------------------------------------------- estado
     @property
@@ -123,11 +126,15 @@ class NativePlayer(QObject):
         rect = self.widget.rect()
         self._video.setGeometry(rect)
         self._slate.setGeometry(rect)
+        log.debug("video geometry surface=%dx%d video=%s visible=%s slate=%s visible=%s",
+                  rect.width(), rect.height(), self._video.geometry(), self._video.isVisible(),
+                  self._slate.geometry(), self._slate.isVisible())
 
     def start(self):
         return True
 
     def shutdown(self):
+        log.info("shutdown NativePlayer gen=%d path=%s", self._generation, self._current_path)
         self._fade_timer.stop()
         self._generation += 1
         self._player.stop()
@@ -188,7 +195,11 @@ class NativePlayer(QObject):
             pass
 
     def play(self, path, audio_id=None, sub_id=None, start=0.0, loop=False):
-        if not path or not os.path.isfile(path):
+        absolute_path = os.path.abspath(path) if path else ""
+        exists = bool(absolute_path) and os.path.isfile(absolute_path)
+        size = os.path.getsize(absolute_path) if exists else 0
+        log.info("source inspect path=%s exists=%s size=%d bytes", absolute_path, exists, size)
+        if not exists:
             self.status.emit("Reproductor nativo: archivo no encontrado")
             return False
         self.start()
@@ -197,23 +208,32 @@ class NativePlayer(QObject):
         self._end_generation = -1
         self._time = 0.0
         self._duration = 0.0
-        self._current_path = path
+        self._current_path = absolute_path
         self._running = True
         self._pending_start = max(0.0, float(start or 0.0))
         self._pending_audio = audio_id
         self._pending_sub = sub_id
         self._pending_loop = bool(loop)
+        self._last_diag_second = -1
+        log.info("play request gen=%d loop=%s audio=%s subtitle=%s path=%s",
+                 self._generation, loop, audio_id, sub_id, path)
         self._fade_out_applied = False
         self._fade_timer.stop()
         self._slate.hide()
         self._video.show()
         self._resize_video()
+        log.info("video output visible=%s size=%dx%d parent=%s",
+                 self._video.isVisible(), self._video.width(), self._video.height(), self._video.parentWidget())
         self._player.stop()
         self._player.setLoops(QMediaPlayer.Loops.Infinite if loop else QMediaPlayer.Loops.Once)
         self._set_audio_target()
-        self._player.setSource(QUrl.fromLocalFile(os.path.abspath(path)))
+        source_url = QUrl.fromLocalFile(absolute_path)
+        log.debug("setSource url=%s gen=%d", source_url.toString(), self._generation)
+        self._player.setSource(source_url)
+        log.debug("play() dispatched gen=%d playbackState=%s mediaStatus=%s",
+                  self._generation, self._player.playbackState(), self._player.mediaStatus())
         self._player.play()
-        self.status.emit("Nativo ▶ " + os.path.basename(path))
+        self.status.emit("Nativo ▶ " + os.path.basename(absolute_path))
         return True
 
     def play_loop(self, path):
@@ -231,11 +251,14 @@ class NativePlayer(QObject):
             self._video.hide()
             self._slate.show()
             self._resize_video()
+            log.info("slate loop path=%s generation=%d video_visible=%s slate_visible=%s",
+                     path, self._generation, self._video.isVisible(), self._slate.isVisible())
             self.status.emit("Nativo ▶ slate de continuidad")
             return True
         return self.play(path, loop=True)
 
     def stop(self):
+        log.info("stop request gen=%d path=%s pos=%.3f", self._generation, self._current_path, self._time)
         self._generation += 1
         self._player.stop()
         self._fade_timer.stop()
@@ -247,6 +270,7 @@ class NativePlayer(QObject):
         return True
 
     def _on_media_status(self, status):
+        log.debug("mediaStatusChanged gen=%d status=%s path=%s", self._generation, status, self._current_path)
         if status in (QMediaPlayer.MediaStatus.LoadedMedia, QMediaPlayer.MediaStatus.BufferedMedia):
             if self._loaded_generation == self._generation:
                 return
@@ -255,6 +279,7 @@ class NativePlayer(QObject):
                 self._player.setPosition(int(self._pending_start * 1000))
                 self._time = self._pending_start
             self._apply_tracks()
+            log.info("media loaded gen=%d duration=%.3fs path=%s", self._generation, self._duration, self._current_path)
             self.loaded.emit()
             self.position.emit(self._time, self._duration)
             self.idle.emit(False)
@@ -269,6 +294,7 @@ class NativePlayer(QObject):
         if self._end_generation == self._generation:
             return
         self._end_generation = self._generation
+        log.info("media ended gen=%d reason=%s path=%s", self._generation, reason, self._current_path)
         self._running = False
         self._current_path = ""
         self._video.hide()
@@ -279,11 +305,12 @@ class NativePlayer(QObject):
     def _on_error(self, error, error_string):
         if error == QMediaPlayer.Error.NoError:
             return
-        log.warning("QtMultimedia error %s: %s", error, error_string)
+        log.error("QtMultimedia error=%s text=%s gen=%d path=%s", error, error_string, self._generation, self._current_path)
         self.status.emit("Reproductor nativo: " + (error_string or "error multimedia"))
         self._emit_end("error")
 
     def _on_playback_state(self, state):
+        log.debug("playbackStateChanged gen=%d state=%s path=%s", self._generation, state, self._current_path)
         if state == QMediaPlayer.PlaybackState.PlayingState:
             self._running = True
         elif state == QMediaPlayer.PlaybackState.StoppedState and self._current_path:
@@ -293,14 +320,21 @@ class NativePlayer(QObject):
 
     def _on_position_changed(self, value):
         self._time = max(0.0, float(value) / 1000.0)
+        second = int(self._time)
+        if second != self._last_diag_second:
+            self._last_diag_second = second
+            log.debug("position gen=%d pos=%.3fs dur=%.3fs state=%s",
+                      self._generation, self._time, self._duration, self._player.playbackState())
         self.position.emit(self._time, self._duration)
 
     def _on_duration_changed(self, value):
         self._duration = max(0.0, float(value) / 1000.0)
+        log.debug("durationChanged gen=%d duration=%.3fs", self._generation, self._duration)
         self.position.emit(self._time, self._duration)
 
     # ------------------------------------------------------------- controles
     def set_pause(self, paused):
+        log.info("pause=%s gen=%d pos=%.3f", paused, self._generation, self._time)
         if paused:
             self._player.pause()
         else:
@@ -308,11 +342,13 @@ class NativePlayer(QObject):
         return True
 
     def set_mute(self, muted):
+        log.info("mute=%s gen=%d", muted, self._generation)
         self.muted = bool(muted)
         self._audio.setMuted(self.muted)
         return True
 
     def set_volume(self, value):
+        log.debug("volume=%s gen=%d", value, self._generation)
         self.volume = int(max(0, min(100, value)))
         self._target_volume = self.volume / 100.0
         if not self._fade_timer.isActive():
@@ -322,6 +358,7 @@ class NativePlayer(QObject):
     def seek(self, seconds, absolute=False):
         target = float(seconds) if absolute else self._time + float(seconds)
         target = max(0.0, target)
+        log.info("seek request gen=%d target=%.3f absolute=%s", self._generation, target, absolute)
         self._player.setPosition(int(target * 1000))
         return True
 

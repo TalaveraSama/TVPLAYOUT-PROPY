@@ -1,4 +1,4 @@
-# Generar ejecutable de TVPlayout PRO V24.0.0.1
+# Generar ejecutable de TVPlayout PRO V24.0.0.2
 
 ## Camino rápido (recomendado)
 

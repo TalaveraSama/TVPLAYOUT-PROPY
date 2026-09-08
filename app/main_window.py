@@ -4,13 +4,16 @@ Columna izquierda: cabecera (título/reloj/fecha), transporte, contadores, modos
 (+ modo gráfico + biblioteca) y botonera. Columna derecha: VU + preview, funciones, salida RTMP,
 reloj de estación y bloqueo.
 """
+import logging
 import os
+import platform
 import subprocess
 import sys
+import traceback
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer, QSize
+from PySide6.QtCore import Qt, QTimer, QSize, QtMsgType, qInstallMessageHandler, qVersion
 from PySide6.QtGui import QColor, QBrush, QPixmap, QKeySequence, QShortcut, QPalette, QPainter, QFont
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel,
                                QPushButton, QSplitter, QTableWidget, QTableWidgetItem, QAbstractItemView, QHeaderView,
@@ -31,10 +34,25 @@ from .scheduler import SchedulerService
 from .playout import (PlayoutController, make_item, ST_ONAIR, ST_READY, ST_AIRED, ST_CUT, ST_ERROR, ST_SKIPPED,
                       ST_PENDING, DONE_STATES)
 from .widgets import StationClock, VUMeter, VideoSurface, LedLabel, ProgressBarThin, fmt_tc
-from .dialogs import (PlaylistManagerDialog, SourcesDialog, SchedulerDialog, LogsDialog, SettingsDialog, EditClipDialog)
+from .dialogs import (PlaylistManagerDialog, SourcesDialog, SchedulerDialog, LogsDialog, DebugConsoleDialog,
+                      SettingsDialog, EditClipDialog)
 from .theme import QSS
 
 log = logger.get("ui")
+
+
+def _qt_message_handler(mode, context, message):
+    """Conserva avisos del backend Qt/Media Foundation en el diagnóstico."""
+    level = {
+        QtMsgType.QtDebugMsg: "debug",
+        QtMsgType.QtInfoMsg: "info",
+        QtMsgType.QtWarningMsg: "warning",
+        QtMsgType.QtCriticalMsg: "error",
+        QtMsgType.QtFatalMsg: "error",
+    }.get(mode, "warning")
+    source = getattr(context, "file", None) or getattr(context, "category", None) or "qt"
+    logger.get("qt").log(getattr(logging, level.upper()), "%s: %s", source, message)
+
 
 DAYS_ES = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"]
 MONTHS_ES = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"]
@@ -229,6 +247,9 @@ class MainWindow(QMainWindow):
                      f"FFmpeg: {'OK' if FFMPEG_PATH else 'NO ENCONTRADO'} • "
                      f"ffprobe: {'OK' if FFPROBE_PATH else 'NO'} • Biblioteca: {self.db.count_media()} medios")
         log.info("%s %s iniciado", APP_NAME, APP_VERSION)
+        log.info("diagnóstico: OS=%s release=%s Python=%s Qt=%s QtMultimedia=native MPV_PREVIEW=%s FFmpeg=%s FFprobe=%s",
+                 platform.system(), platform.release(), platform.python_version(), qVersion(),
+                 bool(MPV_PATH), bool(FFMPEG_PATH), bool(FFPROBE_PATH))
         QTimer.singleShot(800, self._autostart)
 
     # ================================================================== UI
@@ -261,7 +282,8 @@ class MainWindow(QMainWindow):
         f.setBold(True)
         self._logs_status.setFont(f)
         self._logs_status.setCursor(Qt.PointingHandCursor)
-        self._logs_status.mousePressEvent = lambda _e: self.open_logs()
+        self._logs_status.setToolTip("Abrir Consola Debug en vivo (F12)")
+        self._logs_status.mousePressEvent = lambda _e: self.open_debug_console()
         self.statusBar().addPermanentWidget(self._logs_status)
 
     # ---------------------------------------------------------------- left
@@ -614,7 +636,7 @@ class MainWindow(QMainWindow):
                  ("Programador", self.open_scheduler), ("Registros\nAs-Run", self.open_logs),
                  ("Fuentes /\nCategorías", self.open_sources), ("Ajustes del\nsistema", self.open_settings),
                  ("Escanear\nbiblioteca", self.start_scan), ("Logo / CG\n(RTMP)", self.open_logo),
-                 ("Dispositivos", self.open_devices)]
+                 ("Dispositivos", self.open_devices), ("Consola\nDebug", self.open_debug_console)]
         self._fn_buttons = []
         for i, (text, slot) in enumerate(funcs):
             b = _btn(text, slot, "funcBtn")
@@ -623,7 +645,7 @@ class MainWindow(QMainWindow):
             self._fn_buttons.append(b)
         self.emergency_btn = _btn("🚨 EMERGENCIA", self.emergency, "danger", "Emite inmediatamente el clip de emergencia configurado")
         self.emergency_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        g.addWidget(self.emergency_btn, 3, 0, 1, 3)
+        g.addWidget(self.emergency_btn, 4, 0, 1, 3)
         fv.addLayout(g)
         rv.addWidget(fn)
 
@@ -706,7 +728,7 @@ class MainWindow(QMainWindow):
         for key, slot in (("F1", self.on_play), ("F2", self.on_pause), ("F3", self.on_stop), ("F4", self.on_next),
                           ("F5", self.on_cue), ("Ctrl+L", self.lock_btn.click), ("Ctrl+F", self._focus_search),
                           ("Ctrl+Up", lambda: self.move_selected(-1)), ("Ctrl+Down", lambda: self.move_selected(1)),
-                          ("F11", self.toggle_fullscreen)):
+                          ("F11", self.toggle_fullscreen), ("F12", self.open_debug_console)):
             QShortcut(QKeySequence(key), self, activated=slot)
         QShortcut(QKeySequence(Qt.Key_Delete), self.grid, activated=self.remove_selected)
         QShortcut(QKeySequence(Qt.Key_Return), self.library, activated=lambda: self.add_library_selected("end"))
@@ -1815,6 +1837,9 @@ class MainWindow(QMainWindow):
     def open_logs(self):
         self._show_dialog("logs", lambda: LogsDialog(self, self.db))
 
+    def open_debug_console(self):
+        self._show_dialog("debug", lambda: DebugConsoleDialog(self))
+
     def open_settings(self):
         d = SettingsDialog(self, self.settings)
         if d.exec() == QDialog.Accepted:
@@ -1850,7 +1875,9 @@ class MainWindow(QMainWindow):
 
     # ================================================================ varios
     def _status(self, msg):
-        self.statusBar().showMessage(str(msg), 15000)
+        text = str(msg)
+        log.info("STATUS: %s", text)
+        self.statusBar().showMessage(text, 15000)
 
     def _tick_ui(self):
         now = datetime.now()
@@ -1930,6 +1957,14 @@ class MainWindow(QMainWindow):
 
 def main():
     logger.setup()
+
+    def _uncaught(exc_type, exc_value, exc_tb):
+        text = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
+        log.error("Excepción no controlada en callback Qt:\n%s", text)
+        sys.__excepthook__(exc_type, exc_value, exc_tb)
+
+    sys.excepthook = _uncaught
+    qInstallMessageHandler(_qt_message_handler)
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setStyle("Fusion")

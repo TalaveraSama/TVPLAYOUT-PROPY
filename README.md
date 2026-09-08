@@ -1,4 +1,4 @@
-# TVPlayout PRO V24.0.0.1 — Consola de playout
+# TVPlayout PRO V24.0.0.2 — Consola de playout
 
 Playout de televisión 24/7 para Windows con interfaz inspirada en la distribución de **XPlayout** (Axel Technology),
 sin usar código ni recursos propietarios. Reproductor local nativo **QtMultimedia** + salida **RTMP/SRT/UDP** con **FFmpeg**.
@@ -17,14 +17,25 @@ sin usar código ni recursos propietarios. Reproductor local nativo **QtMultimed
 | GRAPHIC MODE | La misma playlist con miniaturas |
 | BIBLIOTECA | Buscador + filtro por categoría, añadir al final / tras el aire / en selección / emitir ahora |
 | Botonera | Insertar archivo, Preparar, Editar clip, Subir/Bajar, Quitar, Limpiar emitidos, Ir al aire, Hora fija, Reiniciar estados, Duplicar, Vaciar, Previsualizar, Mezclar pendientes, Playlist Manager |
-| Monitor | VU meter estéreo (dBFS) + vídeo mpv embebido, volumen/mute **solo local**, aspecto |
-| FUNCIONES | Playlist Manager · Biblioteca · Programador · Registros As-Run · Fuentes/Categorías · Ajustes del sistema · Escanear · Logo/CG (RTMP) · Dispositivos · 🚨 EMERGENCIA |
+| Monitor | VU meter estéreo (dBFS) + vídeo nativo QtMultimedia/QVideoWidget, volumen/mute **solo local**, aspecto |
+| FUNCIONES | Playlist Manager · Biblioteca · Programador · Registros As-Run · **Consola Debug** · Fuentes/Categorías · Ajustes del sistema · Escanear · Logo/CG (RTMP) · Dispositivos · 🚨 EMERGENCIA |
 | SALIDA RTMP | URL, INICIAR/DETENER, estado (encoder, resolución, bitrate) |
 | Reloj de estación | Anillo de 60 segundos + HH:MM / SS, bloqueo de consola, minimizar/salir |
 
-Atajos: **F1** Play · **F2** Pausa · **F3** Stop · **F4** Siguiente · **F5** Preparar · **Supr** quitar · **Ctrl+↑/↓** mover ·
+Atajos: **F1** Play · **F2** Pausa · **F3** Stop · **F4** Siguiente · **F5** Preparar · **F12** Consola Debug · **Supr** quitar · **Ctrl+↑/↓** mover ·
 **Ctrl+F** buscar en biblioteca · **Ctrl+L** bloquear · **F11** pantalla completa. Doble clic en una fila = emitir ahora.
 Se pueden **arrastrar archivos o carpetas** desde el Explorador a la grid.
+
+## Consola Debug
+
+Abrí **Funciones → Consola Debug** o pulsá **F12** antes de intentar la
+reproducción. La ventana en vivo registra la ruta absoluta, existencia y
+peso del archivo, generación de carga, `setSource`, `mediaStatus`, estado de
+reproducción, duración, posición, errores de QtMultimedia, geometría y
+visibilidad de `QVideoWidget`, transiciones de playlist y salida FFmpeg/RTMP.
+Permite filtrar por nivel, pausar la vista, copiar todo y guardar un
+`diagnostico_tvplayout.txt`. También podés iniciar con
+`INICIAR_CONSOLA.bat` para ver el mismo DEBUG en la consola de Windows.
 
 ## Continuidad
 
@@ -38,7 +49,7 @@ Se pueden **arrastrar archivos o carpetas** desde el Explorador a la grid.
 
 ## Salida RTMP
 
-La salida sigue al playout local: cada vez que empieza un evento en mpv, FFmpeg salta al mismo evento. Se emite clip por clip
+La salida sigue al playout local: cada vez que empieza un evento en QtMultimedia, FFmpeg salta al mismo evento. Se emite clip por clip
 sobre la misma URL (el servidor ve una reconexión breve entre clips). Encoders: AUTO (prueba NVENC → QSV → AMF → x264),
 CPU/x264, NVIDIA NVENC, Intel QSV, AMD AMF. Audio AAC 48 kHz estéreo, pista de audio elegida por preferencia
 (es-MX / es-419 / Latino / spa / es…). Opcional: quemar subtítulos preferidos y superponer un **logo PNG** (posición, tamaño,

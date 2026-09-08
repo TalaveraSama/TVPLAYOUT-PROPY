@@ -4,7 +4,7 @@ import os
 from datetime import datetime
 
 from PySide6.QtCore import Qt, QTime, QDate, Signal
-from PySide6.QtGui import QColor, QBrush
+from PySide6.QtGui import QColor, QBrush, QGuiApplication
 from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QGridLayout, QFormLayout, QLabel, QPushButton,
                                QTableWidget, QTableWidgetItem, QAbstractItemView, QHeaderView, QLineEdit, QComboBox,
                                QSpinBox, QCheckBox, QTimeEdit, QDateEdit, QMessageBox, QFileDialog, QInputDialog,
@@ -701,6 +701,130 @@ class LogsDialog(BaseDialog):
             self.parent().statusBar().showMessage("As-run exportado: " + path)
         except OSError as e:
             QMessageBox.critical(self, "Exportar", str(e))
+
+
+# ============================================================ CONSOLA DEBUG
+class DebugConsoleDialog(BaseDialog):
+    """Consola viva para diagnosticar reproducción, QtMultimedia, RTMP y BD.
+
+    Recibe líneas desde cualquier hilo mediante Signal, por lo que se puede
+    dejar abierta mientras se intenta reproducir un clip y luego copiar el
+    diagnóstico completo para soporte.
+    """
+    line_received = Signal(str)
+
+    def __init__(self, parent):
+        super().__init__(parent, "Consola Debug", 1180, 720)
+        self._paused = False
+        self._lines = []
+        v = QVBoxLayout(self)
+        info = QLabel(
+            "Consola en vivo. Reproduce el clip con esta ventana abierta y copia el contenido completo "
+            "si aparece un error. El archivo también se guarda en: " + str(logger.LOG_FILE)
+        )
+        info.setWordWrap(True)
+        v.addWidget(info)
+        tools = QHBoxLayout()
+        self.level = QComboBox()
+        self.level.addItems(["TODO", "INFO+", "WARNING+", "SOLO ERROR"])
+        self.level.currentIndexChanged.connect(self._refilter)
+        tools.addWidget(QLabel("Nivel:"))
+        tools.addWidget(self.level)
+        self.pause_btn = _btn("Pausar vista", self._toggle_pause)
+        tools.addWidget(self.pause_btn)
+        tools.addWidget(_btn("Copiar todo", self._copy_all))
+        tools.addWidget(_btn("Guardar diagnóstico…", self._save))
+        tools.addWidget(_btn("Limpiar vista", self._clear))
+        tools.addStretch()
+        v.addLayout(tools)
+        self.console = QPlainTextEdit()
+        self.console.setReadOnly(True)
+        self.console.setMaximumBlockCount(10000)
+        self.console.setStyleSheet("font-family: Consolas, 'DejaVu Sans Mono', monospace; font-size: 11px;")
+        v.addWidget(self.console, 1)
+        bottom = QHBoxLayout()
+        self.count_lbl = QLabel("0 líneas")
+        bottom.addWidget(self.count_lbl)
+        bottom.addStretch()
+        bottom.addWidget(_btn("Cerrar", self.close))
+        v.addLayout(bottom)
+        for line in logger.recent_lines(5000):
+            self._lines.append((line, self._classify(line)))
+        self._refilter()
+        self.line_received.connect(self._on_log_line)
+        self._listener = self.line_received.emit
+        logger.add_listener(self._listener)
+
+    @staticmethod
+    def _classify(line):
+        up = line.upper()
+        if "ERROR" in up:
+            return "ERROR"
+        if "WARNING" in up:
+            return "WARNING"
+        if "DEBUG" in up:
+            return "DEBUG"
+        return "INFO"
+
+    def _passes(self, level):
+        idx = self.level.currentIndex()
+        if idx == 0:
+            return True
+        if idx == 1:
+            return level in ("INFO", "DEBUG", "WARNING", "ERROR")
+        if idx == 2:
+            return level in ("WARNING", "ERROR")
+        return level == "ERROR"
+
+    def _refilter(self):
+        self.console.setUpdatesEnabled(False)
+        self.console.clear()
+        for line, level in self._lines:
+            if self._passes(level):
+                self.console.appendPlainText(line)
+        self.console.setUpdatesEnabled(True)
+        if not self._paused:
+            self.console.verticalScrollBar().setValue(self.console.verticalScrollBar().maximum())
+        self.count_lbl.setText(f"{len(self._lines)} líneas")
+
+    def _on_log_line(self, line):
+        self._lines.append((line, self._classify(line)))
+        if len(self._lines) > 10000:
+            self._lines = self._lines[-10000:]
+        if self._passes(self._lines[-1][1]) and not self._paused:
+            self.console.appendPlainText(line)
+            sb = self.console.verticalScrollBar()
+            sb.setValue(sb.maximum())
+        self.count_lbl.setText(f"{len(self._lines)} líneas")
+
+    def _toggle_pause(self):
+        self._paused = not self._paused
+        self.pause_btn.setText("Reanudar vista" if self._paused else "Pausar vista")
+        if not self._paused:
+            self._refilter()
+
+    def _copy_all(self):
+        QGuiApplication.clipboard().setText("\n".join(line for line, _level in self._lines))
+
+    def _save(self):
+        path, _ = QFileDialog.getSaveFileName(self, "Guardar diagnóstico", str(ROOT / "diagnostico_tvplayout.txt"), "Texto (*.txt)")
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("\n".join(line for line, _level in self._lines) + "\n")
+            self.parent().statusBar().showMessage("Diagnóstico guardado: " + path)
+        except OSError as exc:
+            QMessageBox.critical(self, "Diagnóstico", str(exc))
+
+    def _clear(self):
+        self._lines.clear()
+        self.console.clear()
+        self.count_lbl.setText("0 líneas")
+
+    def closeEvent(self, event):
+        logger.remove_listener(self._listener)
+        super().closeEvent(event)
 
 
 # ============================================================ AJUSTES DEL SISTEMA

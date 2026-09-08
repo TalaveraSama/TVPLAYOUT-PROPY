@@ -227,6 +227,8 @@ class OutputWorker(QThread):
         (usado por seek/pause).
         """
         new_items = self._norm_items(items)
+        log.debug("RTMP sync_items count=%d current=%d force_jump=%s offset=%.3f url=%s",
+                  len(new_items), current_index, force_jump, start_offset, self.url)
         if not new_items:
             return False
         with self._lock:
@@ -355,6 +357,8 @@ class OutputWorker(QThread):
 
     # -------------------------------------------------------------- loop
     def run(self):
+        log.info("RTMP worker start ffmpeg=%s url=%s items=%d resolution=%s fps=%s encoder=%s bitrate=%dk",
+                 self.ffmpeg, self.url, len(self.items), self.resolution, self.fps, self.encoder, self.bitrate)
         try:
             with self._lock:
                 items = list(self.items)
@@ -432,6 +436,7 @@ class OutputWorker(QThread):
                 if self._jump.is_set():
                     continue
                 elapsed = time.time() - started
+                log.info("FFmpeg process ended code=%s elapsed=%.1fs clip=%s", code, elapsed, item.get("path", ""))
                 if code not in (0, 255, -15):
                     self.log.emit(f"FFmpeg terminó con código {code} tras {elapsed:.0f}s")
                     if elapsed < 5:
@@ -459,6 +464,7 @@ class OutputWorker(QThread):
             self.ended.emit()
 
     def stop(self):
+        log.info("RTMP stop requested url=%s current_index=%s", self.url, self._current_index)
         self.stop_requested = True
         self._jump.set()
         with self._lock:
