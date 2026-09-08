@@ -186,9 +186,14 @@ def test_drift_watcher_uses_current_position():
     src = _read(WIN)
     idx = src.find("def _rtmp_check_drift(self")
     assert idx > 0
-    block = src[idx:idx + 1500]
+    block = src[idx:idx + 2500]
     assert "self.output.current_position" in block, \
         "el watcher de drift debe usar current_position (estimación dinámica), no current_offset (estático)"
+    # v22.2.4: el watcher usa self.ctrl.elapsed (estimación con reloj de
+    # pared cuando mpv no reporta time-pos). Antes leía self.player._time
+    # que podía quedar en 0.
+    assert "self.ctrl.elapsed" in block, \
+        "el watcher debe usar self.ctrl.elapsed (estimación dinámica con reloj de pared)"
 
 
 def test_rtmp_mode_radios_in_ui():

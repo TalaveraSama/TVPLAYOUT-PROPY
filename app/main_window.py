@@ -1571,12 +1571,12 @@ class MainWindow(QMainWindow):
                 self.rtmp_mode_local.setChecked(True)
                 return
         s = self.settings
-        # v22.2.1: leer la posición ACTUAL de mpv directamente del atributo del
-        # player (no del PlayoutController, que se actualiza con la señal
-        # position y puede tener hasta 500ms de lag respecto del IPC). Si
-        # acabás de arrancar el playout, _time puede ser 0.0 — en ese caso
-        # FFmpeg arranca desde 0 que es el comportamiento correcto.
-        mpv_time = float(getattr(self.player, "_time", 0.0) or 0.0)
+        # v22.2.4: usar self.ctrl.elapsed que estima la posición del playout
+        # local con el reloj de pared cuando mpv no reporta time-pos por IPC
+        # (caso documentado en v22.2.3 con builds viejas de mpv). Antes leíamos
+        # self.player._time directamente, que podía quedar en 0 si mpv no
+        # emitía property-change, y generaba un loop de drift infinito.
+        mpv_time = float(self.ctrl.elapsed or 0.0)
         self.output = OutputWorker(FFMPEG_PATH, self.ctrl.export_items(), url, s.get("resolution", "1920x1080"), s.get("fps", "29.97"),
                                    s.get("encoder", "AUTO"), int(s.get("bitrate", 6000)), s.get("audio_pref", AUDIO_PREFS[0]),
                                    s.get("sub_pref", "OFF"), bool(s.get("subtitle_burn", False)), int(s.get("audio_bitrate", 192)),
@@ -1687,8 +1687,11 @@ class MainWindow(QMainWindow):
             return
         if self._rtmp_drift_suspend_until and time.time() < self._rtmp_drift_suspend_until:
             return
-        # Posición real del playout local (lo que mpv reporta por IPC)
-        mpv_time = float(getattr(self.player, "_time", 0.0) or 0.0)
+        # v22.2.4: usar self.ctrl.elapsed en lugar de self.player._time.
+        # Si mpv no está reportando time-pos por IPC (caso v22.2.3), _time
+        # se queda en 0 y se genera un loop de drift infinito. elapsed
+        # estima la posición con el reloj de pared como fallback.
+        mpv_time = float(self.ctrl.elapsed or 0.0)
         # Posición estimada actual del FFmpeg (avanza con el reloj desde
         # que arrancó el clip). current_position se calcula internamente
         # como current_offset + (now - clip_emit_started).

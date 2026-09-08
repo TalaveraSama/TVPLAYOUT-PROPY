@@ -120,6 +120,14 @@ class PlayoutController(QObject):
 
     @property
     def elapsed(self):
+        # v22.2.4: si mpv no está reportando time-pos por IPC (caso
+        # documentado en v22.2.3 con build vieja de mpv), _pos queda en
+        # 0 aunque el video SÍ avance visualmente. En ese caso estimamos
+        # la posición con el reloj de pared: ahora - _started_at.
+        if self._pos > 0:
+            return self._pos
+        if 0 <= self.onair < len(self.items) and self._started_at > 0 and not self.paused:
+            return max(0.0, time.time() - self._started_at)
         return self._pos
 
     @property
