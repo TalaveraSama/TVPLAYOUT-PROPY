@@ -14,7 +14,9 @@ from pathlib import Path
 from PyInstaller.utils.hooks import collect_all, collect_submodules
 
 block_cipher = None
-APP_ROOT = Path(__file__).resolve().parent
+# PyInstaller ejecuta el spec con exec(), sin garantizar __file__. SPECPATH
+# es su carpeta de spec; cwd queda como fallback porque el BAT hace cd a la raíz.
+APP_ROOT = Path(globals().get("SPECPATH", Path.cwd())).resolve()
 
 # PyAV carga parte de libav dinámicamente; collect_all evita que una versión
 # nueva de PyAV quede incompleta por depender de un nombre de DLL no listado.

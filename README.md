@@ -1,4 +1,4 @@
-# TVPlayout PRO V24.0.2.1 — Consola de playout
+# TVPlayout PRO V24.0.2.2 — Consola de playout
 
 Playout de televisión 24/7 para Windows con interfaz inspirada en la distribución de **XPlayout** (Axel Technology),
 sin usar código ni recursos propietarios. Reproductor local **PyAV/libavcodec** + salida **RTMP/SRT/UDP** con **FFmpeg**.
@@ -77,6 +77,10 @@ tests/                  pruebas estáticas y de continuidad del playout
 ```
 
 ## Registro de cambios
+
+### V24.0.2.2
+- Se corrigió el build PyInstaller en Windows: los archivos `.spec` no dependen de `__file__`, que PyInstaller no define al ejecutar el spec.
+- El empaquetado usa `SPECPATH` o la raíz actual del proyecto como ruta de análisis.
 
 ### V24.0.2.1
 - La edición de cortes ahora pide segundos a quitar del inicio y del final: para eliminar 5 segundos iniciales y 2 finales se escriben simplemente `5` y `2`.
