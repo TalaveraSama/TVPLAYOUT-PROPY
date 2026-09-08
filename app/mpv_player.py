@@ -41,30 +41,40 @@ class _PipeConn:
         self.path = path
         self._win = os.name == "nt"
         if self._win:
-            import _winapi  # noqa: WPS433
-            from multiprocessing.connection import PipeConnection  # type: ignore
-            handle = _winapi.CreateFile(path, _winapi.GENERIC_READ | _winapi.GENERIC_WRITE, 0, _winapi.NULL,
-                                        _winapi.OPEN_EXISTING, _winapi.FILE_FLAG_OVERLAPPED, _winapi.NULL)
-            self._conn = PipeConnection(handle)
+            # mpv crea el named pipe de --input-ipc-server en modo BYTE
+            # (stream). multiprocessing.connection.PipeConnection asume
+            # modo MESSAGE: sus recv_bytes() nunca entregan el flujo de
+            # eventos JSON de mpv, así que time-pos/duration/file-loaded/
+            # end-file y el VU quedaban mudos y el playout tenía que
+            # avanzar a ciegas con el watchdog. Abrimos el pipe como un
+            # archivo binario sin buffer: lecturas bloqueantes, JSON
+            # delimitado por '\n' (lo arma el lector en _read_loop).
+            self._pipe = open(path, "r+b", buffering=0)  # noqa: SIM115
         else:
             self._sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             self._sock.connect(path)
 
     def send(self, data: bytes):
         if self._win:
-            self._conn.send_bytes(data)
+            mv = memoryview(data)
+            while mv:
+                n = self._pipe.write(mv)
+                if not n:
+                    raise OSError("escritura en el pipe devolvió 0 bytes")
+                mv = mv[n:]
+            self._pipe.flush()
         else:
             self._sock.sendall(data)
 
     def recv(self) -> bytes:
         if self._win:
-            return self._conn.recv_bytes(65536)
+            return self._pipe.read(65536)  # bloquea hasta que hay datos; b"" si mpv cierra
         return self._sock.recv(65536)
 
     def close(self):
         try:
             if self._win:
-                self._conn.close()
+                self._pipe.close()
             else:
                 try:
                     self._sock.shutdown(socket.SHUT_RDWR)
