@@ -130,7 +130,18 @@ class OutputWorker(QThread):
             self._resolved = ("CPU/x264", "libx264")
             return self._resolved
         if text and not re.search(rf"\b{re.escape(codec)}\b", text):
-            raise RuntimeError(f"El encoder {requested} ({codec}) no está disponible en este FFmpeg.")
+            log.warning("Encoder solicitado %s (%s) no está en FFmpeg; usando CPU/x264", requested, codec)
+            self._resolved = ("CPU/x264", "libx264")
+            return self._resolved
+        # Que FFmpeg liste un encoder no significa que exista la GPU o su
+        # controlador. Esto ocurre con frecuencia con NVENC en equipos sin
+        # NVIDIA: probarlo aquí evita arrancar un proceso RTMP condenado a
+        # fallar con `Cannot load nvcuda.dll`.
+        if codec != "libx264" and not self._encoder_works(codec):
+            log.warning("Encoder solicitado %s (%s) no funciona en este equipo; usando CPU/x264",
+                        requested, codec)
+            self._resolved = ("CPU/x264", "libx264")
+            return self._resolved
         self._resolved = (requested, codec)
         return self._resolved
 
@@ -435,6 +446,27 @@ class OutputWorker(QThread):
                 if code not in (0, 255, -15):
                     self.log.emit(f"FFmpeg terminó con código {code} tras {elapsed:.0f}s")
                     if elapsed < 5:
+                        # Un encoder de hardware puede pasar la prueba de
+                        # disponibilidad y aun así fallar al abrir el
+                        # stream real (por ejemplo, `Cannot load nvcuda.dll`).
+                        # Cambiar a x264 y repetir el mismo evento evita el
+                        # loop de drift que relanzaba NVENC cada pocos segundos.
+                        active_codec = self._resolved[1] if self._resolved else ""
+                        if active_codec != "libx264":
+                            old_label = self._resolved[0] if self._resolved else active_codec
+                            self._resolved = ("CPU/x264", "libx264")
+                            retry_offset = float(self._current_offset or 0.0)
+                            offset = retry_offset
+                            consecutive_errors = 0
+                            self.log.emit(
+                                f"Fallback encoder • {old_label} no pudo iniciar; reintentando con CPU/x264"
+                            )
+                            log.warning(
+                                "RTMP encoder %s falló al iniciar; fallback a CPU/x264 en offset %.3fs",
+                                old_label, retry_offset,
+                            )
+                            time.sleep(0.2)
+                            continue
                         consecutive_errors += 1
                         if consecutive_errors >= max(3, len(items)):
                             raise RuntimeError("FFmpeg falla repetidamente: " + (last_lines[-1] if last_lines else f"código {code}"))

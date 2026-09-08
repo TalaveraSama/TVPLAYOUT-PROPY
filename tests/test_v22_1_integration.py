@@ -97,6 +97,16 @@ def test_output_has_pause_and_seek_api():
     assert "_jump_offset" in rb, "el loop de run() debe consumir _jump_offset"
 
 
+def test_output_falls_back_from_unavailable_hardware_encoder():
+    """NVENC/QSV/AMF listados sin GPU no deben tumbar la salida RTMP."""
+    src = _read(OUT)
+    requested = src[src.find("codec = self.ENCODERS.get(requested)"):src.find("def _encoder_works", src.find("codec = self.ENCODERS.get(requested)"))]
+    assert "self._encoder_works(codec)" in requested
+    assert 'self._resolved = ("CPU/x264", "libx264")' in requested
+    assert "Fallback encoder" in src
+    assert "Cannot load nvcuda.dll" in src
+
+
 def test_sync_items_accepts_start_offset():
     src = _read(OUT)
     sig = re.search(r"def sync_items\(self.*?\):", src)
