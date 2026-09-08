@@ -7,9 +7,11 @@ FFmpeg sigue siendo el motor de la salida RTMP.
 """
 from __future__ import annotations
 
+import math
 import os
 import threading
 import time
+from array import array
 try:
     import av
 except ImportError:  # La aplicación puede arrancar y explicar la dependencia.
@@ -30,6 +32,7 @@ class _DecodeJob(QObject):
     loaded = Signal(object, int)
     frame = Signal(object, float, float, int)       # QImage, posición, duración, generación
     audio = Signal(object, int)                     # bytes PCM, generación
+    levels = Signal(float, float, int)              # dBFS L/R, generación
     finished = Signal(str, int)                     # eof | stop | error, generación
     error = Signal(str, int)
 
@@ -128,7 +131,20 @@ class _DecodeJob(QObject):
                 for out in converted:
                     if not out.planes:
                         continue
-                    self.audio.emit(bytes(out.planes[0]), self.generation)
+                    raw = bytes(out.planes[0])
+                    try:
+                        samples = array("h")
+                        samples.frombytes(raw)
+                        left = samples[0::2]
+                        right = samples[1::2]
+                        peak_l = max((abs(v) for v in left), default=0) / 32768.0
+                        peak_r = max((abs(v) for v in right), default=0) / 32768.0
+                        db_l = 20.0 * math.log10(max(1e-5, peak_l))
+                        db_r = 20.0 * math.log10(max(1e-5, peak_r))
+                        self.levels.emit(db_l, db_r, self.generation)
+                    except (TypeError, ValueError, OverflowError):
+                        pass
+                    self.audio.emit(raw, self.generation)
         except Exception as exc:  # noqa: BLE001
             log.debug("audio decode %s: %s", self.path, exc)
 
@@ -387,6 +403,7 @@ class PyAVPlayer(QObject):
         self._job.loaded.connect(self._on_loaded)
         self._job.frame.connect(self._on_frame)
         self._job.audio.connect(self._queue_audio)
+        self._job.levels.connect(self._on_levels)
         self._job.finished.connect(self._on_finished)
         self._job.error.connect(self._on_error)
         self._thread = threading.Thread(target=self._job.run, name=f"pyav-{generation}", daemon=True)
@@ -465,7 +482,10 @@ class PyAVPlayer(QObject):
             self._duration = float(duration)
         self.widget.set_frame(image)
         self.position.emit(self._time, self._duration)
-        self.levels.emit(-90.0, -90.0)
+
+    def _on_levels(self, left, right, generation):
+        if generation == self._generation:
+            self.levels.emit(float(left), float(right))
 
     def _on_error(self, message, generation):
         if generation != self._generation:
