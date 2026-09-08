@@ -1,5 +1,5 @@
 """Controlador de continuidad: modelo de playlist + lógica de emisión (automático/manual, hora exacta,
-autofill, tandas, loop, cue) sobre el reproductor mpv local. La salida RTMP se engancha mediante callbacks."""
+autofill, tandas, loop, cue) sobre el reproductor local. La salida RTMP se engancha mediante callbacks."""
 import json
 import os
 import time
