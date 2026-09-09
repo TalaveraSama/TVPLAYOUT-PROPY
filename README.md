@@ -1,7 +1,7 @@
 # TVPlayout PRO V24.0.2.4 — Consola de playout
 
 Playout de televisión 24/7 para Windows con interfaz inspirada en la distribución de **XPlayout** (Axel Technology),
-sin usar código ni recursos propietarios. Reproductor local **PyAV/libavcodec** + salida **RTMP/SRT/UDP** con **FFmpeg**.
+sin usar código ni recursos propietarios. Reproductor local **PyAV/libavcodec** + salida **RTMP/SRT/UDP** con **FFmpeg** + NDI nativo mediante el Runtime x64.
 
 ![Panel principal](docs/panel.png)
 
@@ -61,8 +61,9 @@ duración, resolución, códecs, pistas de audio/subtítulos y se generan miniat
 ## Distribución hacia OBS y vMix
 
 En **Salidas IP · RTMP / SRT / NDI** se pueden guardar varios destinos
-independientes. Cada destino tiene su propio proceso FFmpeg, pero todos siguen
-el mismo evento, corte y reloj del playout local.
+independientes. Cada destino RTMP/SRT tiene su propio proceso FFmpeg y cada
+destino NDI su propio sender del Runtime; todos siguen el mismo evento, corte
+y reloj del playout local.
 
 - **OBS:** la cámara virtual de OBS es una salida de OBS hacia otras
   aplicaciones; TVPlayout no puede enviar directamente a esa cámara virtual.
@@ -72,9 +73,13 @@ el mismo evento, corte y reloj del playout local.
 - **vMix:** añade una entrada Stream para RTMP/SRT o una entrada NDI si tienes
   NDI Runtime. Para un OBS y un vMix simultáneos, crea dos perfiles RTMP/SRT o
   un perfil NDI más otro perfil de red.
-- **NDI directo:** necesita NDI Runtime y una build de FFmpeg que anuncie el
-  muxer `libndi_newtek`. La mayoría de builds genéricas de FFmpeg no lo
-  incluyen; si no está disponible, usa SRT/RTMP o un puente MediaMTX/GStreamer.
+- **NDI directo:** instala el **NDI Runtime x64** en Windows. TVPlayout busca
+  `Processing.NDI.Lib.x64.dll`, la carga mediante ctypes, llama a
+  `NDIlib_initialize` y crea un sender de prueba antes de mostrar NDI como
+  disponible. El vídeo BGRA/BGRX y el audio PCM estéreo s16le convertido a
+  float32 planar se envían directamente al Runtime; no se necesita
+  `ffmpeg-ndi.exe` ni `libndi_newtek`. Comprueba **Dispositivos** antes de
+  iniciar y recibe el nombre en NDI Studio Monitor, OBS o vMix.
 - **SRT:** es recomendable para enlaces locales o WAN con pérdida. Un ejemplo
   caller es `srt://192.168.1.50:9000?mode=caller&latency=200000`; el receptor debe
   escuchar en el mismo puerto y aceptar SRT.
@@ -116,14 +121,18 @@ tests/                  pruebas estáticas y de continuidad del playout
 ## Registro de cambios
 
 ### V24.0.2.4
-- NDI ahora valida antes de arrancar que el FFmpeg tenga el muxer `libndi_newtek`; ya no entra en un ciclo de reintentos ni hace fallback incorrecto a NVENC/x264.
-- Se admite `ffmpeg-ndi.exe` separado para NDI, manteniendo el FFmpeg normal para RTMP/SRT.
+- Se conserva la ruta heredada opcional de `ffmpeg-ndi.exe`, manteniendo el FFmpeg normal para RTMP/SRT.
 - Se muestra el estado del binario NDI en Dispositivos.
+
+### Trabajo posterior a V24.0.2.4
+- NDI nativo usa directamente `Processing.NDI.Lib.x64.dll` mediante ctypes, con un sender independiente por destino.
+- PyAV entrega frames BGRA/BGRX y PCM s16le; el puente convierte el audio a float32 planar para `NDIlib_audio_frame_v3_t` y sincroniza la destrucción de cada sender.
+- RTMP/SRT continúan usando workers FFmpeg independientes; `ffmpeg-ndi.exe` y `libndi_newtek` ya no son requisitos de NDI.
 - Se corrigió la estructura del diálogo Logo / CG para conservar correctamente la configuración y la vista previa.
 
 ### V24.0.2.3
 - Se agregó el apartado **Salidas IP · RTMP / SRT / NDI** con perfiles múltiples y procesos FFmpeg independientes por destino.
-- RTMP y SRT pueden alimentar OBS y vMix; NDI directo queda disponible cuando FFmpeg incluye `libndi_newtek` y NDI Runtime está instalado.
+- RTMP y SRT pueden alimentar OBS y vMix; la ruta NDI de esa versión era experimental y dependía de una build FFmpeg con `libndi_newtek`; la implementación actual usa directamente el NDI Runtime x64.
 - La configuración de logo muestra las guías 16:9 y el área segura 4:3 entre 12.5% y 87.5%, y mantiene la mosca dentro de ese margen.
 - El empaquetado limpia los artefactos temporales de PyInstaller al terminar correctamente.
 

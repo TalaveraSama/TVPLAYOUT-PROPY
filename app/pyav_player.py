@@ -395,6 +395,8 @@ class PyAVPlayer(QObject):
     loaded = Signal()
     position = Signal(float, float)
     levels = Signal(float, float)
+    ndi_frame = Signal(object, float, float)  # QImage, posición, duración
+    ndi_audio = Signal(object)                # PCM s16le estéreo
     idle = Signal(bool)
     process_died = Signal()
 
@@ -422,6 +424,7 @@ class PyAVPlayer(QObject):
         self._job = None
         self._thread = None
         self._audio_queue = bytearray()
+        self._ndi_audio_enabled = False
         self._audio_io = None
         self._audio_sink = None
         self._audio_format = None
@@ -485,6 +488,7 @@ class PyAVPlayer(QObject):
             log.warning("No se pudo iniciar QAudioSink: %s", exc)
 
     def _stop_audio(self):
+        self._ndi_audio_enabled = False
         self._audio_timer.stop()
         self._audio_queue.clear()
         self._audio_io = None
@@ -499,7 +503,12 @@ class PyAVPlayer(QObject):
             return
         # Mantener como máximo aproximadamente un segundo de PCM para que un
         # decoder lento no acumule latencia infinita.
-        self._audio_queue.extend(bytes(data))
+        pcm = bytes(data)
+        # El prebuffer local de seis segundos no debe salir antes del primer
+        # frame NDI: habilitamos el envío cuando PyAV emite ready.
+        if self._ndi_audio_enabled:
+            self.ndi_audio.emit(pcm)
+        self._audio_queue.extend(pcm)
         if len(self._audio_queue) > AUDIO_QUEUE_LIMIT:
             # Nunca conservar un segundo completo de audio: ese backlog se
             # escucha como desfase. Se conserva solo la ventana corta del
@@ -550,6 +559,7 @@ class PyAVPlayer(QObject):
             return False
         self._generation += 1
         generation = self._generation
+        self._ndi_audio_enabled = False
         self._disconnect_job(self._job)
         self._stop_audio()
         self._trim_start = max(0.0, float(start or 0.0))
@@ -631,6 +641,7 @@ class PyAVPlayer(QObject):
     def _on_ready(self, generation):
         if generation != self._generation:
             return
+        self._ndi_audio_enabled = True
         log.info("PyAV monitor audio ready gen=%d buffer=%.1fs", generation, AUDIO_PREBUFFER_SECONDS)
         self._start_audio()
 
@@ -641,6 +652,7 @@ class PyAVPlayer(QObject):
         if duration > 0:
             self._duration = float(duration)
         self.widget.set_frame(image)
+        self.ndi_frame.emit(image, self._time, self._duration)
         self.position.emit(self._time, self._duration)
 
     def _on_levels(self, left, right, generation):

@@ -40,7 +40,7 @@ Coloca antes del build:
 ```text
 ffmpeg.exe                         raíz del proyecto
 ffprobe.exe                        raíz del proyecto
-ffmpeg-ndi.exe                     build especial con libndi_newtek (opcional)
+ffmpeg-ndi.exe                     compatibilidad heredada opcional (no necesaria para NDI directo)
 bin\ffmpeg.exe / bin\ffprobe.exe
 ffmpeg\bin\ffmpeg.exe / ffmpeg\bin\ffprobe.exe
 ```
@@ -48,8 +48,12 @@ ffmpeg\bin\ffmpeg.exe / ffmpeg\bin\ffprobe.exe
 El BAT copia también las DLL que estén junto a FFmpeg. El aire local usa
 PyAV/libav y no necesita reproductores externos; FFmpeg sí es necesario para
 RTMP/SRT/UDP y ffprobe para escanear metadatos y generar miniaturas. NDI directo
-requiere un `ffmpeg-ndi.exe` que anuncie `libndi_newtek`; instalar NDI Runtime
-por sí solo no agrega ese muxer a un FFmpeg genérico.
+usa `Processing.NDI.Lib.x64.dll` mediante ctypes y no necesita `ffmpeg-ndi.exe`
+ni el muxer `libndi_newtek`. En Windows instala el NDI Runtime x64 oficial;
+la aplicación busca sus rutas habituales y solo marca NDI como disponible
+cuando carga, inicializa y crea correctamente un sender de prueba. La copia
+opcional de `ffmpeg-ndi.exe` solo conserva compatibilidad con instalaciones
+heredadas y no participa en el perfil NDI directo.
 
 ## Logo e identidad visual
 
@@ -69,7 +73,7 @@ assets\logo.ico
 - La salida FFmpeg mantiene automáticamente el logo dentro del área 4:3. El
   tamaño predeterminado es 10% del ancho, un valor normal para una mosca de
   cadena profesional, con margen predeterminado de 48 px en 1920x1080.
-- El logo solo afecta la salida FFmpeg, no el monitor local.
+- El logo afecta la salida FFmpeg y también el frame enviado por NDI directo; no altera el monitor local.
 - Si el usuario todavía no tiene un logo, estos archivos son opcionales y el
   programa funciona normalmente sin ellos.
 
@@ -96,14 +100,15 @@ copió el BAT.
 ## OBS, vMix y múltiples destinos
 
 Abre **Salidas IP · RTMP / SRT / NDI** desde el panel o desde Ajustes del
-sistema. Añade un perfil por receptor; los perfiles activos se emiten en
-paralelo con procesos FFmpeg independientes.
+sistema. Añade un perfil por receptor; los perfiles RTMP/SRT se emiten en
+procesos FFmpeg independientes y los perfiles NDI en senders independientes
+contra el Runtime x64.
 
 La cámara virtual de OBS no es una entrada para TVPlayout: OBS la publica hacia
 otras aplicaciones. Para llevar la señal a OBS, usa una entrada RTMP/SRT o
-`obs-ndi`; para vMix, usa una entrada Stream RTMP/SRT o NDI. NDI directo solo
-funciona si el FFmpeg instalado tiene el muxer `libndi_newtek` y está instalado
-NDI Runtime.
+`obs-ndi`; para vMix, usa una entrada Stream RTMP/SRT o NDI. NDI directo
+requiere el NDI Runtime x64 instalado en Windows y que Dispositivos muestre
+la prueba del Runtime como OK; no depende de FFmpeg.
 
 ## Limpieza
 

@@ -15,6 +15,7 @@ from PySide6.QtCore import QThread, Signal, QObject
 
 from . import logger
 from .prober import pick_audio, pick_subtitle
+from .ndi_sender import NDISender
 
 log = logger.get("rtmp")
 CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -573,9 +574,9 @@ class OutputWorker(QThread):
 class MultiOutputManager(QObject):
     """Coordina destinos RTMP, SRT y NDI independientes.
 
-    Cada destino tiene su propio FFmpeg para aislar credenciales, reconexiones
-    y fallos de red. La interfaz conserva una sola API de sincronización para
-    que todos sigan al playout local.
+    Cada destino RTMP/SRT tiene su propio FFmpeg y cada NDI su propio sender
+    ctypes, para aislar credenciales, reconexiones y fallos de red. La interfaz
+    conserva una sola API de sincronización para que todos sigan al playout local.
     """
 
     state = Signal(bool, str)
@@ -585,10 +586,11 @@ class MultiOutputManager(QObject):
     def __init__(self, ffmpeg, profiles, items, resolution, fps, encoder, bitrate,
                  audio_preference="AUTO", subtitle_preference="OFF", subtitle_burn=False,
                  audio_bitrate=192, loop=True, start_index=0, start_offset=0.0,
-                 extra_args="", logo=None, ndi_ffmpeg=None, parent=None):
+                 extra_args="", logo=None, ndi_ffmpeg=None, ndi_source=None, parent=None):
         super().__init__(parent)
         self.ffmpeg = ffmpeg
         self.ndi_ffmpeg = ndi_ffmpeg or ffmpeg
+        self.ndi_source = ndi_source
         self.profiles = [dict(p) for p in (profiles or []) if p.get("enabled", True)]
         self.items = items
         self.common = dict(resolution=resolution, fps=fps, encoder=encoder, bitrate=bitrate,
@@ -597,6 +599,8 @@ class MultiOutputManager(QObject):
                            start_index=start_index, start_offset=start_offset, extra_args=extra_args, logo=logo)
         self.workers = []
         self._ended_workers = set()
+        self.ndi_senders = []
+        self._ndi_connections = []
 
     @staticmethod
     def _supports_ndi(ffmpeg):
@@ -621,19 +625,57 @@ class MultiOutputManager(QObject):
         return worker
 
     def start(self):
+        self._stop_ndi()
         self.workers = []
         self._ended_workers = set()
+        self.ndi_senders = []
+        self._ndi_connections = []
         for profile in self.profiles:
             protocol = str(profile.get("protocol", "RTMP")).upper()
             name = str(profile.get("name") or protocol)
-            if protocol == "NDI" and not self._supports_ndi(self.ndi_ffmpeg):
-                self.state.emit(False, f"{name}: NDI no disponible en FFmpeg; falta el muxer libndi_newtek")
+            target = str(profile.get("target") or profile.get("url") or "").strip()
+            if protocol == "NDI":
+                # NDI ya no pasa por FFmpeg: se crea un emisor independiente
+                # contra el Runtime x64 instalado en Windows.
+                sender = NDISender(target or name, self.common.get("logo"), self.common.get("fps", "29.97"))
+                if not sender.start():
+                    self.state.emit(False, f"{name}: NDI no disponible • {sender.error}")
+                    continue
+                self.ndi_senders.append(sender)
+                if self.ndi_source is not None:
+                    frame_slot = lambda image, position, duration, s=sender: s.send_frame(image, position, duration)
+                    audio_slot = lambda pcm, s=sender: s.send_audio(pcm)
+                    self.ndi_source.ndi_frame.connect(frame_slot)
+                    self.ndi_source.ndi_audio.connect(audio_slot)
+                    self._ndi_connections.append((sender, frame_slot, audio_slot))
+                self.state.emit(True, f"{name}: NDI directo activo")
+                self.log.emit(f"[{name}] NDI Runtime directo activo; FFmpeg no se utiliza")
                 continue
             worker = self._make_worker(profile)
             self.workers.append(worker)
             worker.start()
-        if not self.workers:
+        if not self.workers and not self.ndi_senders:
             self.state.emit(False, "No hay destinos IP habilitados o NDI no disponible")
+
+    def _disconnect_ndi(self):
+        source = self.ndi_source
+        if source is not None:
+            for _sender, frame_slot, audio_slot in self._ndi_connections:
+                try:
+                    source.ndi_frame.disconnect(frame_slot)
+                except (TypeError, RuntimeError):
+                    pass
+                try:
+                    source.ndi_audio.disconnect(audio_slot)
+                except (TypeError, RuntimeError):
+                    pass
+        self._ndi_connections = []
+
+    def _stop_ndi(self):
+        self._disconnect_ndi()
+        for sender in self.ndi_senders:
+            sender.stop()
+        self.ndi_senders = []
 
     def _state_from_worker(self, ok, msg, name):
         self.state.emit(bool(ok), f"{name}: {msg}")
@@ -645,9 +687,10 @@ class MultiOutputManager(QObject):
             self.ended.emit()
 
     def isRunning(self):
-        return any(w.isRunning() for w in self.workers)
+        return any(w.isRunning() for w in self.workers) or any(s.running for s in self.ndi_senders)
 
     def stop(self):
+        self._stop_ndi()
         for worker in self.workers:
             worker.stop()
 
@@ -677,6 +720,8 @@ class MultiOutputManager(QObject):
     def set_logo(self, logo):
         for worker in self.workers:
             worker.set_logo(logo)
+        for sender in self.ndi_senders:
+            sender.set_logo(logo)
 
     @property
     def current_position(self):

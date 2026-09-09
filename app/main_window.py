@@ -1601,8 +1601,9 @@ class MainWindow(QMainWindow):
             self.rtmp_mode_local.setChecked(True)
             return
         self._save_setting("outputs", profiles)
-        if not FFMPEG_PATH:
-            QMessageBox.warning(self, "Salidas IP", "No se encontró ffmpeg.exe. Colócalo en la raíz del proyecto.")
+        needs_ffmpeg = any(str(p.get("protocol", "RTMP")).upper() != "NDI" for p in profiles)
+        if needs_ffmpeg and not FFMPEG_PATH:
+            QMessageBox.warning(self, "Salidas IP", "No se encontró ffmpeg.exe para RTMP/SRT. Colócalo en la raíz del proyecto.")
             self.rtmp_mode_local.setChecked(True)
             return
         if not self.ctrl.items:
@@ -1626,7 +1627,7 @@ class MainWindow(QMainWindow):
                                           s.get("sub_pref", "OFF"), bool(s.get("subtitle_burn", False)), int(s.get("audio_bitrate", 192)),
                                           loop=True, start_index=max(0, self.ctrl.onair), start_offset=mpv_time,
                                           extra_args=s.get("ffmpeg_extra", ""), logo=self._logo_config(),
-                                          ndi_ffmpeg=FFMPEG_NDI_PATH, parent=self)
+                                          ndi_ffmpeg=FFMPEG_NDI_PATH, ndi_source=self.player, parent=self)
         log.info("Salidas IP arrancadas (%d destinos) en offset %.2fs", len(profiles), mpv_time)
         self.output.state.connect(self._rtmp_state)
         self.output.log.connect(self._rtmp_log)

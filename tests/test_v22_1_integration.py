@@ -9,8 +9,10 @@ Ejecutar: python tests/test_v22_1_integration.py
 import os
 import re
 import sys
+from unittest.mock import patch
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, REPO)
 MPV = os.path.join(REPO, "app", "mpv_player.py")
 OUT = os.path.join(REPO, "app", "output.py")
 WIN = os.path.join(REPO, "app", "main_window.py")
@@ -478,7 +480,8 @@ def test_playlist_trim_is_persisted_and_applied_to_both_outputs():
     assert "start_at=self._trim_start" in player and "self.end_at" in player
     assert '"-t", f"{remaining_duration:.3f}"' in output
     assert "MultiOutputManager" in output and "libndi_newtek" in output
-    assert "_supports_ndi" in output and "NDI no disponible en FFmpeg" in output
+    assert "NDISender" in output and "NDI directo activo" in output
+    assert "ndi_source" in output and "NDI Runtime directo activo; FFmpeg no se utiliza" in output
     assert "QDoubleSpinBox" in dialog and "Restablecer corte" in dialog
     assert "trim_end" in dialog and "source_duration - trim_end" in dialog
 
@@ -519,6 +522,108 @@ def test_logo_uses_professional_safe_area_guides():
     assert "class LogoSafeAreaPreview" in dialog
     assert "12.5%" in dialog and "87.5%" in dialog and "16:9" in dialog
     assert '"logo_scale": 10' in window and '"logo_margin": 48' in window
+
+
+def test_direct_ndi_bridge_declares_runtime_api_and_layouts():
+    """El puente ctypes debe probar Runtime, sender, vídeo BGRA/BGRX y audio FLTP."""
+    ndi = _read(os.path.join(REPO, "app", "ndi_sender.py"))
+    assert "Processing.NDI.Lib.x64.dll" in ndi
+    assert "NDI_RUNTIME_DIR_V6" in ndi and "NDI_RUNTIME_DIR_V5" in ndi
+    assert "ProgramFiles" in ndi and "ProgramW6432" in ndi
+    assert "NDIlib_initialize" in ndi and "NDIlib_send_create" in ndi
+    assert "NDIlib_send_send_video_v2_async" in ndi
+    assert "NDIlib_send_send_audio_v3" in ndi
+    assert "FOURCC_BGRX" in ndi and "FOURCC_FLTP" in ndi
+    assert "ctypes.c_float" in ndi and "sample_count * ctypes.sizeof(ctypes.c_float)" in ndi
+    assert "send_video_v2_async(sender, empty)" in ndi
+
+
+def test_ndi_is_not_advertised_from_dll_path_only():
+    """La disponibilidad debe pasar por probe completo, no solo por find_library."""
+    ndi = _read(os.path.join(REPO, "app", "ndi_sender.py"))
+    dialog = _read(os.path.join(REPO, "app", "dialogs_extra.py"))
+    assert "def probe(cls" in ndi
+    assert "if not sender.start()" in ndi and "sender.stop()" in ndi
+    assert "NDISender.probe()" in dialog
+    assert "NDI DIRECTO (RUNTIME x64)" in dialog
+
+
+def test_ndi_mock_probe_runs_initialize_create_destroy():
+    """Mock multiplataforma: verifica el ciclo C sin exigir la DLL en Linux."""
+    from app import ndi_sender
+
+    class FakeFunction:
+        def __init__(self, result=None):
+            self.result = result
+            self.restype = None
+            self.argtypes = None
+            self.calls = 0
+
+        def __call__(self, *args):
+            self.calls += 1
+            return self.result
+
+    class FakeDLL:
+        def __init__(self):
+            self.NDIlib_initialize = FakeFunction(True)
+            self.NDIlib_destroy = FakeFunction()
+            self.NDIlib_send_create = FakeFunction(123)
+            self.NDIlib_send_destroy = FakeFunction()
+            self.NDIlib_send_send_video_v2_async = FakeFunction()
+            self.NDIlib_send_send_audio_v3 = FakeFunction()
+
+    fake = FakeDLL()
+    old_runtime, old_users = ndi_sender.NDISender._runtime, ndi_sender.NDISender._runtime_users
+    try:
+        ndi_sender.NDISender._runtime = None
+        ndi_sender.NDISender._runtime_users = 0
+        with (
+            patch.object(ndi_sender.NDISender, "find_library", classmethod(lambda cls: "fake/Processing.NDI.Lib.x64.dll")),
+            patch.object(ndi_sender.ctypes, "WinDLL", return_value=fake, create=True),
+        ):
+            ok, detail, path = ndi_sender.NDISender.probe()
+        assert ok and "listo" in detail and path.endswith("Processing.NDI.Lib.x64.dll")
+        assert fake.NDIlib_initialize.calls == 1
+        assert fake.NDIlib_send_create.calls == 1
+        assert fake.NDIlib_send_send_video_v2_async.calls == 1
+        assert fake.NDIlib_send_destroy.calls == 1
+        assert fake.NDIlib_destroy.calls == 1
+    finally:
+        ndi_sender.NDISender._runtime = old_runtime
+        ndi_sender.NDISender._runtime_users = old_users
+
+
+def test_ndi_profiles_use_independent_direct_senders_and_pyav_signals():
+    """Cada perfil NDI conecta su propio emisor a las señales públicas de PyAV."""
+    output = _read(OUT)
+    player = _read(os.path.join(REPO, "app", "pyav_player.py"))
+    main = _read(WIN)
+    assert "ndi_frame = Signal(object, float, float)" in player
+    assert "ndi_audio = Signal(object)" in player
+    assert "self.ndi_frame.emit" in player and "self.ndi_audio.emit" in player
+    assert "self.ndi_senders = []" in output
+    assert "self.ndi_source.ndi_frame.connect(frame_slot)" in output
+    assert "self.ndi_source.ndi_audio.connect(audio_slot)" in output
+    assert "self._stop_ndi()" in output and "self._disconnect_ndi()" in output
+    assert "ndi_source=self.player" in main
+
+
+def test_ndi_audio_waits_for_local_prebuffer():
+    """El prebuffer de seis segundos alimenta el monitor, no adelanta el NDI."""
+    player = _read(os.path.join(REPO, "app", "pyav_player.py"))
+    assert "self._ndi_audio_enabled = False" in player
+    assert "self._ndi_audio_enabled = True" in player
+    assert "if self._ndi_audio_enabled:" in player
+    assert "AUDIO_PREBUFFER_SECONDS = 6.0" in player
+
+
+def test_ndi_documentation_no_longer_requires_ffmpeg_muxer():
+    build = _read(os.path.join(REPO, "BUILD.md"))
+    readme = _read(os.path.join(REPO, "README.md"))
+    bat = _read(os.path.join(REPO, "build_exe.bat"))
+    assert "no necesita `ffmpeg-ndi.exe`" in build
+    assert "no se necesita" in readme and "libndi_newtek" in readme
+    assert "no es necesario para NDI directo" in bat
 
 
 if __name__ == "__main__":

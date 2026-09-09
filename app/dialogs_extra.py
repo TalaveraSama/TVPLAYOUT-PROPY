@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, Q
                                QTableWidget, QTableWidgetItem, QAbstractItemView, QHeaderView)
 
 from .config import MPV_PATH, FFMPEG_PATH, FFMPEG_NDI_PATH, FFPROBE_PATH, ROOT, APP_VERSION, DEFAULT_LOGO_PATH
+from .ndi_sender import NDISender
 
 CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
@@ -190,10 +191,13 @@ class OutputProfilesDialog(QDialog):
         self._edit_row = -1
 
         root = QVBoxLayout(self)
+        ndi_ok, ndi_detail, ndi_path = NDISender.probe()
+        ndi_state = (f"NDI directo: DISPONIBLE ({ndi_path})" if ndi_ok
+                     else f"NDI directo: NO DISPONIBLE ({ndi_detail})")
         note = QLabel(
-            "Cada destino usa un proceso FFmpeg independiente y sigue al mismo playout local. "
-            "RTMP y SRT son compatibles con OBS y vMix. NDI directo requiere una build de FFmpeg "
-            "con libndi_newtek y NDI Runtime instalado."
+            "Cada destino RTMP/SRT usa un proceso FFmpeg independiente y sigue al mismo playout local. "
+            "RTMP y SRT son compatibles con OBS y vMix. NDI se publica directamente con el NDI Runtime x64 "
+            "instalado en Windows; no requiere ffmpeg-ndi.exe ni el muxer libndi_newtek.\n" + ndi_state
         )
         note.setWordWrap(True)
         note.setStyleSheet("color:#9a9a9a;")
@@ -358,12 +362,18 @@ class DevicesDialog(QDialog):
     def refresh(self):
         lines = []
         lines.append("=== BINARIOS ===")
-        for name, path in (("ffmpeg", FFMPEG_PATH), ("ffmpeg-ndi", FFMPEG_NDI_PATH),
+        for name, path in (("ffmpeg", FFMPEG_PATH), ("ffmpeg-ndi heredado", FFMPEG_NDI_PATH),
                            ("ffprobe", FFPROBE_PATH), ("mpv", MPV_PATH)):
-            lines.append(f"{name:10s} {path or 'NO ENCONTRADO'}")
+            lines.append(f"{name:18s} {path or 'NO ENCONTRADO'}")
+        ndi_ok, ndi_detail, ndi_path = NDISender.probe()
+        lines.append("")
+        lines.append("=== NDI DIRECTO (RUNTIME x64) ===")
+        lines.append(f"[{'OK' if ndi_ok else '--'}] {ndi_detail}")
+        lines.append(f"DLL: {ndi_path or 'NO ENCONTRADA'}")
+        lines.append("Ruta NDI: ctypes → Processing.NDI.Lib.x64.dll (sin FFmpeg)")
         if FFMPEG_NDI_PATH:
             ndi_muxers = self._run([FFMPEG_NDI_PATH, "-hide_banner", "-muxers"])
-            lines.append(f"NDI muxer: {'OK' if 'libndi_newtek' in ndi_muxers else 'NO'}")
+            lines.append(f"Muxer libndi_newtek heredado: {'OK' if 'libndi_newtek' in ndi_muxers else 'NO'}")
         if MPV_PATH:
             out = self._run([self._mpv_console(), "--version"])
             lines.append("")

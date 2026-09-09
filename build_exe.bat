@@ -106,18 +106,18 @@ if defined FFPROBE_SRC (
     echo [AVISO] No se encontró ffprobe.exe; el escaneo no tendrá metadatos.
 )
 
-REM Build opcional de FFmpeg con muxer libndi_newtek para NDI directo.
+REM Compatibilidad heredada opcional: NDI directo ya usa el Runtime x64 por ctypes.
 set "FFMPEG_NDI_SRC="
 for %%P in ("%~dp0ffmpeg-ndi.exe" "%~dp0bin\ffmpeg-ndi.exe" "%~dp0ffmpeg\bin\ffmpeg-ndi.exe") do (
     if not defined FFMPEG_NDI_SRC if exist "%%~fP" set "FFMPEG_NDI_SRC=%%~fP"
 )
 if defined FFMPEG_NDI_SRC (
     copy /Y "!FFMPEG_NDI_SRC!" "%OUT%\ffmpeg-ndi.exe" >nul
-    echo [OK] ffmpeg-ndi.exe copiado para NDI directo.
+    echo [INFO] ffmpeg-ndi.exe heredado copiado (no es necesario para NDI directo).
     for %%D in ("!FFMPEG_NDI_SRC!") do set "FFMPEG_NDI_DIR=%%~dpD"
     for %%L in ("!FFMPEG_NDI_DIR!*.dll") do if exist "%%~fL" copy /Y "%%~fL" "%OUT%\" >nul
 ) else (
-    echo [INFO] ffmpeg-ndi.exe no encontrado; NDI requiere una build con libndi_newtek.
+    echo [INFO] ffmpeg-ndi.exe heredado no encontrado; NDI directo usa el Runtime x64 instalado.
 )
 
 REM 7. Copiar logo/identidad visual opcional -------------------------------
@@ -146,7 +146,7 @@ if exist "%~dp0INICIAR_EXE.bat" copy /Y "%~dp0INICIAR_EXE.bat" "%OUT%\INICIAR_EX
     echo.
     echo Ejecuta TVPlayoutPRO.exe o INICIAR_EXE.bat.
     echo ffmpeg.exe y ffprobe.exe deben estar junto al EXE para RTMP y biblioteca.
-    echo ffmpeg-ndi.exe es opcional y debe incluir el muxer libndi_newtek para NDI.
+    echo NDI directo requiere instalar el NDI Runtime x64 en Windows; ffmpeg-ndi.exe es solo compatibilidad heredada.
     echo assets\logo.png y assets\logo.ico son opcionales para identidad visual.
     echo tvplayout.db, cache y logs se guardan junto al EXE.
 )
