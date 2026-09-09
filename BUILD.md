@@ -1,6 +1,35 @@
-# Empaquetar TVPlayout PRO V24.0.2.22 para Windows
+# Empaquetar TVPlayout PRO V24.0.2.34 para Windows
 
-## Camino recomendado
+## Instalador completo (recomendado): UN SOLO setup.exe
+
+```bat
+installer\BUILD_INSTALLER.bat
+```
+
+Genera **`dist\Setup_TVPlayoutPRO_V24.0.2.34.exe`**, un único ejecutable que
+instala todo en Windows 10/11 x64:
+
+- **TVPlayoutPRO.exe** (aplicación completa con PySide6 + PyAV ya congeladas).
+- **ffmpeg.exe, ffprobe.exe y mpv.exe empaquetados en la raíz** del programa
+  (salidas RTMP/SRT, análisis de biblioteca y vistas previas funcionan sin
+  instalar nada más).
+- **Opcional**: NDI Runtime x64 y VLC empaquetados dentro del instalador, con
+  casillas para instalarlos en el equipo destino.
+- **Opcional**: regla de firewall para el descubrimiento NDI (mDNS UDP 5353).
+- Accesos directos en escritorio y menú Inicio.
+
+El script descarga automáticamente FFmpeg, mpv y (si puede) NDI Runtime y VLC
+a la carpeta `vendor\` — si ya tienes los archivos, colócalos ahí y no
+descarga nada. Requisitos del equipo donde compilas: Python 3.10+, internet e
+[Inno Setup 6](https://jrsoftware.org/isdl.php) (gratuito).
+
+La instalación es **por usuario** (sin pedir administrador) en
+`%LOCALAPPDATA%\Programs\TVPlayoutPRO`: la aplicación guarda base de datos,
+logs, miniaturas y caché junto al EXE, así que necesita una carpeta con
+permisos de escritura (Program Files no los daría). Al desinstalar, los datos
+del usuario (base, logs) se conservan.
+
+## Camino recomendado (portable, sin instalador)
 
 En Windows, desde la raíz del checkout, ejecuta:
 

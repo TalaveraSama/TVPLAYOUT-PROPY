@@ -13,7 +13,7 @@ REM ============================================================================
 setlocal EnableExtensions EnableDelayedExpansion
 cd /d "%~dp0"
 
-set "APP_VERSION=V24.0.2.22"
+set "APP_VERSION=V24.0.2.34"
 set "VENV=.venv-build"
 set "PYEXE=%VENV%\Scripts\python.exe"
 set "OUT=%~dp0dist\TVPlayoutPRO"
@@ -81,11 +81,11 @@ REM 6. Copiar FFmpeg/ffprobe al nivel del EXE -------------------------------
 REM Se aceptan estas ubicaciones en el checkout: raíz, bin\, ffmpeg\ o
 REM ffmpeg\bin\. También se copian DLL vecinas de builds compartidos.
 set "FFMPEG_SRC="
-for %%P in ("%~dp0ffmpeg.exe" "%~dp0bin\ffmpeg.exe" "%~dp0ffmpeg\ffmpeg.exe" "%~dp0ffmpeg\bin\ffmpeg.exe") do (
+for %%P in ("%~dp0ffmpeg.exe" "%~dp0vendor\ffmpeg.exe" "%~dp0bin\ffmpeg.exe" "%~dp0ffmpeg\ffmpeg.exe" "%~dp0ffmpeg\bin\ffmpeg.exe") do (
     if not defined FFMPEG_SRC if exist "%%~fP" set "FFMPEG_SRC=%%~fP"
 )
 set "FFPROBE_SRC="
-for %%P in ("%~dp0ffprobe.exe" "%~dp0bin\ffprobe.exe" "%~dp0ffmpeg\ffprobe.exe" "%~dp0ffmpeg\bin\ffprobe.exe") do (
+for %%P in ("%~dp0ffprobe.exe" "%~dp0vendor\ffprobe.exe" "%~dp0bin\ffprobe.exe" "%~dp0ffmpeg\ffprobe.exe" "%~dp0ffmpeg\bin\ffprobe.exe") do (
     if not defined FFPROBE_SRC if exist "%%~fP" set "FFPROBE_SRC=%%~fP"
 )
 
@@ -104,6 +104,22 @@ if defined FFPROBE_SRC (
     for %%L in ("!FFPROBE_DIR!*.dll") do if exist "%%~fL" copy /Y "%%~fL" "%OUT%\" >nul
 ) else (
     echo [AVISO] No se encontró ffprobe.exe; el escaneo no tendrá metadatos.
+)
+
+REM 6b. Copiar mpv.exe (preview de biblioteca/playlist) al nivel del EXE ----
+REM v24.0.2.34: mpv va empaquetado en la raiz de la aplicacion junto al EXE.
+REM Se aceptan: mpv-x86_64\, vendor\ y la raiz del checkout.
+set "MPV_SRC="
+for %%P in ("%~dp0mpv-x86_64\mpv.exe" "%~dp0vendor\mpv.exe" "%~dp0mpv.exe") do (
+    if not defined MPV_SRC if exist "%%~fP" set "MPV_SRC=%%~fP"
+)
+if defined MPV_SRC (
+    copy /Y "!MPV_SRC!" "%OUT%\mpv.exe" >nul
+    echo [OK] mpv.exe copiado a la raiz portable (vistas previas de biblioteca).
+    for %%D in ("!MPV_SRC!") do set "MPVV_DIR=%%~dpD"
+    for %%L in ("!MPVV_DIR!*.dll") do if exist "%%~fL" copy /Y "%%~fL" "%OUT%\" >nul
+) else (
+    echo [AVISO] No se encontro mpv.exe; las vistas previas usaran VLC si esta instalado.
 )
 
 REM Compatibilidad heredada opcional: NDI directo ya usa el Runtime x64 por ctypes.
@@ -145,7 +161,8 @@ if exist "%~dp0INICIAR_EXE.bat" copy /Y "%~dp0INICIAR_EXE.bat" "%OUT%\INICIAR_EX
     echo TVPlayout PRO %APP_VERSION%
     echo.
     echo Ejecuta TVPlayoutPRO.exe o INICIAR_EXE.bat.
-    echo ffmpeg.exe y ffprobe.exe deben estar junto al EXE para RTMP y biblioteca.
+    echo ffmpeg.exe, ffprobe.exe y mpv.exe van empaquetados junto al EXE.
+    echo Las vistas previas usan mpv.exe (raiz) o VLC si esta instalado.
     echo NDI directo requiere instalar el NDI Runtime x64 en Windows; ffmpeg-ndi.exe es solo compatibilidad heredada.
     echo assets\logo.png y assets\logo.ico son opcionales para identidad visual.
     echo tvplayout.db, cache y logs se guardan junto al EXE.
@@ -169,7 +186,7 @@ echo.
 echo Copia la carpeta completa dist\TVPlayoutPRO a otro Windows 10/11 x64.
 echo No copies solo el EXE: también necesita la carpeta _internal.
 echo.
-pause
+if /i not "%~1"=="--no-pause" pause
 endlocal
 exit /b 0
 

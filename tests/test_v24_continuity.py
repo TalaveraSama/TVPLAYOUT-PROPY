@@ -547,6 +547,69 @@ def test_ndi_stats_shows_in_output_monitor_label():
     assert "Estudio [NDI] · 3210 frames · señal en vivo" in mw.rtmp_destinations.text, mw.rtmp_destinations.text
 
 
+def test_full_windows_installer_bundles_app_ffmpeg_mpv_and_optional_runtimes():
+    """v24.0.2.34: el instalador único empaqueta todo y usa la versión actual."""
+    import re
+    cfg = _read("app", "config.py")
+    iss = _read("installer", "TVPLAYOUT-PROPY.iss")
+    build_installer = _read("installer", "BUILD_INSTALLER.bat")
+    build_portable = _read("build_exe.bat")
+    gitignore = _read(".gitignore")
+    docs = _read("BUILD.md")
+    version = re.search(r'APP_VERSION = "([^"]+)"', cfg).group(1)
+    # Versión sincronizada en todos los artefactos del instalador.
+    assert f'#define MyAppVersion "{version}"' in iss
+    assert f"set \"APP_VERSION={version}\"" in build_installer
+    assert f"set \"APP_VERSION={version}\"" in build_portable
+    assert f"Setup_TVPlayoutPRO_{{#MyAppVersion}}" in iss
+    # Instalación por usuario (carpeta con permisos de escritura para la BD).
+    assert "PrivilegesRequired=lowest" in iss and "DefaultDirName={autopf}\TVPlayoutPRO" in iss
+    # Empaqueta la app completa y los binarios en la raíz del programa.
+    assert "dist\\TVPlayoutPRO\\*" in iss and "recursesubdirs" in iss
+    assert "TVPlayoutPRO.exe" in iss
+    # Opcionales: NDI Runtime, VLC y regla de firewall mDNS.
+    assert 'Name: "ndi"' in iss and 'Name: "vlc"' in iss and 'Name: "firewall"' in iss
+    assert "UDP localport=5353" in iss and "Spanish.isl" in iss
+    # El orquestador descarga/vendoriza y compila con Inno Setup.
+    assert "vendor" in build_installer and "ISCC" in build_installer
+    assert "build_exe.bat --no-pause" in build_installer
+    assert "gyan.dev" in build_installer and "mpv" in build_installer
+    # El build portable ahora también empaqueta mpv.exe en la raíz.
+    assert "MPV_SRC" in build_portable and "mpv-x86_64\\mpv.exe" in build_portable
+    assert "vendor/" in gitignore
+    assert "BUILD_INSTALLER.bat" in docs
+
+
+def test_runtime_root_points_to_exe_dir_when_frozen():
+    """Pureza de la raíz portable: congelada, ROOT es la carpeta del EXE.
+
+    Así el instalador puede poner la app (con la BD junto al EXE) en
+    %LOCALAPPDATA%\Programs y todo sigue funcionando igual que en modo
+    portable.
+    """
+    import importlib
+    import sys as _sys
+    _sys.path.insert(0, REPO)
+    saved_frozen = getattr(_sys, "frozen", None)
+    saved_exe = getattr(_sys, "executable", "")
+    fake_exe = os.path.join(REPO, "Programs", "TVPlayoutPRO.exe")
+    try:
+        _sys.frozen = True
+        _sys.executable = fake_exe
+        import app.config as cfg
+        importlib.reload(cfg)
+        assert str(cfg.ROOT) == os.path.dirname(os.path.abspath(fake_exe)), cfg.ROOT
+    finally:
+        if saved_frozen is None:
+            del _sys.frozen
+        else:
+            _sys.frozen = saved_frozen
+        _sys.executable = saved_exe
+        import app.config as cfg
+        importlib.reload(cfg)
+        assert str(cfg.ROOT) == REPO
+
+
 if __name__ == "__main__":
     tests = [(name, fn) for name, fn in globals().items() if name.startswith("test_") and callable(fn)]
     failed = 0
