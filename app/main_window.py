@@ -1527,7 +1527,7 @@ class MainWindow(QMainWindow):
     def _playlist_end(self):
         if self.output and self.output.isRunning():
             self.output.stop()
-            self._status("FIN DE PLAYLIST • salida RTMP detenida")
+            self._status("FIN DE PLAYLIST • salidas IP detenidas (activa Loop o Autofill para continuidad)")
 
     def _scheduled_run(self, schedule, rows):
         items = [make_item(r) for r in rows]
@@ -1541,7 +1541,7 @@ class MainWindow(QMainWindow):
         # onair sigue siendo -1; por eso re-sincronizamos explícitamente aquí.
         if self.output and self.output.isRunning():
             self.output.sync_items(self.ctrl.export_items(), 0, force_jump=True)
-        self._status(f"PROGRAMADO • {schedule['name']} • {len(items)} eventos • LOCAL + RTMP")
+        self._status(f"PROGRAMADO • {schedule['name']} • {len(items)} eventos • LOCAL + SALIDAS IP")
         log.info("Programación %s aplicada: %d eventos", schedule["name"], len(items))
 
     # ================================================================= RTMP

@@ -116,6 +116,7 @@ def test_scheduler_has_catch_up():
     src = _read_scheduler()
     assert "_run_pending_today" in src, "scheduler.py debe definir _run_pending_today (catch-up al iniciar)"
     assert "singleShot" in src, "scheduler.py debe programar el catch-up con QTimer.singleShot al arrancar"
+    assert "scheduled_today > now" in src, "el catch-up debe generar la lista si la aplicación arrancó después de la hora diaria"
 
 
 def test_scheduler_uses_period_key_for_dedup():

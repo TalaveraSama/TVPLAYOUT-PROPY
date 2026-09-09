@@ -79,6 +79,21 @@ el mismo evento, corte y reloj del playout local.
   caller es `srt://192.168.1.50:9000?mode=caller&latency=200000`; el receptor debe
   escuchar en el mismo puerto y aceptar SRT.
 
+## Generación diaria y continuidad
+
+En **Programador** crea una regla **Diario**, selecciona la categoría, cantidad,
+orden y hora de generación. La lista se crea una vez por fecha; si la aplicación
+se inicia después de la hora configurada, ejecuta el catch-up automáticamente.
+
+- **Loop:** repite la lista cuando termina hasta que llegue la siguiente
+  generación diaria.
+- **Autofill:** añade medios nuevos de la categoría configurada cuando se agota
+  la lista.
+- Al llegar el siguiente día, el scheduler reemplaza la lista por la nueva
+  generación y mantiene sincronizadas las salidas IP.
+- Si se desactivan Loop y Autofill, al terminar la lista se pasa a filler/slate
+  y las salidas IP se detienen de forma controlada.
+
 ## Estructura
 
 ```

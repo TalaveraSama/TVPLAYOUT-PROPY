@@ -383,7 +383,9 @@ class SchedulerDialog(BaseDialog):
         self.scheduler = scheduler
         root = QVBoxLayout(self)
         root.addWidget(QLabel("Cada regla genera una playlist automática desde una categoría y la pone AL AIRE a la hora indicada "
-                              "(también actualiza la salida RTMP si está activa)."))
+                              "(también actualiza las salidas RTMP/SRT/NDI si están activas). Una regla Diario genera una lista por fecha; "
+                              "activa Loop para repetirla al terminar y Autofill para añadir medios cuando se agote, hasta que la próxima "
+                              "generación diaria reemplace la lista."))
         self.table = QTableWidget(0, 11)
         self.table.setHorizontalHeaderLabels(["Activo", "Nombre", "Modo", "Hora", "Días", "Día mes", "Mes Q", "Categoría",
                                               "Cantidad", "Orden", "Próxima ejecución"])
