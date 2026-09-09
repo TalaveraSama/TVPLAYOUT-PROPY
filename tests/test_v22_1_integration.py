@@ -478,6 +478,7 @@ def test_playlist_trim_is_persisted_and_applied_to_both_outputs():
     assert "start_at=self._trim_start" in player and "self.end_at" in player
     assert '"-t", f"{remaining_duration:.3f}"' in output
     assert "MultiOutputManager" in output and "libndi_newtek" in output
+    assert "_supports_ndi" in output and "NDI no disponible en FFmpeg" in output
     assert "QDoubleSpinBox" in dialog and "Restablecer corte" in dialog
     assert "trim_end" in dialog and "source_duration - trim_end" in dialog
 

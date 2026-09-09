@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, Q
                                QSpinBox, QCheckBox, QFileDialog, QPlainTextEdit, QMessageBox, QWidget,
                                QTableWidget, QTableWidgetItem, QAbstractItemView, QHeaderView)
 
-from .config import MPV_PATH, FFMPEG_PATH, FFPROBE_PATH, ROOT, APP_VERSION, DEFAULT_LOGO_PATH
+from .config import MPV_PATH, FFMPEG_PATH, FFMPEG_NDI_PATH, FFPROBE_PATH, ROOT, APP_VERSION, DEFAULT_LOGO_PATH
 
 CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
@@ -173,100 +173,6 @@ class LogoDialog(QDialog):
                 "logo_position": self.position.currentText(), "logo_scale": self.scale.value(),
                 "logo_opacity": self.opacity.value(), "logo_margin": self.margin.value()}
 
-    """Estado del sistema: versiones de mpv/ffmpeg, encoders H.264 disponibles, GPU."""
-
-    def __init__(self, parent):
-        super().__init__(parent)
-        self.setWindowTitle(f"Dispositivos y motores — TVPlayout PRO {APP_VERSION}")
-        self.resize(760, 520)
-        v = QVBoxLayout(self)
-        self.text = QPlainTextEdit()
-        self.text.setReadOnly(True)
-        self.text.setStyleSheet("font-family: Consolas, 'DejaVu Sans Mono', monospace; font-size: 11px;")
-        v.addWidget(self.text, 1)
-        row = QHBoxLayout()
-        b = QPushButton("↻ Volver a comprobar")
-        b.clicked.connect(self.refresh)
-        row.addWidget(b)
-        b2 = QPushButton("🧪 Probar encoders (3 frames cada uno)")
-        b2.clicked.connect(self.test_encoders)
-        row.addWidget(b2)
-        row.addStretch()
-        c = QPushButton("Cerrar")
-        c.clicked.connect(self.accept)
-        row.addWidget(c)
-        v.addLayout(row)
-        self.refresh()
-
-    @staticmethod
-    def _run(cmd, timeout=15):
-        try:
-            p = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                               timeout=timeout, creationflags=CREATE_NO_WINDOW)
-            return (p.stdout or "") + (p.stderr or "")
-        except Exception as e:  # noqa: BLE001
-            return f"(error: {e})"
-
-    @staticmethod
-    def _mpv_console():
-        """mpv.exe (GUI) no escribe en consola; si existe mpv.com al lado, se usa para consultas."""
-        if MPV_PATH and MPV_PATH.lower().endswith("mpv.exe"):
-            com = MPV_PATH[:-4] + ".com"
-            if os.path.isfile(com):
-                return com
-        return MPV_PATH
-
-    def refresh(self):
-        lines = []
-        lines.append("=== BINARIOS ===")
-        for name, path in (("mpv", MPV_PATH), ("ffmpeg", FFMPEG_PATH), ("ffprobe", FFPROBE_PATH)):
-            lines.append(f"{name:8s} {path or 'NO ENCONTRADO'}")
-        if MPV_PATH:
-            out = self._run([self._mpv_console(), "--version"])
-            lines.append("")
-            lines.append("=== MPV ===")
-            lines.append(out.strip().splitlines()[0] if out.strip() else out)
-        if FFMPEG_PATH:
-            out = self._run([FFMPEG_PATH, "-hide_banner", "-version"])
-            lines.append("")
-            lines.append("=== FFMPEG ===")
-            lines.extend(out.strip().splitlines()[:2])
-            enc = self._run([FFMPEG_PATH, "-hide_banner", "-encoders"])
-            lines.append("")
-            lines.append("=== ENCODERS H.264 DISPONIBLES ===")
-            for codec, label in (("libx264", "CPU/x264"), ("h264_nvenc", "NVIDIA NVENC"), ("h264_qsv", "Intel QSV"),
-                                 ("h264_amf", "AMD AMF")):
-                ok = bool(re.search(rf"\b{codec}\b", enc))
-                lines.append(f"[{'OK' if ok else '--'}] {label:14s} {codec}")
-            lines.append("")
-            lines.append("=== DISPOSITIVOS DE AUDIO (mpv) ===")
-            if MPV_PATH:
-                lines.append(self._run([self._mpv_console(), "--audio-device=help"]).strip())
-        nv = shutil.which("nvidia-smi")
-        lines.append("")
-        lines.append("=== GPU ===")
-        if nv:
-            lines.append(self._run([nv, "-L"]).strip())
-        else:
-            lines.append("nvidia-smi no disponible (sin GPU NVIDIA o driver no instalado)")
-        self.text.setPlainText("\n".join(lines))
-
-    def test_encoders(self):
-        if not FFMPEG_PATH:
-            QMessageBox.warning(self, "FFmpeg", "FFmpeg no encontrado.")
-            return
-        results = ["=== PRUEBA DE ENCODERS ==="]
-        for codec in ("libx264", "h264_nvenc", "h264_qsv", "h264_amf"):
-            cmd = [FFMPEG_PATH, "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=black:s=256x144:r=25",
-                   "-frames:v", "3", "-c:v", codec, "-f", "null", "-"]
-            try:
-                p = subprocess.run(cmd, capture_output=True, text=True, timeout=25, creationflags=CREATE_NO_WINDOW)
-                ok = p.returncode == 0
-                err = (p.stderr or "").strip().splitlines()
-                results.append(f"[{'OK' if ok else 'FALLA'}] {codec}" + ("" if ok else f" → {err[-1] if err else 'error'}"))
-            except Exception as e:  # noqa: BLE001
-                results.append(f"[FALLA] {codec} → {e}")
-        self.text.appendPlainText("\n" + "\n".join(results))
 
 class OutputProfilesDialog(QDialog):
     """Configuración de destinos de distribución RTMP, SRT y NDI."""
@@ -452,8 +358,12 @@ class DevicesDialog(QDialog):
     def refresh(self):
         lines = []
         lines.append("=== BINARIOS ===")
-        for name, path in (("mpv", MPV_PATH), ("ffmpeg", FFMPEG_PATH), ("ffprobe", FFPROBE_PATH)):
-            lines.append(f"{name:8s} {path or 'NO ENCONTRADO'}")
+        for name, path in (("ffmpeg", FFMPEG_PATH), ("ffmpeg-ndi", FFMPEG_NDI_PATH),
+                           ("ffprobe", FFPROBE_PATH), ("mpv", MPV_PATH)):
+            lines.append(f"{name:10s} {path or 'NO ENCONTRADO'}")
+        if FFMPEG_NDI_PATH:
+            ndi_muxers = self._run([FFMPEG_NDI_PATH, "-hide_banner", "-muxers"])
+            lines.append(f"NDI muxer: {'OK' if 'libndi_newtek' in ndi_muxers else 'NO'}")
         if MPV_PATH:
             out = self._run([self._mpv_console(), "--version"])
             lines.append("")

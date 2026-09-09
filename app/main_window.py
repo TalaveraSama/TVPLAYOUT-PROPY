@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                                QDialog)
 
 from . import logger
-from .config import (DB_PATH, MPV_PATH, FFMPEG_PATH, FFPROBE_PATH, APP_NAME, APP_VERSION, APP_ICON_PATH, VIDEO_EXTS,
+from .config import (DB_PATH, MPV_PATH, FFMPEG_PATH, FFMPEG_NDI_PATH, FFPROBE_PATH, APP_NAME, APP_VERSION, APP_ICON_PATH, VIDEO_EXTS,
                      AUDIO_PREFS, category_color)
 from .db import DB
 from .scanner import Scanner
@@ -1625,7 +1625,8 @@ class MainWindow(QMainWindow):
                                           s.get("encoder", "AUTO"), int(s.get("bitrate", 6000)), s.get("audio_pref", AUDIO_PREFS[0]),
                                           s.get("sub_pref", "OFF"), bool(s.get("subtitle_burn", False)), int(s.get("audio_bitrate", 192)),
                                           loop=True, start_index=max(0, self.ctrl.onair), start_offset=mpv_time,
-                                          extra_args=s.get("ffmpeg_extra", ""), logo=self._logo_config(), parent=self)
+                                          extra_args=s.get("ffmpeg_extra", ""), logo=self._logo_config(),
+                                          ndi_ffmpeg=FFMPEG_NDI_PATH, parent=self)
         log.info("Salidas IP arrancadas (%d destinos) en offset %.2fs", len(profiles), mpv_time)
         self.output.state.connect(self._rtmp_state)
         self.output.log.connect(self._rtmp_log)

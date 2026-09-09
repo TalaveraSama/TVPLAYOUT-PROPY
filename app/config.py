@@ -20,7 +20,7 @@ def _runtime_root():
 
 ROOT = _runtime_root()
 APP_NAME = "TVPlayout PRO"
-APP_VERSION = "V24.0.2.3"
+APP_VERSION = "V24.0.2.4"
 IS_WINDOWS = os.name == "nt"
 
 
@@ -143,6 +143,10 @@ def find_binary(name: str, env_name: str = "") -> str:
 
 MPV_PATH = find_binary("mpv", "MPV_PATH")
 FFMPEG_PATH = find_binary("ffmpeg", "FFMPEG_PATH")
+# NDI no viene habilitado en la mayoría de builds genéricas de FFmpeg.
+# Permite colocar una build separada como ffmpeg-ndi.exe sin cambiar la
+# salida RTMP/SRT estable.
+FFMPEG_NDI_PATH = find_binary("ffmpeg-ndi", "FFMPEG_NDI_PATH")
 FFPROBE_PATH = ""
 if FFMPEG_PATH:
     _probe = Path(FFMPEG_PATH).with_name("ffprobe.exe" if IS_WINDOWS else "ffprobe")

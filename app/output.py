@@ -516,7 +516,7 @@ class OutputWorker(QThread):
                         # Cambiar a x264 y repetir el mismo evento evita el
                         # loop de drift que relanzaba NVENC cada pocos segundos.
                         active_codec = self._resolved[1] if self._resolved else ""
-                        if active_codec != "libx264":
+                        if self.protocol != "NDI" and active_codec != "libx264":
                             old_label = self._resolved[0] if self._resolved else active_codec
                             self._resolved = ("CPU/x264", "libx264")
                             retry_offset = float(self._current_offset or 0.0)
@@ -585,9 +585,10 @@ class MultiOutputManager(QObject):
     def __init__(self, ffmpeg, profiles, items, resolution, fps, encoder, bitrate,
                  audio_preference="AUTO", subtitle_preference="OFF", subtitle_burn=False,
                  audio_bitrate=192, loop=True, start_index=0, start_offset=0.0,
-                 extra_args="", logo=None, parent=None):
+                 extra_args="", logo=None, ndi_ffmpeg=None, parent=None):
         super().__init__(parent)
         self.ffmpeg = ffmpeg
+        self.ndi_ffmpeg = ndi_ffmpeg or ffmpeg
         self.profiles = [dict(p) for p in (profiles or []) if p.get("enabled", True)]
         self.items = items
         self.common = dict(resolution=resolution, fps=fps, encoder=encoder, bitrate=bitrate,
@@ -597,11 +598,22 @@ class MultiOutputManager(QObject):
         self.workers = []
         self._ended_workers = set()
 
+    @staticmethod
+    def _supports_ndi(ffmpeg):
+        try:
+            proc = subprocess.run([ffmpeg, "-hide_banner", "-muxers"], capture_output=True,
+                                  text=True, encoding="utf-8", errors="replace", timeout=15,
+                                  creationflags=CREATE_NO_WINDOW)
+            return bool(re.search(r"(?:^|\s)libndi_newtek(?:\s|$)", (proc.stdout or "") + (proc.stderr or "")))
+        except (OSError, subprocess.SubprocessError):
+            return False
+
     def _make_worker(self, profile):
         protocol = str(profile.get("protocol", "RTMP")).upper()
         target = str(profile.get("target") or profile.get("url") or "").strip()
         name = str(profile.get("name") or protocol)
-        worker = OutputWorker(self.ffmpeg, self.items, target, protocol=protocol, **self.common)
+        binary = self.ndi_ffmpeg if protocol == "NDI" else self.ffmpeg
+        worker = OutputWorker(binary, self.items, target, protocol=protocol, **self.common)
         worker._profile_name = name
         worker.state.connect(lambda ok, msg, n=name: self._state_from_worker(ok, msg, n))
         worker.log.connect(lambda msg, n=name: self.log.emit(f"[{n}] {msg}"))
@@ -612,11 +624,16 @@ class MultiOutputManager(QObject):
         self.workers = []
         self._ended_workers = set()
         for profile in self.profiles:
+            protocol = str(profile.get("protocol", "RTMP")).upper()
+            name = str(profile.get("name") or protocol)
+            if protocol == "NDI" and not self._supports_ndi(self.ndi_ffmpeg):
+                self.state.emit(False, f"{name}: NDI no disponible en FFmpeg; falta el muxer libndi_newtek")
+                continue
             worker = self._make_worker(profile)
             self.workers.append(worker)
             worker.start()
         if not self.workers:
-            self.state.emit(False, "No hay destinos IP habilitados")
+            self.state.emit(False, "No hay destinos IP habilitados o NDI no disponible")
 
     def _state_from_worker(self, ok, msg, name):
         self.state.emit(bool(ok), f"{name}: {msg}")

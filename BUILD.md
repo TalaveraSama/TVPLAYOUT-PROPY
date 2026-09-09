@@ -1,4 +1,4 @@
-# Empaquetar TVPlayout PRO V24.0.2.3 para Windows
+# Empaquetar TVPlayout PRO V24.0.2.4 para Windows
 
 ## Camino recomendado
 
@@ -40,13 +40,16 @@ Coloca antes del build:
 ```text
 ffmpeg.exe                         raíz del proyecto
 ffprobe.exe                        raíz del proyecto
+ffmpeg-ndi.exe                     build especial con libndi_newtek (opcional)
 bin\ffmpeg.exe / bin\ffprobe.exe
 ffmpeg\bin\ffmpeg.exe / ffmpeg\bin\ffprobe.exe
 ```
 
 El BAT copia también las DLL que estén junto a FFmpeg. El aire local usa
 PyAV/libav y no necesita reproductores externos; FFmpeg sí es necesario para
-RTMP/SRT/UDP y ffprobe para escanear metadatos y generar miniaturas.
+RTMP/SRT/UDP y ffprobe para escanear metadatos y generar miniaturas. NDI directo
+requiere un `ffmpeg-ndi.exe` que anuncie `libndi_newtek`; instalar NDI Runtime
+por sí solo no agrega ese muxer a un FFmpeg genérico.
 
 ## Logo e identidad visual
 
