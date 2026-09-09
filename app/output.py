@@ -96,8 +96,6 @@ class OutputWorker(QThread):
         self.program_overlay = program_overlay or ""
         self.program_interval = max(1.0, float(program_interval or 1080.0))
         self.program_duration = max(0.0, float(program_duration or 15.0))
-        self._subtitle_filter_disabled = False
-        self._last_command_used_subtitles = False
         self.proc = None
         self.stop_requested = False
         self._lock = threading.RLock()
@@ -143,7 +141,6 @@ class OutputWorker(QThread):
             # iniciado con la casilla de quemado desactivada.
             if self.subtitle_preference.upper() != "OFF":
                 self.subtitle_burn = True
-            self._subtitle_filter_disabled = False
 
     # ------------------------------------------------------------- helpers
     def _available_encoders(self):
@@ -293,16 +290,12 @@ class OutputWorker(QThread):
         if subtitle_preference is None:
             subtitle_preference = item.get("subtitle_lang") or self.subtitle_preference
         aid = pick_audio(tracks, audio_preference)
-        subtitle_burn = (not self._subtitle_filter_disabled and
-                         (self.subtitle_burn or str(subtitle_preference or "OFF").upper() != "OFF"))
+        subtitle_burn = self.subtitle_burn or str(subtitle_preference or "OFF").upper() != "OFF"
         sid = pick_subtitle(tracks, subtitle_preference) if subtitle_burn else -1
-        self._last_command_used_subtitles = bool(subtitle_burn and sid is not None and sid >= 0)
 
         vf = [f"scale={w}:{h}:force_original_aspect_ratio=decrease", f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2",
               f"fps={self.fps}", "format=yuv420p"]
         if subtitle_burn and sid is not None and sid >= 0:
-            # Mantener la sintaxis compatible que ya funcionaba con FFmpeg
-            # en v24.0.2.13 para rutas Windows y unidades de red.
             vf.insert(0, f"subtitles='{_ffmpeg_filter_path(source)}':si={sid}")
         gop = int(round(float(self.fps) * 2))
         cmd = [self.ffmpeg, "-hide_banner", "-loglevel", "warning", "-nostdin", "-re"]
@@ -594,24 +587,6 @@ class OutputWorker(QThread):
                 elapsed = time.time() - started
                 if code not in (0, 255, -15):
                     self.log.emit(f"FFmpeg terminó con código {code} tras {elapsed:.0f}s")
-                    stderr_text = " ".join(last_lines).lower()
-                    subtitle_error = any(token in stderr_text for token in (
-                        "subtitle", "subtitles", "libass", "ass filter", "no such filter",
-                        "error initializing filter", "unable to find a suitable"))
-                    if (self._last_command_used_subtitles and elapsed < 10 and
-                            subtitle_error):
-                        # No dejar caer toda la transmisión por un filtro de
-                        # subtítulos incompatible con el build de FFmpeg.
-                        # El operador conserva vídeo/audio y recibe el error
-                        # exacto para poder instalar un FFmpeg con libass.
-                        self._subtitle_filter_disabled = True
-                        self.log.emit("Subtítulos RTMP desactivados temporalmente: " +
-                                      (last_lines[-1] if last_lines else "filtro subtitles no disponible"))
-                        self.log.emit("RTMP continúa sin subtítulos quemados")
-                        offset = float(self._current_offset or 0.0)
-                        consecutive_errors = 0
-                        time.sleep(0.2)
-                        continue
                     if elapsed < 5:
                         # Un encoder de hardware puede pasar la prueba de
                         # disponibilidad y aun así fallar al abrir el
@@ -863,6 +838,21 @@ class MultiOutputManager(QObject):
         self.common["program_overlay"] = str(path or "")
         self.common["program_interval"] = float(interval_seconds or 1080.0)
         self.common["program_duration"] = float(duration_seconds or 15.0)
+
+    @property
+    def has_active_process(self):
+        """Indica que al menos un FFmpeg está realmente abierto.
+
+        El QThread puede seguir vivo durante la ventana entre un FFmpeg que
+        termina y el siguiente intento. El watcher de drift no debe iniciar
+        otro seek durante esa ventana: en v24.0.2.13 el proceso RTMP era el
+        único dueño de la reconexión.
+        """
+        for worker in self.workers:
+            proc = getattr(worker, "proc", None)
+            if proc is not None and proc.poll() is None:
+                return True
+        return False
 
     @property
     def current_position(self):

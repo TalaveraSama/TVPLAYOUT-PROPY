@@ -147,8 +147,9 @@ def test_main_window_has_drift_watcher():
     assert "_rtmp_drift_threshold" in src, "MainWindow debe tener un umbral de drift configurable"
     idx = src.find("def _rtmp_check_drift(self")
     assert idx > 0
-    # Leer 1500 caracteres (cubre cualquier implementación razonable)
-    block = src[idx:idx + 2500]
+    # Leer una ventana amplia: el guard de proceso activo se documenta antes
+    # de la realineación y puede desplazar el seek dentro de la función.
+    block = src[idx:idx + 3500]
     # v22.2.2: el watcher lee current_position (estimación dinámica), no
     # current_offset (estático).
     assert "self.output.current_position" in block, \

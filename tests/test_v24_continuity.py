@@ -117,8 +117,8 @@ def test_rtmp_drift_guard_does_not_restart_in_a_fast_loop():
     assert "_rtmp_drift_bad_count < 2" in window
     assert "_rtmp_drift_last_restart < 12.0" in window
     assert "_rtmp_drift_suspend_until = now + 8.0" in window
-    assert "_subtitle_filter_disabled = True" in output
-    assert "RTMP continúa sin subtítulos quemados" in output
+    assert "has_active_process" in output
+    assert "No convertir esa ventana" in window and "un seek adicional" in window
 
 
 def test_subtitles_are_selected_and_logged_in_pyav():
@@ -148,7 +148,7 @@ def test_live_track_change_is_exposed_from_settings_and_supports_burned_subtitle
     output = _read("app", "output.py")
     config = _read("app", "config.py")
     assert "guardar estos valores cambia la pista en vivo" in dialog
-    assert "not self._subtitle_filter_disabled" in output
+    assert "subtitle_burn = self.subtitle_burn" in output
     assert "pick_subtitle(tracks, subtitle_preference)" in output
     assert '"en"' in config and '"eng"' in config and '"English"' in config
 

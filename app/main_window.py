@@ -1848,6 +1848,12 @@ class MainWindow(QMainWindow):
         """
         if not self.output or not self.output.isRunning():
             return
+        # MultiOutputManager puede mantener su QThread vivo mientras el
+        # proceso FFmpeg está entre reintentos. No convertir esa ventana en
+        # un seek adicional: RTMP debe conservar el comportamiento estable de
+        # v24.0.2.13 y ser el único componente que reconecta.
+        if not getattr(self.output, "has_active_process", True):
+            return
         if not self.ctrl.is_on_air or self.ctrl.paused:
             return
         if self._rtmp_drift_suspend_until and time.time() < self._rtmp_drift_suspend_until:
