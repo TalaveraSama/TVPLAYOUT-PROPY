@@ -229,6 +229,16 @@ def test_tmdb_card_position_and_style_are_editable_with_wysiwyg_preview():
     assert '"show_year": False' in tmdb and 'if (cfg["show_year"] and year) else title' in tmdb
     assert '"tmdb_card_show_year"' in window and '"show_year": bool' in window
     assert "Mostrar año junto al título" in dialog and '"tmdb_card_show_year"' in dialog
+    # v24.0.2.28: póster totalmente editable (tamaño y forma) y texto más compacto.
+    assert '"poster_size": 100' in tmdb and '"poster_shape": "cuadrado"' in tmdb
+    assert '"text_scale": 100' in tmdb
+    assert "KeepAspectRatioByExpanding" in tmdb  # recorte al centro según la forma
+    assert "0.032 * cfg[\"text_scale\"]" in tmdb and "0.0145 * cfg[\"text_scale\"]" in tmdb
+    assert '"tmdb_card_poster_size"' in window and '"tmdb_card_poster_shape"' in window
+    assert '"tmdb_card_text_scale"' in window
+    assert "Tamaño del póster" in dialog and "Forma del póster" in dialog
+    assert "Cuadrado" in dialog and "Original (2:3)" in dialog and "Panorámica 16:9" in dialog
+    assert "Tamaño del texto" in dialog
 
 
 def test_mpv_ipc_windows_pipe_is_byte_stream_not_message_mode():

@@ -503,6 +503,25 @@ class TMDBCardDialog(QDialog):
         form.addRow("Posición", self.position)
         form.addRow("Alineación", self.align)
         form.addRow("Estilo", self.style)
+        self.poster_size = QSpinBox()
+        self.poster_size.setRange(40, 160)
+        self.poster_size.setSuffix(" % banda")
+        self.poster_size.setToolTip("Altura del póster como % de la franja; más de 100% sobresale de la franja")
+        self.poster_size.setValue(int(s.get("tmdb_card_poster_size", 100) or 100))
+        form.addRow("Tamaño del póster", self.poster_size)
+        self.poster_shape = QComboBox()
+        self.poster_shape.addItem("Cuadrado", "cuadrado")
+        self.poster_shape.addItem("Original (2:3)", "original")
+        self.poster_shape.addItem("Panorámica 16:9", "ancho")
+        saved_shape = str(s.get("tmdb_card_poster_shape") or "cuadrado")
+        self.poster_shape.setCurrentIndex({"original": 1, "ancho": 2}.get(saved_shape, 0))
+        form.addRow("Forma del póster", self.poster_shape)
+        self.text_scale = QSpinBox()
+        self.text_scale.setRange(60, 150)
+        self.text_scale.setSuffix(" %")
+        self.text_scale.setToolTip("Escala del título y la descripción; la base ya es compacta")
+        self.text_scale.setValue(int(s.get("tmdb_card_text_scale", 100) or 100))
+        form.addRow("Tamaño del texto", self.text_scale)
         self.show_year = QCheckBox("Mostrar año junto al título")
         self.show_year.setChecked(bool(s.get("tmdb_card_show_year", False)))
         form.addRow("", self.show_year)
@@ -537,11 +556,13 @@ class TMDBCardDialog(QDialog):
         buttons.addWidget(save)
         root.addLayout(buttons)
 
-        for combo in (self.position, self.align, self.style):
+        for combo in (self.position, self.align, self.style, self.poster_shape):
             combo.currentIndexChanged.connect(self._update_preview)
         self.show_year.stateChanged.connect(self._update_preview)
         self.opacity.valueChanged.connect(self._update_preview)
         self.margin.valueChanged.connect(self._update_preview)
+        self.poster_size.valueChanged.connect(self._update_preview)
+        self.text_scale.valueChanged.connect(self._update_preview)
         self._load_samples(db)
         self._update_preview()
 
@@ -617,7 +638,10 @@ class TMDBCardDialog(QDialog):
                 "style": self.style.currentData(),
                 "opacity": self.opacity.value(),
                 "margin": self.margin.value(),
-                "show_year": self.show_year.isChecked()}
+                "show_year": self.show_year.isChecked(),
+                "poster_size": self.poster_size.value(),
+                "poster_shape": self.poster_shape.currentData(),
+                "text_scale": self.text_scale.value()}
 
     def _update_preview(self):
         self.preview.set_sample(self._current_sample(), self._layout_values())
@@ -628,4 +652,7 @@ class TMDBCardDialog(QDialog):
                 "tmdb_card_style": self.style.currentData() or "banda",
                 "tmdb_card_opacity": self.opacity.value(),
                 "tmdb_card_margin": self.margin.value(),
-                "tmdb_card_show_year": self.show_year.isChecked()}
+                "tmdb_card_show_year": self.show_year.isChecked(),
+                "tmdb_card_poster_size": self.poster_size.value(),
+                "tmdb_card_poster_shape": self.poster_shape.currentData() or "cuadrado",
+                "tmdb_card_text_scale": self.text_scale.value()}

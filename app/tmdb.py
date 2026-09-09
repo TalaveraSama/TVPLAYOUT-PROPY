@@ -227,6 +227,9 @@ DEFAULT_CARD_LAYOUT = {
     "opacity": 70,          # % de oscurecido del fondo
     "margin": 18,           # px de referencia a 1080p
     "show_year": False,     # v24.0.2.27: año omitido por defecto; configurable en Tarjeta TMDB
+    "poster_size": 100,     # v24.0.2.28: % de la altura de la banda (editable)
+    "poster_shape": "cuadrado",  # cuadrado | original | ancho (16:9)
+    "text_scale": 100,      # v24.0.2.28: escala del texto (base ya más compacta)
 }
 
 
@@ -249,9 +252,12 @@ def resolve_card_layout(layout=None):
     if isinstance(show_year, str):
         show_year = show_year.strip().lower() in ("1", "true", "si", "sí", "yes", "on")
     cfg["show_year"] = bool(show_year)
-    for key, top in (("opacity", 100), ("margin", 300)):
+    shape = str(cfg.get("poster_shape") or "").lower()
+    cfg["poster_shape"] = "original" if "original" in shape else ("ancho" if "anch" in shape else "cuadrado")
+    for key, low, top in (("opacity", 0, 100), ("margin", 0, 300),
+                          ("poster_size", 40, 160), ("text_scale", 60, 150)):
         try:
-            cfg[key] = max(0, min(top, int(float(cfg.get(key) or 0))))
+            cfg[key] = max(low, min(top, int(float(cfg.get(key) or DEFAULT_CARD_LAYOUT[key]))))
         except (TypeError, ValueError):
             cfg[key] = DEFAULT_CARD_LAYOUT[key]
     return cfg
@@ -298,22 +304,32 @@ def render_movie_overlay(metadata, resolution, layout=None):
     year = metadata.get("year") or ""
     overview = metadata.get("overview") or "Ahora en emisión"
     overview = overview if len(overview) <= 210 else overview[:207].rstrip() + "…"
-    title_font = QFont("Arial", max(9, int(height * 0.036)))
+    title_font = QFont("Arial", max(8, int(height * 0.032 * cfg["text_scale"] / 100.0)))
     title_font.setBold(True)
-    label_font = QFont("Arial", max(7, int(height * 0.019)))
+    label_font = QFont("Arial", max(6, int(height * 0.0145 * cfg["text_scale"] / 100.0)))
     label_metrics = QFontMetrics(label_font)
     title_font_metrics = QFontMetrics(title_font)
     title_text = f"{title}  {year}".strip() if (cfg["show_year"] and year) else title
     overview_text = overview
 
     poster = _overlay_image(metadata.get("poster_file"))
-    poster_h = max(24, band_h - int(28 * scale))
+    # Póster editable: altura como % de la banda (puede sobresalir de ella)
+    # y forma cuadrada, original (2:3) o panorámica 16:9, recortada al centro.
+    poster_h = max(24, int(band_h * cfg["poster_size"] / 100.0))
     poster_w = 0
     if not poster.isNull():
-        poster_w = int(poster.width() * poster_h / max(1, poster.height()))
-        poster = poster.scaled(poster_w, poster_h, Qt.AspectRatioMode.KeepAspectRatio,
-                               Qt.TransformationMode.SmoothTransformation)
-        poster_w = poster.width()
+        if cfg["poster_shape"] == "cuadrado":
+            target_w = poster_h
+        elif cfg["poster_shape"] == "ancho":
+            target_w = int(poster_h * 16 / 9)
+        else:
+            target_w = max(1, int(poster.width() * poster_h / max(1, poster.height())))
+        grown = poster.scaled(target_w, poster_h, Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                              Qt.TransformationMode.SmoothTransformation)
+        if grown.width() > target_w or grown.height() > poster_h:
+            grown = grown.copy((grown.width() - target_w) // 2, (grown.height() - poster_h) // 2,
+                               target_w, poster_h)
+        poster, poster_w = grown, target_w
     poster_y = band_y + (band_h - poster_h) // 2
     backdrop = _overlay_image(metadata.get("backdrop_file"))
     max_text_w = max(120, int(width * 0.42))
@@ -349,7 +365,9 @@ def render_movie_overlay(metadata, resolution, layout=None):
         else:
             x0 = (width - group_w) // 2
         pad = max(6, int(14 * scale))
-        card = QRect(x0 - pad, band_y + int(10 * scale), group_w + 2 * pad, band_h - int(20 * scale))
+        # La tarjeta crece con el póster (también si sobresale de la banda).
+        card_h = (poster_h + 2 * pad) if poster_w else (band_h - int(20 * scale))
+        card = QRect(x0 - pad, band_y + (band_h - card_h) // 2, group_w + 2 * pad, card_h)
         radius = max(4.0, 10.0 * scale)
         path = QPainterPath()
         path.addRoundedRect(QRectF(card), radius, radius)
