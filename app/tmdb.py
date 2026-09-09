@@ -226,6 +226,7 @@ DEFAULT_CARD_LAYOUT = {
     "style": "banda",       # banda completa | tarjeta compacta
     "opacity": 70,          # % de oscurecido del fondo
     "margin": 18,           # px de referencia a 1080p
+    "show_year": False,     # v24.0.2.27: año omitido por defecto; configurable en Tarjeta TMDB
 }
 
 
@@ -242,6 +243,12 @@ def resolve_card_layout(layout=None):
     cfg["align"] = "centro" if "centro" in align else ("derecha" if "derech" in align else "izquierda")
     style = str(cfg.get("style") or "").lower()
     cfg["style"] = "tarjeta" if "tarjeta" in style else "banda"
+    show_year = (layout or {}).get("show_year")
+    if show_year is None:
+        show_year = DEFAULT_CARD_LAYOUT["show_year"]
+    if isinstance(show_year, str):
+        show_year = show_year.strip().lower() in ("1", "true", "si", "sí", "yes", "on")
+    cfg["show_year"] = bool(show_year)
     for key, top in (("opacity", 100), ("margin", 300)):
         try:
             cfg[key] = max(0, min(top, int(float(cfg.get(key) or 0))))
@@ -296,7 +303,7 @@ def render_movie_overlay(metadata, resolution, layout=None):
     label_font = QFont("Arial", max(7, int(height * 0.019)))
     label_metrics = QFontMetrics(label_font)
     title_font_metrics = QFontMetrics(title_font)
-    title_text = f"{title}  {year}".strip()
+    title_text = f"{title}  {year}".strip() if (cfg["show_year"] and year) else title
     overview_text = overview
 
     poster = _overlay_image(metadata.get("poster_file"))

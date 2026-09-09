@@ -225,6 +225,10 @@ def test_tmdb_card_position_and_style_are_editable_with_wysiwyg_preview():
     assert "class TMDBCardPreview" in dialog and "class TMDBCardDialog" in dialog
     assert "render_movie_overlay" in dialog and "Tarjeta compacta" in dialog
     assert "4:3 seguro" in dialog  # guías como el diálogo de Logo/CG
+    # v24.0.2.27: el año se omite por defecto y se puede reactivar.
+    assert '"show_year": False' in tmdb and 'if (cfg["show_year"] and year) else title' in tmdb
+    assert '"tmdb_card_show_year"' in window and '"show_year": bool' in window
+    assert "Mostrar año junto al título" in dialog and '"tmdb_card_show_year"' in dialog
 
 
 def test_mpv_ipc_windows_pipe_is_byte_stream_not_message_mode():

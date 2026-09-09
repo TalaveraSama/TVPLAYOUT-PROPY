@@ -4,7 +4,7 @@ import os
 
 from PySide6.QtCore import Qt, QRectF, QSize, QTimer
 from PySide6.QtGui import QColor, QFont, QIcon, QImage, QPainter, QPen, QPixmap
-from PySide6.QtWidgets import (QApplication, QComboBox, QDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget,
+from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget,
                                QListWidgetItem, QMessageBox, QPushButton, QSpinBox, QSplitter, QVBoxLayout, QWidget)
 
 from .config import APP_VERSION
@@ -503,6 +503,9 @@ class TMDBCardDialog(QDialog):
         form.addRow("Posición", self.position)
         form.addRow("Alineación", self.align)
         form.addRow("Estilo", self.style)
+        self.show_year = QCheckBox("Mostrar año junto al título")
+        self.show_year.setChecked(bool(s.get("tmdb_card_show_year", False)))
+        form.addRow("", self.show_year)
         form.addRow("Opacidad del fondo", self.opacity)
         form.addRow("Margen", self.margin)
         root.addLayout(form)
@@ -536,6 +539,7 @@ class TMDBCardDialog(QDialog):
 
         for combo in (self.position, self.align, self.style):
             combo.currentIndexChanged.connect(self._update_preview)
+        self.show_year.stateChanged.connect(self._update_preview)
         self.opacity.valueChanged.connect(self._update_preview)
         self.margin.valueChanged.connect(self._update_preview)
         self._load_samples(db)
@@ -612,7 +616,8 @@ class TMDBCardDialog(QDialog):
                 "align": self.align.currentData(),
                 "style": self.style.currentData(),
                 "opacity": self.opacity.value(),
-                "margin": self.margin.value()}
+                "margin": self.margin.value(),
+                "show_year": self.show_year.isChecked()}
 
     def _update_preview(self):
         self.preview.set_sample(self._current_sample(), self._layout_values())
@@ -622,4 +627,5 @@ class TMDBCardDialog(QDialog):
                 "tmdb_card_align": self.align.currentData() or "izquierda",
                 "tmdb_card_style": self.style.currentData() or "banda",
                 "tmdb_card_opacity": self.opacity.value(),
-                "tmdb_card_margin": self.margin.value()}
+                "tmdb_card_margin": self.margin.value(),
+                "tmdb_card_show_year": self.show_year.isChecked()}
