@@ -170,7 +170,6 @@ class MainWindow(QMainWindow):
         # No bloquear la ventana en 1280x720: Windows puede entregar menos
         # píxeles lógicos cuando el TV usa escalado DPI 125/150%.
         self.setMinimumSize(min_w, min_h)
-        self.setSizeGripEnabled(True)
         self.db = DB(DB_PATH)
         self.db.close_open_air_logs()
         self.settings = dict(DEFAULT_SETTINGS)
@@ -281,6 +280,7 @@ class MainWindow(QMainWindow):
         right_size = min(saved_right, max(260, int(total_width * 0.32)))
         right_size = max(260, right_size)
         self.splitter.setSizes([max(440, total_width - right_size), right_size])
+        self.statusBar().setSizeGripEnabled(True)
         self.statusBar().showMessage("Listo")
         # v22.2.6: indicador permanente de errores/warnings recientes.
         # Se actualiza en _tick_ui. Click para abrir el dialog de logs.

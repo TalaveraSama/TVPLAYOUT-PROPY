@@ -170,7 +170,7 @@ def test_windows_fit_tv_logical_resolution_and_dialogs_can_scroll():
     dialogs = _read("app", "dialogs.py")
     extra = _read("app", "dialogs_extra.py")
     assert "availableGeometry()" in main
-    assert "self.setSizeGripEnabled(True)" in main
+    assert "self.statusBar().setSizeGripEnabled(True)" in main
     assert "self.setMinimumSize(min_w, min_h)" in main
     assert "QScrollArea" in dialogs and "def scroll_page" in dialogs
     assert "setSizeGripEnabled(True)" in dialogs and "setSizeGripEnabled(True)" in extra

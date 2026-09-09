@@ -142,6 +142,9 @@ tests/                  pruebas estáticas y de continuidad del playout
 
 ## Registro de cambios
 
+### V24.0.2.20
+- Hotfix de inicio: se elimina la llamada inválida `setSizeGripEnabled` sobre `QMainWindow`; el grip queda correctamente en la barra de estado.
+
 ### V24.0.2.19
 - Ventana principal y diálogos adaptan su tamaño a la resolución lógica disponible del monitor/TV.
 - Ajustes y diálogos largos ahora tienen scroll vertical, botones de maximizar y control de redimensionado.
