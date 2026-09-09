@@ -4,14 +4,90 @@ import re
 import shutil
 import subprocess
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QPixmap
+from PySide6.QtCore import Qt, QRectF
+from PySide6.QtGui import QPixmap, QPainter, QColor, QPen, QFont
 from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QLabel, QPushButton, QLineEdit, QComboBox,
-                               QSpinBox, QCheckBox, QFileDialog, QPlainTextEdit, QMessageBox)
+                               QSpinBox, QCheckBox, QFileDialog, QPlainTextEdit, QMessageBox, QWidget)
 
 from .config import MPV_PATH, FFMPEG_PATH, FFPROBE_PATH, ROOT, APP_VERSION, DEFAULT_LOGO_PATH
 
 CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
+class LogoSafeAreaPreview(QWidget):
+    """Vista previa profesional con guías 16:9 y área central 4:3.
+
+    Las líneas amarillas en 12.5% y 87.5% marcan los límites horizontales
+    del área 4:3 dentro de un lienzo 16:9. La misma geometría se aplica en
+    ``OutputWorker`` para que la posición real de FFmpeg coincida con esta
+    previsualización.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumSize(420, 230)
+        self.setStyleSheet("background:#050505;border:1px solid #333;")
+        self._pixmap = QPixmap()
+        self._position = "arriba-derecha"
+        self._scale = 10
+        self._margin = 48
+
+    def set_values(self, path, position, scale, margin):
+        self._pixmap = QPixmap(path) if path and os.path.isfile(path) else QPixmap()
+        self._position = position or "arriba-derecha"
+        self._scale = max(2, int(scale or 10))
+        self._margin = max(0, int(margin or 0))
+        self.update()
+
+    def paintEvent(self, _event):
+        p = QPainter(self)
+        p.fillRect(self.rect(), QColor("#050505"))
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setRenderHint(QPainter.SmoothPixmapTransform)
+
+        # El lienzo de referencia siempre es 16:9, aunque el widget sea más
+        # alto o más ancho para conservar la proporción del monitor.
+        frame_w = min(self.width() - 28, (self.height() - 42) * 16 / 9)
+        frame_h = frame_w * 9 / 16
+        frame = QRectF((self.width() - frame_w) / 2, 22, frame_w, frame_h)
+        p.fillRect(frame, QColor("#111820"))
+        p.setPen(QPen(QColor("#72c7ff"), 1.5))
+        p.drawRect(frame)
+
+        # Guías porcentuales 16:9: centro y extremos del lienzo.
+        p.setPen(QPen(QColor(114, 199, 255, 130), 1, Qt.DashLine))
+        for pct in (0.0, 0.5, 1.0):
+            x = frame.left() + frame.width() * pct
+            p.drawLine(x, frame.top(), x, frame.bottom())
+            label = "0%" if pct == 0 else ("50%" if pct == 0.5 else "100%")
+            p.drawText(int(x - 14), int(frame.bottom() + 16), label)
+
+        # Área 4:3 centrada: 75% del ancho de un canvas 16:9, límites 12.5/87.5.
+        safe_left = frame.left() + frame.width() * 0.125
+        safe_right = frame.right() - frame.width() * 0.125
+        p.setPen(QPen(QColor("#f2c94c"), 1.5, Qt.DashLine))
+        p.drawRect(QRectF(safe_left, frame.top(), safe_right - safe_left, frame.height()))
+        p.drawLine(safe_left, frame.top(), safe_left, frame.bottom())
+        p.drawLine(safe_right, frame.top(), safe_right, frame.bottom())
+        p.setPen(QColor("#f2c94c"))
+        p.setFont(QFont("Segoe UI", 8))
+        p.drawText(int(safe_left - 18), int(frame.top() - 5), "12.5%")
+        p.drawText(int(safe_right - 18), int(frame.top() - 5), "87.5%")
+        p.setPen(QColor("#72c7ff"))
+        p.drawText(int(frame.left()), 15, "16:9 · 0% — 100%")
+        p.setPen(QColor("#f2c94c"))
+        p.drawText(int(safe_left + 5), int(frame.bottom() + 16), "4:3 seguro · 12.5% — 87.5%")
+
+        if not self._pixmap.isNull():
+            logo_w = max(8.0, frame.width() * self._scale / 100.0)
+            logo_h = logo_w * self._pixmap.height() / max(1, self._pixmap.width())
+            margin_x = frame.width() * self._margin / 1920.0
+            margin_y = frame.height() * self._margin / 1080.0
+            x = safe_left + margin_x if "izquierda" in self._position else safe_right - logo_w - margin_x
+            y = frame.top() + margin_y if "arriba" in self._position else frame.bottom() - logo_h - margin_y
+            logo_rect = QRectF(x, y, logo_w, logo_h)
+            p.drawPixmap(logo_rect, self._pixmap, self._pixmap.rect())
+        p.end()
 
 
 class LogoDialog(QDialog):
@@ -38,9 +114,10 @@ class LogoDialog(QDialog):
         self.position.addItems(["arriba-izquierda", "arriba-derecha", "abajo-izquierda", "abajo-derecha"])
         self.position.setCurrentText(s.get("logo_position", "arriba-derecha"))
         self.scale = QSpinBox()
-        self.scale.setRange(2, 60)
+        self.scale.setRange(2, 30)
         self.scale.setSuffix(" % del ancho")
-        self.scale.setValue(int(s.get("logo_scale", 12)))
+        self.scale.setToolTip("Tamaño profesional recomendado: 8–12 % del ancho de salida")
+        self.scale.setValue(int(s.get("logo_scale", 10)))
         self.opacity = QSpinBox()
         self.opacity.setRange(5, 100)
         self.opacity.setSuffix(" %")
@@ -48,11 +125,10 @@ class LogoDialog(QDialog):
         self.margin = QSpinBox()
         self.margin.setRange(0, 400)
         self.margin.setSuffix(" px")
-        self.margin.setValue(int(s.get("logo_margin", 24)))
-        self.preview = QLabel()
-        self.preview.setFixedHeight(90)
-        self.preview.setAlignment(Qt.AlignCenter)
-        self.preview.setStyleSheet("background:#000;border:1px solid #333;")
+        self.margin.setToolTip("Margen dentro del área segura 4:3; recomendado: 48 px en 1920x1080")
+        self.margin.setValue(int(s.get("logo_margin", 48)))
+        self.preview = LogoSafeAreaPreview()
+        self.preview.setMinimumHeight(230)
         f.addRow("", self.enabled)
         f.addRow("Archivo", row)
         f.addRow("Posición", self.position)
@@ -60,8 +136,9 @@ class LogoDialog(QDialog):
         f.addRow("Opacidad", self.opacity)
         f.addRow("Margen", self.margin)
         f.addRow("Vista previa", self.preview)
-        note = QLabel("El logo se aplica en el siguiente evento emitido por RTMP (FFmpeg se reinicia por clip). "
-                      "No afecta al monitor local.")
+        note = QLabel("Las guías muestran el lienzo 16:9 y el margen central 4:3 (12.5%–87.5%). "
+                      "La posición real queda dentro del área 4:3. Tamaño recomendado para una mosca profesional: 8–12%. "
+                      "Se aplica en el siguiente evento RTMP y no afecta al monitor local.")
         note.setWordWrap(True)
         note.setStyleSheet("color:#9a9a9a;")
         f.addRow(note)
@@ -76,6 +153,9 @@ class LogoDialog(QDialog):
         btns.addWidget(ok)
         f.addRow(btns)
         self.path.textChanged.connect(self._update_preview)
+        self.position.currentTextChanged.connect(self._update_preview)
+        self.scale.valueChanged.connect(self._update_preview)
+        self.margin.valueChanged.connect(self._update_preview)
         self._update_preview()
 
     def _browse(self):
@@ -84,14 +164,8 @@ class LogoDialog(QDialog):
             self.path.setText(p)
 
     def _update_preview(self):
-        p = self.path.text().strip()
-        if p and os.path.isfile(p):
-            pm = QPixmap(p)
-            if not pm.isNull():
-                self.preview.setPixmap(pm.scaled(240, 84, Qt.KeepAspectRatio, Qt.SmoothTransformation))
-                return
-        self.preview.setPixmap(QPixmap())
-        self.preview.setText("sin logo")
+        self.preview.set_values(self.path.text().strip(), self.position.currentText(),
+                                self.scale.value(), self.margin.value())
 
     def values(self):
         return {"logo_enabled": self.enabled.isChecked(), "logo_path": self.path.text().strip(),

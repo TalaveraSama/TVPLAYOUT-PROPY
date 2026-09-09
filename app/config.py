@@ -35,7 +35,8 @@ def _first_asset(*paths):
 # El usuario puede colocar su identidad visual sin modificar el código.
 # logo.ico se usa como icono del EXE cuando existe; logo.png como icono de la
 # ventana y como ruta sugerida para el logo de salida RTMP.
-APP_ICON_PATH = _first_asset(ROOT / "assets" / "logo.png", ROOT / "logo.png")
+APP_ICON_PATH = _first_asset(ROOT / "assets" / "logo.png", ROOT / "logo.png",
+                             ROOT / "assets" / "logo.ico", ROOT / "logo.ico")
 APP_EXE_ICON_PATH = _first_asset(ROOT / "assets" / "logo.ico", ROOT / "logo.ico")
 DEFAULT_LOGO_PATH = _first_asset(ROOT / "assets" / "logo.png", ROOT / "logo.png")
 

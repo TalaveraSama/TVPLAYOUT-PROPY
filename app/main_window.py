@@ -53,8 +53,8 @@ DEFAULT_SETTINGS = {
     "restore_playlist": True, "autoplay": False, "probe_on_scan": True,
     "mode": "auto", "loop": True, "exact_time": True, "autofill": False, "tandas": False, "autoscroll": True,
     "volume": 100, "muted": False, "emergency_clip": "", "splitter": [1120, 430],
-    "logo_enabled": False, "logo_path": "", "logo_position": "arriba-derecha", "logo_scale": 12, "logo_opacity": 90,
-    "logo_margin": 24,
+    "logo_enabled": False, "logo_path": "", "logo_position": "arriba-derecha", "logo_scale": 10, "logo_opacity": 90,
+    "logo_margin": 48,
     # v23.3: filler automático. Cuando se acaba la lista, se carga el
     # clip de filler en loop infinito para que el monitor nunca quede
     # en negro. Si no hay filler configurado, se muestra un slate

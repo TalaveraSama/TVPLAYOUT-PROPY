@@ -20,12 +20,34 @@ from .prober import pick_audio, pick_subtitle
 log = logger.get("rtmp")
 CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
-LOGO_POSITIONS = {
-    "arriba-izquierda": ("{m}", "{m}"),
-    "arriba-derecha": ("W-w-{m}", "{m}"),
-    "abajo-izquierda": ("{m}", "H-h-{m}"),
-    "abajo-derecha": ("W-w-{m}", "H-h-{m}"),
-}
+def logo_safe_area_43(width, height):
+    """Devuelve los límites horizontales del área 4:3 dentro de la salida.
+
+    En una salida 16:9, el área central 4:3 ocupa el 75% del ancho y queda
+    delimitada por 12.5% y 87.5%. En una salida 4:3 ya ocupa todo el ancho.
+    """
+    width = max(1, int(width))
+    height = max(1, int(height))
+    safe_width = min(width, height * 4 / 3)
+    left = max(0.0, (width - safe_width) / 2)
+    return left, left + safe_width
+
+
+def logo_overlay_position(position, width, height, logo_margin):
+    """Genera las expresiones FFmpeg para mantener la mosca dentro de 4:3."""
+    left, right = logo_safe_area_43(width, height)
+    margin = max(0, int(logo_margin or 0))
+    x_left = f"{left:.3f}+{margin}"
+    x_right = f"{right:.3f}-w-{margin}"
+    y_top = f"{margin}"
+    y_bottom = f"H-h-{margin}"
+    if position == "arriba-izquierda":
+        return x_left, y_top
+    if position == "abajo-izquierda":
+        return x_left, y_bottom
+    if position == "abajo-derecha":
+        return x_right, y_bottom
+    return x_right, y_top
 
 
 def _ffmpeg_filter_path(path):
@@ -218,10 +240,10 @@ class OutputWorker(QThread):
         amap = f"0:a:{aid}?" if isinstance(aid, int) and aid >= 0 else "0:a:0?"
         if logo:
             cmd += ["-loop", "1", "-framerate", "1", "-i", logo["path"]]
-            lw = max(16, int(w * int(logo.get("scale", 12)) / 100))
+            lw = max(16, int(w * int(logo.get("scale", 10)) / 100))
             op = max(0.05, min(1.0, int(logo.get("opacity", 90)) / 100))
-            xe, ye = LOGO_POSITIONS.get(logo.get("position", "arriba-derecha"), LOGO_POSITIONS["arriba-derecha"])
-            m = int(logo.get("margin", 24))
+            m = int(logo.get("margin", 48))
+            xe, ye = logo_overlay_position(logo.get("position", "arriba-derecha"), w, h, m)
             fc = (f"[0:v]{','.join(vf)}[base];"
                   f"[1:v]scale={lw}:-1,format=rgba,colorchannelmixer=aa={op:.2f}[logo];"
                   f"[base][logo]overlay={xe.format(m=m)}:{ye.format(m=m)}:shortest=1:format=auto,format=yuv420p[out]")

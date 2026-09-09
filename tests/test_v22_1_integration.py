@@ -501,6 +501,19 @@ def test_portable_build_keeps_runtime_root_and_external_tools_at_exe_level():
     assert "APP_EXE_ICON" in spec and "TVPlayoutPRO.exe" in launcher
 
 
+def test_logo_uses_professional_safe_area_guides():
+    """El logo se previsualiza y se calcula dentro del margen 4:3."""
+    output = _read(OUT)
+    dialog = _read(os.path.join(REPO, "app", "dialogs_extra.py"))
+    window = _read(WIN)
+    assert "def logo_safe_area_43" in output
+    assert "def logo_overlay_position" in output
+    assert "logo_overlay_position" in output
+    assert "class LogoSafeAreaPreview" in dialog
+    assert "12.5%" in dialog and "87.5%" in dialog and "16:9" in dialog
+    assert '"logo_scale": 10' in window and '"logo_margin": 48' in window
+
+
 if __name__ == "__main__":
     tests = [(name, fn) for name, fn in globals().items() if name.startswith("test_") and callable(fn)]
     failed = 0

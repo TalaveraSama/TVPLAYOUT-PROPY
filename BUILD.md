@@ -61,8 +61,12 @@ assets\logo.ico
   **Logo / CG (RTMP)**.
 - `logo.ico` se usa como icono del `TVPlayoutPRO.exe` durante el build.
 - En **Logo / CG (RTMP)** se puede activar el logo, seleccionar posición,
-  tamaño, opacidad y margen. El logo solo afecta la salida FFmpeg, no el
-  monitor local.
+  tamaño, opacidad y margen. La vista previa dibuja el lienzo 16:9 y las
+  líneas `12.5%` / `87.5%` del área central 4:3.
+- La salida FFmpeg mantiene automáticamente el logo dentro del área 4:3. El
+  tamaño predeterminado es 10% del ancho, un valor normal para una mosca de
+  cadena profesional, con margen predeterminado de 48 px en 1920x1080.
+- El logo solo afecta la salida FFmpeg, no el monitor local.
 - Si el usuario todavía no tiene un logo, estos archivos son opcionales y el
   programa funciona normalmente sin ellos.
 

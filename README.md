@@ -42,7 +42,8 @@ La salida sigue al playout local: cada vez que empieza un evento en PyAV, FFmpeg
 sobre la misma URL (el servidor ve una reconexión breve entre clips). Encoders: AUTO (prueba NVENC → QSV → AMF → x264),
 CPU/x264, NVIDIA NVENC, Intel QSV, AMD AMF. Audio AAC 48 kHz estéreo, pista de audio elegida por preferencia
 (es-MX / es-419 / Latino / spa / es…). Opcional: quemar subtítulos preferidos y superponer un **logo PNG** (posición, tamaño,
-opacidad). También acepta `srt://` y `udp://`.
+opacidad). La vista previa muestra el marco 16:9 y el área segura 4:3 (12.5%–87.5%); la posición final
+se mantiene dentro de ese margen con un tamaño profesional predeterminado del 10% del ancho. También acepta `srt://` y `udp://`.
 
 ## Instalación (Windows)
 
