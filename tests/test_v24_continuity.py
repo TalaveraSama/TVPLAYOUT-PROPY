@@ -191,6 +191,21 @@ def test_tmdb_general_scan_skips_done_and_edit_dialog_searches_image_gallery():
     assert "Sin póster" in dialog and "Sin backdrop" in dialog
 
 
+def test_mpv_ipc_windows_pipe_is_byte_stream_not_message_mode():
+    """v24.0.2.24: el named pipe de --input-ipc-server de mpv en Windows es un
+    stream de bytes. Se abre con _winapi en modo síncrono y ReadFile/WriteFile
+    directos; _read_loop arma los mensajes JSON delimitados por '\\n'.
+    La versión con PipeConnection (modo MESSAGE) dejaba el playout mudo."""
+    player = _read("app", "mpv_player.py")
+    assert "from multiprocessing.connection import" not in player
+    assert "_winapi.FILE_FLAG_OVERLAPPED" not in player  # handle síncrono, no overlapped
+    assert "_winapi.ReadFile(self._handle, 65536)" in player
+    assert "_winapi.WriteFile(self._handle, mv)" in player
+    assert "_winapi.CloseHandle(self._handle)" in player
+    assert 'buf.split(b"\\n", 1)' in player
+    assert "IPC _PipeConn falló de forma inesperada" in player
+
+
 def test_windows_fit_tv_logical_resolution_and_dialogs_can_scroll():
     main = _read("app", "main_window.py")
     dialogs = _read("app", "dialogs.py")
