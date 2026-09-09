@@ -800,6 +800,24 @@ class MultiOutputManager(QObject):
             sender.stop()
         self.ndi_senders = []
 
+    def ndi_stats(self):
+        """v24.0.2.33: estado en vivo de cada emisor NDI.
+
+        Devuelve (nombre, frames enviados, muestras de audio, segundos desde
+        el último frame, enviando_tarjeta_de_prueba) para el monitor de salidas.
+        """
+        stats = []
+        for sender in self.ndi_senders:
+            try:
+                last = float(getattr(sender, "_last_frame_at", 0.0) or 0.0)
+                age = max(0.0, time.time() - last) if last > 0 else -1.0
+                stats.append((str(sender.name), int(getattr(sender, "frames_sent", 0) or 0),
+                              int(getattr(sender, "audio_samples", 0) or 0), age,
+                              bool(getattr(sender, "test_active", False))))
+            except Exception:  # noqa: BLE001
+                continue
+        return stats
+
     def _state_from_worker(self, ok, msg, name):
         self.state.emit(bool(ok), f"{name}: {msg}")
 

@@ -2097,6 +2097,16 @@ class MainWindow(QMainWindow):
             state = "ACTIVO" if profile.get("enabled", True) else "INACTIVO"
             labels.append(f"{name} [{protocol}] · {state}")
         running = bool(self.output and self.output.isRunning())
+        # v24.0.2.33: estadísticas NDI en vivo (frames enviados / tarjeta de
+        # prueba) para poder verificar la salida sin depender del receptor.
+        try:
+            for name, frames, samples, age, test in (self.output.ndi_stats() if self.output else []):
+                estado = ("tarjeta de prueba" if test else
+                          "sin frames" if age < 0 else
+                          f"último frame hace {age:.0f}s" if age > 2.5 else "señal en vivo")
+                labels.append(f"{name} [NDI] · {frames} frames · {estado}")
+        except Exception:  # noqa: BLE001
+            pass
         self.rtmp_destinations.setText(
             f"Monitor de salidas · {len(enabled)}/{len(profiles)} activos · "
             f"{'EMITIENDO' if running else 'DETENIDO'}\n" + "  •  ".join(labels)
@@ -2472,6 +2482,9 @@ class MainWindow(QMainWindow):
             self.onair_led.setText("PAUSA" if int(now.timestamp()) % 2 else "ON-AIR")
         elif self.onair_led.text() != "ON-AIR":
             self.onair_led.setText("ON-AIR")
+        # v24.0.2.33: refrescar el monitor de salidas para ver los frames NDI en vivo.
+        if getattr(self.output, "ndi_senders", None):
+            self._refresh_output_monitor()
 
     def closeEvent(self, event):
         if self.ctrl.is_on_air or (self.output and self.output.isRunning()):

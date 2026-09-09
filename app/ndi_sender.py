@@ -11,14 +11,15 @@ import ctypes
 import os
 import queue
 import threading
+import time
 from fractions import Fraction
 from pathlib import Path
 
 try:
     from PySide6.QtCore import Qt
-    from PySide6.QtGui import QImage, QPainter
+    from PySide6.QtGui import QColor, QFont, QImage, QPainter
 except ImportError:  # permite py_compile/test estático sin PySide6
-    Qt = QImage = QPainter = None
+    Qt = QColor = QFont = QImage = QPainter = None
 
 from . import logger
 
@@ -30,6 +31,14 @@ _CREATE_NO_WINDOW = getattr(__import__("subprocess"), "CREATE_NO_WINDOW", 0)
 def _fourcc(a, b, c, d):
     return (ord(a) | (ord(b) << 8) | (ord(c) << 16) | (ord(d) << 24))
 
+
+# v24.0.2.33: tarjeta de prueba cuando el NDI está activo sin playout local.
+# Permite verificar la fuente en OBS/vMix/Studio Monitor sin reproducir nada.
+TEST_PATTERN_WIDTH = 1280
+TEST_PATTERN_HEIGHT = 720
+TEST_PATTERN_INTERVAL = 0.5      # segundos entre tarjetas de prueba
+TEST_IDLE_SECONDS = 2.0          # sin señal local desde el arranque
+TEST_RESUME_SECONDS = 30.0       # sin señal local después de haber emitido
 
 FOURCC_BGRA = _fourcc("B", "G", "R", "A")
 FOURCC_BGRX = _fourcc("B", "G", "R", "X")
@@ -222,6 +231,14 @@ class NDISender:
         self.last_position = 0.0
         self.last_duration = 0.0
         self.error = ""
+        # v24.0.2.33: contadores y tarjeta de prueba para verificar la salida.
+        self.test_pattern = True
+        self.test_active = False
+        self.frames_sent = 0
+        self.audio_samples = 0
+        self._last_frame_at = 0.0
+        self._last_real_frame_at = 0.0
+        self._last_test_at = 0.0
 
     @staticmethod
     def _fps_ratio(value):
@@ -328,6 +345,8 @@ class NDISender:
         """Encola el frame para no convertir/copiar vídeo en el hilo de UI."""
         if not self.running or image is None:
             return
+        self._last_real_frame_at = time.time()
+        self.test_active = False
         try:
             show_logo = not logo_suppressed_for_category(self.content_category, self.logo)
             self._tx_queue.put_nowait(("video", image, position, duration, show_logo))
@@ -341,6 +360,7 @@ class NDISender:
             try:
                 kind, payload, position, duration, show_logo = self._tx_queue.get(timeout=0.05)
             except queue.Empty:
+                self._maybe_test_pattern()
                 continue
             try:
                 if kind == "video":
@@ -349,6 +369,56 @@ class NDISender:
                     self._send_audio_now(payload)
             finally:
                 self._tx_queue.task_done()
+
+    def _maybe_test_pattern(self):
+        """Envía una tarjeta de prueba con reloj mientras no hay señal local.
+
+        Así la fuente NDI se ve viva (con reloj avanzando) en Studio Monitor,
+        OBS o vMix aunque el playout local no esté reproduciendo nada, y se
+        distingue un problema de red/Runtime de un simple «no hay contenido».
+        """
+        if not self.test_pattern or not self.running or QImage is None or QPainter is None:
+            return
+        now = time.time()
+        idle_for = (now - self._last_real_frame_at) if self._last_real_frame_at > 0 else TEST_IDLE_SECONDS
+        threshold = TEST_RESUME_SECONDS if self._last_real_frame_at > 0 else TEST_IDLE_SECONDS
+        if idle_for < threshold:
+            return
+        if now - self._last_test_at < TEST_PATTERN_INTERVAL:
+            return
+        self._last_test_at = now
+        frame = self._build_test_frame()
+        if frame is not None:
+            self.test_active = True
+            self._send_frame_now(frame, 0.0, 0.0, apply_logo=False)
+
+    def _build_test_frame(self):
+        """Tarjeta SMPTE simplificada con reloj; se regenera en cada envío."""
+        try:
+            image = QImage(TEST_PATTERN_WIDTH, TEST_PATTERN_HEIGHT, QImage.Format.Format_RGB32)
+            painter = QPainter(image)
+            painter.fillRect(0, 0, TEST_PATTERN_WIDTH, TEST_PATTERN_HEIGHT, QColor("#101418"))
+            bars = ("#b4b4b4", "#b4b400", "#00b4b4", "#00b400", "#b400b4", "#b40000", "#0000b4")
+            bar_h = TEST_PATTERN_HEIGHT // 3
+            bar_w = TEST_PATTERN_WIDTH // len(bars)
+            for i, color in enumerate(bars):
+                painter.fillRect(i * bar_w, 0, bar_w, bar_h, QColor(color))
+            painter.setPen(QColor("#ffffff"))
+            painter.setFont(QFont("Arial", 44, QFont.Weight.Black))
+            painter.drawText(image.rect().adjusted(0, bar_h + 60, 0, 0), Qt.AlignmentFlag.AlignHCenter,
+                             "TVPlayout PRO — FUENTE DE PRUEBA NDI")
+            painter.setFont(QFont("Arial", 26))
+            painter.drawText(image.rect().adjusted(0, bar_h + 150, 0, 0), Qt.AlignmentFlag.AlignHCenter,
+                             "Sin señal local: esta tarjeta confirma que el NDI está saliendo.")
+            painter.setFont(QFont("Arial", 64, QFont.Weight.Bold))
+            painter.setPen(QColor("#4be36a"))
+            painter.drawText(image.rect().adjusted(0, bar_h + 230, 0, 0), Qt.AlignmentFlag.AlignHCenter,
+                             time.strftime("%H:%M:%S") + "  •  " + self.name)
+            painter.end()
+            return image
+        except Exception as exc:  # noqa: BLE001
+            log.debug("NDI test pattern: %s", exc)
+            return None
 
     def _send_frame_now(self, image, position=0.0, duration=0.0, apply_logo=True):
         if not self.running or self.sender is None or image is None or QImage is None:
@@ -373,6 +443,8 @@ class NDISender:
             self._last_video_buffer = buf
             self._send_video_async(self.sender, ctypes.byref(frame))
             del old
+            self.frames_sent += 1
+            self._last_frame_at = time.time()
             self.last_position = float(position or 0.0)
             self.last_duration = float(duration or 0.0)
         except Exception as exc:  # noqa: BLE001
@@ -406,6 +478,7 @@ class NDISender:
                                   ctypes.cast(dst, ctypes.POINTER(ctypes.c_uint8)),
                                   sample_count * ctypes.sizeof(ctypes.c_float), None, 0)
             self._last_audio_buffer = dst
+            self.audio_samples += sample_count
             self.lib.NDIlib_send_send_audio_v3(self.sender, ctypes.byref(frame))
         except Exception as exc:  # noqa: BLE001
             log.debug("NDI audio: %s", exc)

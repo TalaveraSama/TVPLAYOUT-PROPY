@@ -483,6 +483,70 @@ def test_open_external_preview_runtime_prefers_mpv_then_vlc():
     assert "mpv" in content and "vlc" in content, content
 
 
+def test_ndi_test_pattern_and_live_counters_are_wired():
+    """v24.0.2.33: tarjeta de prueba sin playout + contadores visibles en la app."""
+    sender = _read("app", "ndi_sender.py")
+    output = _read("app", "output.py")
+    main = _read("app", "main_window.py")
+    extra = _read("app", "dialogs_extra.py")
+    assert "TEST_PATTERN_INTERVAL" in sender and "def _maybe_test_pattern" in sender
+    assert "def _build_test_frame" in sender and "FUENTE DE PRUEBA NDI" in sender
+    assert "self.frames_sent += 1" in sender and "self.audio_samples += sample_count" in sender
+    assert "self.test_active = False" in sender and "self.test_active = True" in sender
+    assert "def ndi_stats(self)" in output
+    assert "ndi_stats() if self.output else []" in main
+    assert 'getattr(self.output, "ndi_senders", None)' in main
+    assert "tarjeta de prueba" in main
+    # Guía de verificación en Dispositivos.
+    assert "CÓMO VERIFICAR LA SALIDA NDI" in extra
+    assert "Studio Monitor" in extra and "DistroAV" in extra and "UDP 5353" in extra
+
+
+def test_ndi_test_pattern_frame_builds_and_stats_report_live_state():
+    """Runtime: la tarjeta de prueba se genera con reloj y ndi_stats reporta."""
+    if _qt_app() is None:
+        return
+    from app.ndi_sender import NDISender, TEST_PATTERN_WIDTH, TEST_PATTERN_HEIGHT
+    from app.output import MultiOutputManager
+    s = NDISender("Verificacion NDI")
+    frame = s._build_test_frame()
+    assert frame is not None and not frame.isNull()
+    assert frame.width() == TEST_PATTERN_WIDTH and frame.height() == TEST_PATTERN_HEIGHT
+    assert s.frames_sent == 0 and s.test_pattern is True
+    # Gestor sin emisores: estadísticas vacías y sin errores.
+    mgr = MultiOutputManager("ffmpeg", [], [], "1920x1080", "29.97", "AUTO", 6000)
+    assert mgr.ndi_stats() == []
+
+
+def test_ndi_stats_shows_in_output_monitor_label():
+    """El monitor de salidas de la ventana muestra los frames NDI en vivo."""
+    if _qt_app() is None:
+        return
+    from app.main_window import MainWindow
+    mw = MainWindow.__new__(MainWindow)  # no arrancar hilos/timers
+    import app.main_window as MW
+
+    class _FakeMgr:
+        ndi_senders = [object()]
+        def isRunning(self):
+            return True
+        def ndi_stats(self):
+            return [("Estudio", 3210, 96000, 0.1, False)]
+
+    mw.settings = {"outputs": [{"enabled": True, "name": "Estudio", "protocol": "NDI",
+                                "target": "Estudio"}], "rtmp_url": ""}
+    mw.rtmp_url = type("L", (), {"text": ""})()
+    mw.output = _FakeMgr()
+
+    class _Lbl:
+        text = ""
+        def setText(self, value):
+            self.text = value
+    mw.rtmp_destinations = _Lbl()
+    mw._refresh_output_monitor()
+    assert "Estudio [NDI] · 3210 frames · señal en vivo" in mw.rtmp_destinations.text, mw.rtmp_destinations.text
+
+
 if __name__ == "__main__":
     tests = [(name, fn) for name, fn in globals().items() if name.startswith("test_") and callable(fn)]
     failed = 0
