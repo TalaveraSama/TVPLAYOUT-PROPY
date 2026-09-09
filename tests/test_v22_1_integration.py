@@ -636,6 +636,7 @@ def test_output_dialog_controls_activation_and_main_is_monitor_only():
     assert 'self._refresh_output_monitor()' in main
     assert 'enabled = any(bool(p.get("enabled", True)) for p in profiles)' in main
     assert 'QTimer.singleShot(250, self._rtmp_start)' in main
+    assert 'elif self.settings.get("rtmp_mode") == "remote" and self._output_profiles()' in main
 
 
 def test_logo_is_hidden_for_publicidad_in_ffmpeg_and_ndi():

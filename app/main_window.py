@@ -1716,12 +1716,15 @@ class MainWindow(QMainWindow):
         # modo como está.
 
     def _rtmp_follow(self, index, _item):
-        """La salida RTMP salta al mismo evento que el playout local."""
+        """La salida IP sigue al evento; los perfiles activos arrancan
+        automáticamente cuando ya existe un evento al aire."""
         if self.output and self.output.isRunning():
             self.output.sync_items(self.ctrl.export_items(), index, force_jump=True)
             # v22.2.1: al cambiar de clip el offset se resetea a 0 en el RTMP,
             # no tiene sentido que el watcher intente realinear durante 3s.
             self._rtmp_drift_suspend_until = time.time() + 3.0
+        elif self.settings.get("rtmp_mode") == "remote" and self._output_profiles():
+            QTimer.singleShot(0, self._rtmp_start)
 
     def _rtmp_sync_structure(self):
         if self.output and self.output.isRunning():
