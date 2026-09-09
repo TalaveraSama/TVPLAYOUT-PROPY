@@ -230,6 +230,7 @@ DEFAULT_CARD_LAYOUT = {
     "poster_size": 100,     # v24.0.2.28: % de la altura de la banda (editable)
     "poster_shape": "cuadrado",  # cuadrado | original | ancho (16:9)
     "text_scale": 100,      # v24.0.2.28: escala del texto (base ya más compacta)
+    "backdrop_fill": False, # v24.0.2.29: franja transparente, SIN foto de fondo
 }
 
 
@@ -254,10 +255,19 @@ def resolve_card_layout(layout=None):
     cfg["show_year"] = bool(show_year)
     shape = str(cfg.get("poster_shape") or "").lower()
     cfg["poster_shape"] = "original" if "original" in shape else ("ancho" if "anch" in shape else "cuadrado")
+    backdrop_fill = (layout or {}).get("backdrop_fill")
+    if backdrop_fill is None:
+        backdrop_fill = DEFAULT_CARD_LAYOUT["backdrop_fill"]
+    if isinstance(backdrop_fill, str):
+        backdrop_fill = backdrop_fill.strip().lower() in ("1", "true", "si", "sí", "yes", "on")
+    cfg["backdrop_fill"] = bool(backdrop_fill)
     for key, low, top in (("opacity", 0, 100), ("margin", 0, 300),
                           ("poster_size", 40, 160), ("text_scale", 60, 150)):
+        value = cfg.get(key)
+        if value is None or isinstance(value, bool) or (isinstance(value, str) and not value.strip()):
+            value = DEFAULT_CARD_LAYOUT[key]
         try:
-            cfg[key] = max(low, min(top, int(float(cfg.get(key) or DEFAULT_CARD_LAYOUT[key]))))
+            cfg[key] = max(low, min(top, int(float(value))))
         except (TypeError, ValueError):
             cfg[key] = DEFAULT_CARD_LAYOUT[key]
     return cfg
@@ -373,7 +383,7 @@ def render_movie_overlay(metadata, resolution, layout=None):
         path.addRoundedRect(QRectF(card), radius, radius)
         painter.save()
         painter.setClipPath(path)
-        if not backdrop.isNull():
+        if cfg["backdrop_fill"] and not backdrop.isNull():
             painter.drawImage(card, backdrop)
         painter.fillRect(card, dark)
         painter.restore()
@@ -382,8 +392,10 @@ def render_movie_overlay(metadata, resolution, layout=None):
         draw_poster(x0)
         draw_text(x0 + (poster_w + gap if poster_w else 0), text_w)
     else:
-        # Banda completa a lo ancho de la pantalla.
-        if not backdrop.isNull():
+        # Banda completa a lo ancho de la pantalla. v24.0.2.29: por defecto la
+        # franja es translúcida SIN foto de fondo; el backdrop sólo se dibuja
+        # si se activa expresamente.
+        if cfg["backdrop_fill"] and not backdrop.isNull():
             painter.drawImage(QRect(0, band_y, width, band_h), backdrop)
         painter.fillRect(QRect(0, band_y, width, band_h), dark)
         if cfg["align"] == "izquierda":

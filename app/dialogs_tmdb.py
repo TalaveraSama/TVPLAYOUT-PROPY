@@ -525,6 +525,9 @@ class TMDBCardDialog(QDialog):
         self.show_year = QCheckBox("Mostrar año junto al título")
         self.show_year.setChecked(bool(s.get("tmdb_card_show_year", False)))
         form.addRow("", self.show_year)
+        self.backdrop_fill = QCheckBox("Foto de fondo (backdrop) en la franja")
+        self.backdrop_fill.setChecked(bool(s.get("tmdb_card_backdrop_fill", False)))
+        form.addRow("", self.backdrop_fill)
         form.addRow("Opacidad del fondo", self.opacity)
         form.addRow("Margen", self.margin)
         root.addLayout(form)
@@ -563,6 +566,7 @@ class TMDBCardDialog(QDialog):
         self.margin.valueChanged.connect(self._update_preview)
         self.poster_size.valueChanged.connect(self._update_preview)
         self.text_scale.valueChanged.connect(self._update_preview)
+        self.backdrop_fill.stateChanged.connect(self._update_preview)
         self._load_samples(db)
         self._update_preview()
 
@@ -641,7 +645,8 @@ class TMDBCardDialog(QDialog):
                 "show_year": self.show_year.isChecked(),
                 "poster_size": self.poster_size.value(),
                 "poster_shape": self.poster_shape.currentData(),
-                "text_scale": self.text_scale.value()}
+                "text_scale": self.text_scale.value(),
+                "backdrop_fill": self.backdrop_fill.isChecked()}
 
     def _update_preview(self):
         self.preview.set_sample(self._current_sample(), self._layout_values())
@@ -655,4 +660,5 @@ class TMDBCardDialog(QDialog):
                 "tmdb_card_show_year": self.show_year.isChecked(),
                 "tmdb_card_poster_size": self.poster_size.value(),
                 "tmdb_card_poster_shape": self.poster_shape.currentData() or "cuadrado",
-                "tmdb_card_text_scale": self.text_scale.value()}
+                "tmdb_card_text_scale": self.text_scale.value(),
+                "tmdb_card_backdrop_fill": self.backdrop_fill.isChecked()}

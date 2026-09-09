@@ -59,6 +59,7 @@ DEFAULT_SETTINGS = {
     "tmdb_card_position": "arriba", "tmdb_card_align": "izquierda", "tmdb_card_style": "banda",
     "tmdb_card_opacity": 70, "tmdb_card_margin": 18, "tmdb_card_show_year": False,
     "tmdb_card_poster_size": 100, "tmdb_card_poster_shape": "cuadrado", "tmdb_card_text_scale": 100,
+    "tmdb_card_backdrop_fill": False,
     "monitor_mode": "pyav", "monitor_player": "VLC", "monitor_player_path": "", "monitor_feed_port": 39000,
     "restore_playlist": True, "autoplay": False, "probe_on_scan": True,
     "mode": "auto", "loop": True, "exact_time": True, "autofill": False, "tandas": False, "autoscroll": True,
@@ -2104,7 +2105,8 @@ class MainWindow(QMainWindow):
                 "show_year": bool(s.get("tmdb_card_show_year", False)),
                 "poster_size": int(s.get("tmdb_card_poster_size", 100) or 100),
                 "poster_shape": s.get("tmdb_card_poster_shape", "cuadrado"),
-                "text_scale": int(s.get("tmdb_card_text_scale", 100) or 100)}
+                "text_scale": int(s.get("tmdb_card_text_scale", 100) or 100),
+                "backdrop_fill": bool(s.get("tmdb_card_backdrop_fill", False))}
 
     def _apply_movie_card(self, metadata):
         """Renderiza la tarjeta con el layout configurado y la activa en monitor y salidas IP."""

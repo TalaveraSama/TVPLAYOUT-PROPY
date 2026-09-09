@@ -239,6 +239,11 @@ def test_tmdb_card_position_and_style_are_editable_with_wysiwyg_preview():
     assert "Tamaño del póster" in dialog and "Forma del póster" in dialog
     assert "Cuadrado" in dialog and "Original (2:3)" in dialog and "Panorámica 16:9" in dialog
     assert "Tamaño del texto" in dialog
+    # v24.0.2.29: franja transparente, sin foto de fondo por defecto.
+    assert '"backdrop_fill": False' in tmdb
+    assert 'cfg["backdrop_fill"] and not backdrop.isNull()' in tmdb
+    assert '"tmdb_card_backdrop_fill"' in window and '"backdrop_fill": bool' in window
+    assert "Foto de fondo (backdrop) en la franja" in dialog and '"tmdb_card_backdrop_fill"' in dialog
 
 
 def test_mpv_ipc_windows_pipe_is_byte_stream_not_message_mode():
