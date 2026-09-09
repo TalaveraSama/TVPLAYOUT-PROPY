@@ -24,6 +24,22 @@ APP_VERSION = "V24.0.2.2"
 IS_WINDOWS = os.name == "nt"
 
 
+def _first_asset(*paths):
+    for path in paths:
+        path = Path(path)
+        if path.is_file():
+            return path
+    return None
+
+
+# El usuario puede colocar su identidad visual sin modificar el código.
+# logo.ico se usa como icono del EXE cuando existe; logo.png como icono de la
+# ventana y como ruta sugerida para el logo de salida RTMP.
+APP_ICON_PATH = _first_asset(ROOT / "assets" / "logo.png", ROOT / "logo.png")
+APP_EXE_ICON_PATH = _first_asset(ROOT / "assets" / "logo.ico", ROOT / "logo.ico")
+DEFAULT_LOGO_PATH = _first_asset(ROOT / "assets" / "logo.png", ROOT / "logo.png")
+
+
 def _load_env_file():
     """Carga un .env sencillo (CLAVE=valor) desde la raíz del proyecto."""
     p = ROOT / ".env"

@@ -9,7 +9,7 @@ from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QLabel, QPushButton, QLineEdit, QComboBox,
                                QSpinBox, QCheckBox, QFileDialog, QPlainTextEdit, QMessageBox)
 
-from .config import MPV_PATH, FFMPEG_PATH, FFPROBE_PATH, ROOT, APP_VERSION
+from .config import MPV_PATH, FFMPEG_PATH, FFPROBE_PATH, ROOT, APP_VERSION, DEFAULT_LOGO_PATH
 
 CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
@@ -26,7 +26,9 @@ class LogoDialog(QDialog):
         self.enabled = QCheckBox("Superponer logo en la salida RTMP")
         self.enabled.setChecked(bool(s.get("logo_enabled", False)))
         row = QHBoxLayout()
-        self.path = QLineEdit(s.get("logo_path", ""))
+        saved_logo = s.get("logo_path", "")
+        default_logo = str(DEFAULT_LOGO_PATH) if DEFAULT_LOGO_PATH else ""
+        self.path = QLineEdit(saved_logo or default_logo)
         self.path.setPlaceholderText("PNG con transparencia recomendado")
         row.addWidget(self.path, 1)
         b = QPushButton("…")

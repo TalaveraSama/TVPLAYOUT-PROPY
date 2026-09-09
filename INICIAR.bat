@@ -8,9 +8,6 @@ if not exist ".venv\Scripts\pythonw.exe" (
   pause
   exit /b 1
 )
-if not exist "mpv-x86_64\mpv.exe" (
-  echo [INFO] mpv.exe no encontrado: preview externo desactivado ^(el aire usa PyAV^)
-)
 if not exist "ffmpeg.exe" if not exist "ffmpeg\bin\ffmpeg.exe" if not exist "bin\ffmpeg.exe" (
   echo [AVISO] No se encontro ffmpeg.exe  ^(la salida RTMP y el analisis de medios no funcionaran^)
 )

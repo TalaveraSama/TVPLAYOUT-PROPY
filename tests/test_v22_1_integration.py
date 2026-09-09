@@ -495,8 +495,10 @@ def test_portable_build_keeps_runtime_root_and_external_tools_at_exe_level():
     launcher = _read(os.path.join(REPO, "INICIAR_EXE.bat"))
     assert "frozen" in config and "sys.executable" in config
     assert "TVPlayoutPRO.exe" in build and "ffmpeg.exe" in build and "ffprobe.exe" in build
+    assert "assets\\logo.png" in build and "assets\\logo.ico" in build
+    assert "rmdir /s /q \"%~dp0build\"" in build
     assert "collect_all(\"av\")" in spec and "COLLECT(" in spec
-    assert "TVPlayoutPRO.exe" in launcher
+    assert "APP_EXE_ICON" in spec and "TVPlayoutPRO.exe" in launcher
 
 
 if __name__ == "__main__":

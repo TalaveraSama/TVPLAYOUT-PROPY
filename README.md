@@ -49,10 +49,10 @@ opacidad). También acepta `srt://` y `udp://`.
 1. Instala **Python 3.13 x64** (o 3.11/3.12).
 2. Ejecuta `INSTALL.bat` (crea `.venv` e instala PySide6 y PyAV/libav).
 3. Copia `ffmpeg.exe` y `ffprobe.exe` en la raíz del proyecto (o en `ffmpeg\bin\`, `bin\`) para RTMP y análisis.
-4. `mpv.exe` es opcional y solo se usa para previsualización externa.
+4. Coloca opcionalmente `assets\logo.png` y `assets\logo.ico` para la identidad visual.
 5. Ejecuta `INICIAR.bat` (`INICIAR_CONSOLA.bat` para ver mensajes de depuración).
 
-Opcional: archivo `.env` con `MPV_PATH=...`, `FFMPEG_PATH=...`, `FFPROBE_PATH=...`, `TVPLAYOUT_DB=...`.
+Opcional: archivo `.env` con `FFMPEG_PATH=...`, `FFPROBE_PATH=...`, `TVPLAYOUT_DB=...`. El monitor local usa PyAV/libav y no necesita mpv.
 
 Primer uso: **Fuentes / Categorías** → añadir carpetas (locales o UNC) → **Escanear biblioteca**. Con ffprobe se analizan
 duración, resolución, códecs, pistas de audio/subtítulos y se generan miniaturas (en `cache\thumbs`).

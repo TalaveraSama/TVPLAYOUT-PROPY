@@ -11,7 +11,7 @@ from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer, QSize
-from PySide6.QtGui import QColor, QBrush, QPixmap, QKeySequence, QShortcut, QPalette, QPainter, QFont
+from PySide6.QtGui import QColor, QBrush, QPixmap, QKeySequence, QShortcut, QPalette, QPainter, QFont, QIcon
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel,
                                QPushButton, QSplitter, QTableWidget, QTableWidgetItem, QAbstractItemView, QHeaderView,
                                QTabWidget, QListWidget, QListWidgetItem, QLineEdit, QComboBox, QSlider,
@@ -20,8 +20,8 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                                QDialog)
 
 from . import logger
-from .config import (DB_PATH, MPV_PATH, FFMPEG_PATH, FFPROBE_PATH, APP_NAME, APP_VERSION, VIDEO_EXTS, AUDIO_PREFS,
-                     category_color)
+from .config import (DB_PATH, MPV_PATH, FFMPEG_PATH, FFPROBE_PATH, APP_NAME, APP_VERSION, APP_ICON_PATH, VIDEO_EXTS,
+                     AUDIO_PREFS, category_color)
 from .db import DB
 from .scanner import Scanner
 from .prober import ProbeWorker
@@ -150,6 +150,8 @@ class PlaylistGrid(QTableWidget):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
+        if APP_ICON_PATH:
+            self.setWindowIcon(QIcon(str(APP_ICON_PATH)))
         self.setWindowTitle(f"{APP_NAME} {APP_VERSION} — Broadcast Playout")
         self.resize(1600, 920)
         self.setMinimumSize(1280, 720)

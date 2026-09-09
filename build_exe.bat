@@ -6,8 +6,9 @@ REM Genera una distribución onedir profesional en:
 REM   dist\TVPlayoutPRO\
 REM
 REM El ejecutable y las librerías Python quedan dentro de esa carpeta. El
-REM script copia además ffmpeg/ffprobe y mpv (si existen) al mismo nivel del
-REM EXE, que es la raíz persistente usada por la aplicación congelada.
+REM script copia además ffmpeg/ffprobe y los recursos de identidad visual
+REM (si existen) al mismo nivel del EXE, que es la raíz persistente usada
+REM por la aplicación congelada.
 REM ============================================================================
 setlocal EnableExtensions EnableDelayedExpansion
 cd /d "%~dp0"
@@ -105,20 +106,18 @@ if defined FFPROBE_SRC (
     echo [AVISO] No se encontró ffprobe.exe; el escaneo no tendrá metadatos.
 )
 
-REM 7. Copiar preview mpv opcional y sus DLL vecinas ---------------------------
-set "MPV_SRC="
-for %%P in ("%~dp0mpv.exe" "%~dp0bin\mpv.exe" "%~dp0mpv-x86_64\mpv.exe") do (
-    if not defined MPV_SRC if exist "%%~fP" set "MPV_SRC=%%~fP"
+REM 7. Copiar logo/identidad visual opcional -------------------------------
+REM logo.png se usa como identidad de la ventana y como ruta sugerida para
+REM Logo / CG. logo.ico se incrusta como icono del EXE cuando está disponible.
+if exist "%~dp0assets\logo.png" (
+    if not exist "%OUT%\assets" mkdir "%OUT%\assets"
+    copy /Y "%~dp0assets\logo.png" "%OUT%\assets\logo.png" >nul
+    echo [OK] assets\logo.png copiado.
 )
-if defined MPV_SRC (
-    copy /Y "!MPV_SRC!" "%OUT%\mpv.exe" >nul
-    for %%D in ("!MPV_SRC!") do set "MPV_DIR=%%~dpD"
-    for %%L in ("!MPV_DIR!*.dll") do if exist "%%~fL" copy /Y "%%~fL" "%OUT%\" >nul
-    if exist "!MPV_DIR!mpv.com" copy /Y "!MPV_DIR!mpv.com" "%OUT%\" >nul
-    if exist "!MPV_DIR!fonts.conf" copy /Y "!MPV_DIR!fonts.conf" "%OUT%\" >nul
-    echo [OK] mpv.exe copiado como preview opcional.
-) else (
-    echo [INFO] mpv.exe no encontrado; el aire local PyAV sigue funcionando.
+if exist "%~dp0assets\logo.ico" (
+    if not exist "%OUT%\assets" mkdir "%OUT%\assets"
+    copy /Y "%~dp0assets\logo.ico" "%OUT%\assets\logo.ico" >nul
+    echo [OK] assets\logo.ico copiado.
 )
 
 REM 8. Datos persistentes opcionales ------------------------------------------
@@ -133,8 +132,16 @@ if exist "%~dp0INICIAR_EXE.bat" copy /Y "%~dp0INICIAR_EXE.bat" "%OUT%\INICIAR_EX
     echo.
     echo Ejecuta TVPlayoutPRO.exe o INICIAR_EXE.bat.
     echo ffmpeg.exe y ffprobe.exe deben estar junto al EXE para RTMP y biblioteca.
-    echo mpv.exe es opcional y solo se usa para previsualizacion externa.
+    echo assets\logo.png y assets\logo.ico son opcionales para identidad visual.
     echo tvplayout.db, cache y logs se guardan junto al EXE.
+)
+
+REM 9. Limpiar artefactos temporales de PyInstaller ---------------------------
+REM Si el build llegó hasta aquí, dist ya contiene todo lo necesario. La carpeta
+REM build solo contiene .toc, .pyz, warn-*.txt y reportes de diagnóstico.
+if exist "%~dp0build" (
+    rmdir /s /q "%~dp0build"
+    if not exist "%~dp0build" echo [OK] Artefactos temporales build\ eliminados.
 )
 
 echo.

@@ -77,7 +77,6 @@ echo   INSTALACION COMPLETADA CORRECTAMENTE
 echo ================================================
 echo.
 echo Coloca ffmpeg.exe + ffprobe.exe en esta carpeta para la salida RTMP.
-echo mpv.exe es opcional y solo se usa para preview externo.
 echo Ejecuta INICIAR.bat
 pause
 exit /b 0

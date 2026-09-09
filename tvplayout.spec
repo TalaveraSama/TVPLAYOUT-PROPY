@@ -5,9 +5,9 @@ Produce una distribución onedir portable:
     dist/TVPlayoutPRO/TVPlayoutPRO.exe
 
 Las DLL de PySide6/PyAV quedan en _internal junto al ejecutable. El BAT de
-build copia ffmpeg.exe, ffprobe.exe y mpv.exe (si están disponibles) al nivel
-del EXE, porque son herramientas externas y no deben mezclarse con el runtime
-Python.
+build copia ffmpeg.exe y ffprobe.exe al nivel del EXE, porque son herramientas
+externas y no deben mezclarse con el runtime Python. Los recursos de identidad
+visual se copian desde assets/.
 """
 from pathlib import Path
 
@@ -17,6 +17,7 @@ block_cipher = None
 # PyInstaller ejecuta el spec con exec(), sin garantizar __file__. SPECPATH
 # es su carpeta de spec; cwd queda como fallback porque el BAT hace cd a la raíz.
 APP_ROOT = Path(globals().get("SPECPATH", Path.cwd())).resolve()
+APP_EXE_ICON = APP_ROOT / "assets" / "logo.ico"
 
 # PyAV carga parte de libav dinámicamente; collect_all evita que una versión
 # nueva de PyAV quede incompleta por depender de un nombre de DLL no listado.
@@ -65,6 +66,7 @@ exe = EXE(
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
+    icon=str(APP_EXE_ICON) if APP_EXE_ICON.is_file() else None,
     codesign_identity=None,
     entitlements_file=None,
 )
