@@ -1,0 +1,101 @@
+"""Pruebas estructurales y puras de continuidad V24.
+
+No levanta Qt ni requiere PySide6. La parte pura valida la regla de disparo
+por intervalo; las pruebas estructurales protegen los puntos de integración
+entre PyAV, playout y RTMP/SRT/NDI.
+
+Ejecutar: python tests/test_v24_continuity.py
+"""
+import os
+import sys
+
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _read(*parts):
+    with open(os.path.join(REPO, *parts), encoding="utf-8") as handle:
+        return handle.read()
+
+
+def midroll_due(position, next_at, eligible=True):
+    """Regla pura del scheduler: el intervalo no depende del frame exacto."""
+    return bool(eligible and next_at > 0 and position >= next_at)
+
+
+def test_interval_scheduler_is_configurable_and_not_fixed_to_one_value():
+    src = _read("app", "playout.py")
+    assert "midroll_interval_minutes" in src
+    assert "_midroll_interval_seconds" in src
+    assert "self._midroll_next_at = self._pos + self._midroll_interval_seconds()" in src
+    assert "self.midroll_interval_minutes" in src, "la fuente debe leer el valor configurable"
+    assert not midroll_due(599.9, 600.0)
+    assert midroll_due(600.0, 600.0)
+    assert not midroll_due(600.0, 600.0, eligible=False)
+
+
+def test_midroll_resumes_exact_local_and_ip_timeline():
+    playout = _read("app", "playout.py")
+    window = _read("app", "main_window.py")
+    output = _read("app", "output.py")
+    assert "resume_offset = max(0.0, float(self._pos or 0.0))" in playout
+    assert 'self.play_index(target, "midroll-resume", start_offset=resume.get("offset", 0.0)' in playout
+    assert "self._position_base = resume_offset" in playout
+    assert "start_offset=start_offset" in window
+    assert "_jump_offset" in output
+
+
+def test_midroll_and_end_tanda_are_independent_controls():
+    window = _read("app", "main_window.py")
+    dialog = _read("app", "dialogs.py")
+    playout = _read("app", "playout.py")
+    assert "midroll_btn" in window and '"midroll_enabled"' in window
+    assert "midroll_enabled" in dialog and "midroll_interval_minutes" in dialog
+    assert "if (self.tandas and reason == \"eof\" and not self._midroll_resume" in playout
+
+
+def test_identifiers_are_two_files_and_excluded_from_non_content():
+    playout = _read("app", "playout.py")
+    dialog = _read("app", "dialogs.py")
+    assert "identifier_in_path" in playout and "identifier_out_path" in playout
+    assert 'self.identifier_categories = {"Películas", "Música"}' in playout
+    assert "Identificador de entrada" in dialog and "Identificador de salida" in dialog
+    assert "Publicidad, filler ni slate" in dialog
+    assert "_transient_identifier=True" in playout
+
+
+def test_identifiers_follow_all_outputs_through_the_normal_on_start_callback():
+    playout = _read("app", "playout.py")
+    window = _read("app", "main_window.py")
+    assert 'self.play_index(bumper_index, f"identifier-{phase}", _internal=True)' in playout
+    assert "for cb in list(self.on_start_callbacks)" in playout
+    assert "self.output.sync_items(self.ctrl.export_items(), index, force_jump=True, start_offset=start_offset)" in window
+
+
+def test_pyav_receives_resume_source_offset_and_preserves_buffer_path():
+    player = _read("app", "pyav_player.py")
+    playout = _read("app", "playout.py")
+    assert "start_at=self._trim_start" in player
+    assert "self._job.seek(source_target)" in player
+    assert "playback_start = trim_start + resume_offset" in playout
+    assert "self.player.play(item[\"path\"]" in playout
+
+
+def test_automatic_end_tanda_remains_in_the_controller():
+    playout = _read("app", "playout.py")
+    assert "def _insert_tanda(self, after_index):" in playout
+    assert 'self._insert_tanda(idx)' in playout
+    assert "self.tandas_category" in playout
+
+
+if __name__ == "__main__":
+    tests = [(name, fn) for name, fn in globals().items() if name.startswith("test_") and callable(fn)]
+    failed = 0
+    for name, fn in tests:
+        try:
+            fn()
+            print("OK", name)
+        except AssertionError as exc:
+            failed += 1
+            print("FAIL", name, "—", exc)
+    print(f"\n{len(tests) - failed}/{len(tests)} tests OK")
+    sys.exit(0 if not failed else 1)

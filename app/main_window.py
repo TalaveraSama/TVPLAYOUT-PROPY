@@ -11,7 +11,7 @@ from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer, QSize
-from PySide6.QtGui import QColor, QBrush, QPixmap, QKeySequence, QShortcut, QPalette, QPainter, QFont
+from PySide6.QtGui import QColor, QBrush, QPixmap, QKeySequence, QShortcut, QPalette, QPainter, QFont, QIcon
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel,
                                QPushButton, QSplitter, QTableWidget, QTableWidgetItem, QAbstractItemView, QHeaderView,
                                QTabWidget, QListWidget, QListWidgetItem, QLineEdit, QComboBox, QSlider,
@@ -20,13 +20,13 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                                QDialog)
 
 from . import logger
-from .config import (DB_PATH, MPV_PATH, FFMPEG_PATH, FFPROBE_PATH, APP_NAME, APP_VERSION, VIDEO_EXTS, AUDIO_PREFS,
-                     category_color)
+from .config import (DB_PATH, MPV_PATH, FFMPEG_PATH, FFMPEG_NDI_PATH, FFPROBE_PATH, APP_NAME, APP_VERSION, APP_ICON_PATH, VIDEO_EXTS,
+                     AUDIO_PREFS, category_color)
 from .db import DB
 from .scanner import Scanner
 from .prober import ProbeWorker
-from .mpv_player import MPVPlayer
-from .output import OutputWorker
+from .pyav_player import PyAVPlayer
+from .output import MultiOutputManager
 from .scheduler import SchedulerService
 from .playout import (PlayoutController, make_item, ST_ONAIR, ST_READY, ST_AIRED, ST_CUT, ST_ERROR, ST_SKIPPED,
                       ST_PENDING, DONE_STATES)
@@ -46,15 +46,17 @@ STATUS_LABEL = {ST_PENDING: "", ST_READY: "LISTO", ST_ONAIR: "AL AIRE", ST_AIRED
                 ST_ERROR: "ERROR", ST_SKIPPED: "OMITIDO"}
 
 DEFAULT_SETTINGS = {
-    "rtmp_url": "", "resolution": "1920x1080", "fps": "29.97", "encoder": "AUTO", "bitrate": 6000, "audio_bitrate": 192,
+    "rtmp_url": "", "outputs": [], "resolution": "1920x1080", "fps": "29.97", "encoder": "AUTO", "bitrate": 6000, "audio_bitrate": 192,
     "subtitle_burn": False, "ffmpeg_extra": "", "rtmp_autostart": False, "rtmp_mode": "local",
     "audio_pref": AUDIO_PREFS[0], "sub_pref": "OFF", "hwdec": "auto-safe", "audio_device": "",
     "autofill_category": "Todas", "autofill_count": 10, "tandas_category": "Publicidad", "tandas_count": 2,
+    "midroll_enabled": False, "midroll_category": "Publicidad", "midroll_interval_minutes": 15,
+    "identifiers_enabled": False, "identifier_in_path": "", "identifier_out_path": "",
     "restore_playlist": True, "autoplay": False, "probe_on_scan": True,
     "mode": "auto", "loop": True, "exact_time": True, "autofill": False, "tandas": False, "autoscroll": True,
     "volume": 100, "muted": False, "emergency_clip": "", "splitter": [1120, 430],
-    "logo_enabled": False, "logo_path": "", "logo_position": "arriba-derecha", "logo_scale": 12, "logo_opacity": 90,
-    "logo_margin": 24,
+    "logo_enabled": False, "logo_path": "", "logo_position": "arriba-derecha", "logo_scale": 10, "logo_opacity": 90,
+    "logo_margin": 48,
     # v23.3: filler automático. Cuando se acaba la lista, se carga el
     # clip de filler en loop infinito para que el monitor nunca quede
     # en negro. Si no hay filler configurado, se muestra un slate
@@ -150,6 +152,8 @@ class PlaylistGrid(QTableWidget):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
+        if APP_ICON_PATH:
+            self.setWindowIcon(QIcon(str(APP_ICON_PATH)))
         self.setWindowTitle(f"{APP_NAME} {APP_VERSION} — Broadcast Playout")
         self.resize(1600, 920)
         self.setMinimumSize(1280, 720)
@@ -169,7 +173,7 @@ class MainWindow(QMainWindow):
         self._dialogs = {}
 
         self._build()
-        self.player = MPVPlayer(self.video, MPV_PATH, self)
+        self.player = PyAVPlayer(self.video, MPV_PATH, self)
         self.player.status.connect(self._status)
         self.player.levels.connect(self.vu.set_levels)
         self.ctrl = PlayoutController(self.db, self.player, self)
@@ -223,9 +227,10 @@ class MainWindow(QMainWindow):
         self.ui_timer.timeout.connect(self._tick_ui)
         self.ui_timer.start(500)
         self._tick_ui()
-        self._status(f"MPV: {'OK' if MPV_PATH else 'NO ENCONTRADO'} • FFmpeg: {'OK' if FFMPEG_PATH else 'NO ENCONTRADO'} • "
-                     f"ffprobe: {'OK' if FFPROBE_PATH else 'NO'} • Biblioteca: {self.db.count_media()} medios")
-        log.info("%s %s iniciado", APP_NAME, APP_VERSION)
+        self._status(f"PyAV: {'OK' if self.player.available else 'NO INSTALADO'} • Preview mpv: {'OK' if MPV_PATH else 'NO'} • "
+                     f"FFmpeg: {'OK' if FFMPEG_PATH else 'NO ENCONTRADO'} • ffprobe: {'OK' if FFPROBE_PATH else 'NO'} • "
+                     f"Biblioteca: {self.db.count_media()} medios")
+        log.info("%s %s iniciado con PyAV/libav", APP_NAME, APP_VERSION)
         QTimer.singleShot(800, self._autostart)
 
     # ================================================================== UI
@@ -365,31 +370,11 @@ class MainWindow(QMainWindow):
         ml.setSpacing(6)
         self.autofill_btn = _btn("Autofill", self._modes_changed, "modeBtn", "Al terminar la playlist, rellena automáticamente con medios de la categoría configurada", True)
         self.tandas_btn = _btn("Tandas auto", self._modes_changed, "modeBtn", "Inserta anuncios (categoría Publicidad) después de cada evento", True)
+        self.midroll_btn = _btn("Tanda intermedia", self._modes_changed, "IntermedioBtn", "Interrumpe Películas/Música según el intervalo configurado y reanuda desde el mismo segundo", True)
         self.exact_btn = _btn("Hora exacta", self._modes_changed, "modeBtn", "Los eventos con hora fija (⏰) cortan lo que esté al aire a su hora", True)
         self.loop_btn = _btn("Loop", self._modes_changed, "modeBtn", "Repetir la playlist al terminar", True)
         self.autoscroll_btn = _btn("Autoscroll", self._modes_changed, "modeBtn", "Seguir el evento al aire en la grid", True)
-        # v23.0: crossfade de audio entre clips. Toggle + slider de
-        # duración (0.0–3.0s). El toggle habilita/deshabilita el crossfade,
-        # el slider controla la duración del fade-in/fade-out. La lógica
-        # vive en mpv_player.py (set_crossfade) y playout._tick() (trigger
-        # del fade-out cuando quedan crossfade_duration segundos para
-        # terminar el clip). El cambio en el slider se aplica al player
-        # en tiempo real (no requiere recargar el clip al aire).
-        self.crossfade_btn = _btn("Crossfade", self._crossfade_toggle_changed, "modeBtn",
-                                  "Solapa el audio del clip saliente con el entrante (transición suave entre clips)", True)
-        self.crossfade_duration = QSlider(Qt.Horizontal)
-        self.crossfade_duration.setObjectName("crossfadeDuration")
-        self.crossfade_duration.setMinimum(0)
-        self.crossfade_duration.setMaximum(30)  # 0.0s–3.0s, en pasos de 0.1s
-        self.crossfade_duration.setSingleStep(1)
-        self.crossfade_duration.setPageStep(5)
-        self.crossfade_duration.setFixedWidth(110)
-        self.crossfade_duration.setToolTip("Duración del crossfade en segundos (0.0s–3.0s)")
-        self.crossfade_duration.valueChanged.connect(self._crossfade_duration_changed)
-        self.crossfade_duration_label = _lbl("0.5s", "fieldName")
-        self.crossfade_duration_label.setFixedWidth(38)
-        for b in (self.autofill_btn, self.tandas_btn, self.exact_btn, self.loop_btn, self.autoscroll_btn,
-                  self.crossfade_btn, _lbl("CF:", "fieldName"), self.crossfade_duration, self.crossfade_duration_label):
+        for b in (self.autofill_btn, self.tandas_btn, self.midroll_btn, self.exact_btn, self.loop_btn, self.autoscroll_btn):
             ml.addWidget(b)
         ml.addStretch()
         ml.addWidget(_lbl("Modo:", "fieldName"))
@@ -610,8 +595,8 @@ class MainWindow(QMainWindow):
         funcs = [("Playlist\nManager", self.open_playlist_manager), ("Biblioteca", lambda: self.tabs.setCurrentIndex(2)),
                  ("Programador", self.open_scheduler), ("Registros\nAs-Run", self.open_logs),
                  ("Fuentes /\nCategorías", self.open_sources), ("Ajustes del\nsistema", self.open_settings),
-                 ("Escanear\nbiblioteca", self.start_scan), ("Logo / CG\n(RTMP)", self.open_logo),
-                 ("Dispositivos", self.open_devices)]
+                 ("Salidas IP\nRTMP/SRT/NDI", self.open_outputs), ("Escanear\nbiblioteca", self.start_scan),
+                 ("Logo / CG\n(RTMP)", self.open_logo), ("Dispositivos", self.open_devices)]
         self._fn_buttons = []
         for i, (text, slot) in enumerate(funcs):
             b = _btn(text, slot, "funcBtn")
@@ -620,7 +605,7 @@ class MainWindow(QMainWindow):
             self._fn_buttons.append(b)
         self.emergency_btn = _btn("🚨 EMERGENCIA", self.emergency, "danger", "Emite inmediatamente el clip de emergencia configurado")
         self.emergency_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        g.addWidget(self.emergency_btn, 3, 0, 1, 3)
+        g.addWidget(self.emergency_btn, (len(funcs) + 2) // 3, 0, 1, 3)
         fv.addLayout(g)
         rv.addWidget(fn)
 
@@ -629,53 +614,44 @@ class MainWindow(QMainWindow):
         ov = QVBoxLayout(out)
         ov.setContentsMargins(0, 0, 0, 6)
         ov.setSpacing(4)
-        ov.addWidget(_section("SALIDA RTMP / IP STREAMING"))
-        r1 = QHBoxLayout()
-        r1.setContentsMargins(6, 0, 6, 0)
+        ov.addWidget(_section("SALIDAS IP · RTMP / SRT / NDI"))
+        # La configuración de URLs/nombres y el activar/desactivar de cada
+        # destino viven en OutputProfilesDialog. En la pantalla principal
+        # dejamos únicamente un monitor de estado, para no editar destinos
+        # accidentalmente durante el aire.
         self.rtmp_url = QLineEdit(self.settings.get("rtmp_url", ""))
         self.rtmp_url.setPlaceholderText("rtmp://servidor/app/clave")
         self.rtmp_url.editingFinished.connect(lambda: self._save_setting("rtmp_url", self.rtmp_url.text().strip()))
-        r1.addWidget(self.rtmp_url, 1)
-        ov.addLayout(r1)
-        # v22.2.2: selector de modo (radio buttons). Reemplaza al botón
-        # "INICIAR RTMP" separado. El modo define si hay stream o no.
-        r_modes = QHBoxLayout()
-        r_modes.setContentsMargins(6, 0, 6, 0)
-        r_modes.setSpacing(10)
+        self.rtmp_url.setVisible(False)
+
+        # Se conservan como estado interno para compatibilidad y para que el
+        # modo remoto se pueda guardar, pero ya no se muestran en el monitor.
         self.rtmp_mode_group = QButtonGroup(self)
-        self.rtmp_mode_local = QRadioButton("Solo monitor local")
-        self.rtmp_mode_remote = QRadioButton("RTMP Remoto")
-        self.rtmp_mode_ndi = QRadioButton("RTMP Local (NDI)")
-        self.rtmp_mode_ndi.setEnabled(False)  # Próximamente
-        self.rtmp_mode_ndi.setToolTip("Próximamente")
-        for rb in (self.rtmp_mode_local, self.rtmp_mode_remote, self.rtmp_mode_ndi):
-            self.rtmp_mode_group.addButton(rb)
-            r_modes.addWidget(rb)
-        r_modes.addStretch()
-        # Seleccionar el modo persistido (default: local)
-        # v22.2.2: usamos self.settings directamente porque s no está
-        # definido en este scope (sólo en apply_settings). Antes daba
-        # NameError al iniciar la app.
+        self.rtmp_mode_local = QRadioButton("Solo monitor local", self)
+        self.rtmp_mode_remote = QRadioButton("Salidas IP activas", self)
+        self.rtmp_mode_group.addButton(self.rtmp_mode_local)
+        self.rtmp_mode_group.addButton(self.rtmp_mode_remote)
         initial_mode = self.settings.get("rtmp_mode", "local")
-        if initial_mode == "remote":
-            self.rtmp_mode_remote.setChecked(True)
-        else:
-            self.rtmp_mode_local.setChecked(True)
+        (self.rtmp_mode_remote if initial_mode == "remote" else self.rtmp_mode_local).setChecked(True)
         self.rtmp_mode_group.buttonClicked.connect(self._rtmp_mode_changed)
-        ov.addLayout(r_modes)
+        self.rtmp_mode_local.setVisible(False)
+        self.rtmp_mode_remote.setVisible(False)
+
         r2 = QHBoxLayout()
         r2.setContentsMargins(6, 0, 6, 0)
-        # v22.2.2: chip de estado (ON/OFF) — el botón "INICIAR RTMP" se
-        # elimina: el modo se elige con los radios de arriba.
         self.rtmp_chip = LedLabel("OFF", object_name="rtmpChip")
         self.rtmp_chip.setMinimumWidth(120)
         self.rtmp_chip.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         r2.addWidget(self.rtmp_chip, 1)
-        # Mantenemos self.rtmp_btn como referencia por compatibilidad con
-        # otras partes del código que aún lo usan (lo ocultamos).
+        # Referencia heredada: el control de activación está en cada perfil.
         self.rtmp_btn = _btn("", lambda: None, None, "")
         self.rtmp_btn.setVisible(False)
         ov.addLayout(r2)
+
+        self.rtmp_destinations = _lbl("Abre Salidas IP para configurar destinos", "clipInfo")
+        self.rtmp_destinations.setContentsMargins(6, 0, 6, 0)
+        self.rtmp_destinations.setWordWrap(True)
+        ov.addWidget(self.rtmp_destinations)
         self.rtmp_info = _lbl("", "clipInfo")
         self.rtmp_info.setContentsMargins(6, 0, 6, 0)
         self.rtmp_info.setWordWrap(True)
@@ -721,6 +697,13 @@ class MainWindow(QMainWindow):
         self.ctrl.autofill_count = int(s.get("autofill_count", 10))
         self.ctrl.tandas_category = s.get("tandas_category", "Publicidad")
         self.ctrl.tandas_count = int(s.get("tandas_count", 2))
+        self.ctrl.midroll_category = s.get("midroll_category", "Publicidad")
+        self.ctrl.midroll_interval_minutes = max(1, int(s.get("midroll_interval_minutes", 15)))
+        self.ctrl.identifiers_enabled = bool(s.get("identifiers_enabled", False))
+        self.ctrl.identifier_in_path = str(s.get("identifier_in_path", "") or "")
+        self.ctrl.identifier_out_path = str(s.get("identifier_out_path", "") or "")
+        # v24: la activación de la tanda intermedia es independiente de la
+        # tanda al finalizar el evento.
         # v23.3: filler automático. El operador configura el path a un
         # clip de filler en settings (filler_path). Si está vacío, se usa
         # el slate lavfi. Si filler_enabled es False, no se carga nada
@@ -735,12 +718,17 @@ class MainWindow(QMainWindow):
         sub = s.get("sub_pref", "OFF")
         slang = "" if sub.upper() == "OFF" else ("es-MX,spa-MX,es-419,spa,es" if sub.upper().startswith("AUTO") else sub)
         self.player.set_track_langs(alang, slang)
+        # Se puede activar desde Ajustes o desde el botón independiente de
+        # modos; ambos controles deben reflejar el mismo valor persistido.
+        self.midroll_btn.blockSignals(True)
+        self.midroll_btn.setChecked(bool(s.get("midroll_enabled", False)))
+        self.midroll_btn.blockSignals(False)
         if first:
             self.mode_combo.blockSignals(True)
             self.mode_combo.setCurrentIndex(1 if s.get("mode") == "manual" else 0)
             self.mode_combo.blockSignals(False)
             for b, key in ((self.loop_btn, "loop"), (self.exact_btn, "exact_time"), (self.autofill_btn, "autofill"),
-                           (self.tandas_btn, "tandas"), (self.autoscroll_btn, "autoscroll")):
+                           (self.tandas_btn, "tandas"), (self.midroll_btn, "midroll_enabled"), (self.autoscroll_btn, "autoscroll")):
                 b.blockSignals(True)
                 b.setChecked(bool(s.get(key)))
                 b.blockSignals(False)
@@ -759,19 +747,9 @@ class MainWindow(QMainWindow):
             if self.player.running:
                 self.player.set_volume(vol)
                 self.player.set_mute(muted)
-            # v23.0: aplicar estado del crossfade desde settings.
-            cf_enabled = bool(s.get("crossfade_enabled", True))
-            cf_dur = float(s.get("crossfade_duration", 0.5))
-            self.player.set_crossfade(enabled=cf_enabled, duration=cf_dur)
-            self.crossfade_btn.blockSignals(True)
-            self.crossfade_btn.setChecked(cf_enabled)
-            self.crossfade_btn.blockSignals(False)
-            self.crossfade_duration.blockSignals(True)
-            self.crossfade_duration.setValue(int(round(cf_dur * 10)))
-            self.crossfade_duration.blockSignals(False)
-            self.crossfade_duration_label.setText(f"{cf_dur:.1f}s")
             self._modes_changed()
         self.rtmp_url.setText(s.get("rtmp_url", ""))
+        self._refresh_output_monitor()
 
     def _modes_changed(self, *_a):
         self.ctrl.mode = self.mode_combo.currentData() or "auto"
@@ -779,26 +757,12 @@ class MainWindow(QMainWindow):
         self.ctrl.exact_time = self.exact_btn.isChecked()
         self.ctrl.autofill = self.autofill_btn.isChecked()
         self.ctrl.tandas = self.tandas_btn.isChecked()
+        self.ctrl.midroll_enabled = self.midroll_btn.isChecked()
         for key, val in (("mode", self.ctrl.mode), ("loop", self.ctrl.loop), ("exact_time", self.ctrl.exact_time),
-                         ("autofill", self.ctrl.autofill), ("tandas", self.ctrl.tandas), ("autoscroll", self.autoscroll_btn.isChecked())):
+                         ("autofill", self.ctrl.autofill), ("tandas", self.ctrl.tandas),
+                         ("midroll_enabled", self.ctrl.midroll_enabled), ("autoscroll", self.autoscroll_btn.isChecked())):
             if self.settings.get(key) != val:
                 self._save_setting(key, val)
-
-    def _crossfade_toggle_changed(self):
-        """v23.0: habilita/deshabilita el crossfade y persiste en settings."""
-        enabled = self.crossfade_btn.isChecked()
-        self.player.set_crossfade(enabled=enabled)
-        if self.settings.get("crossfade_enabled", True) != enabled:
-            self._save_setting("crossfade_enabled", enabled)
-        log.info("crossfade %s", "ON" if enabled else "OFF")
-
-    def _crossfade_duration_changed(self, val):
-        """v23.0: actualiza la duración del crossfade (0.0s–3.0s en pasos de 0.1s)."""
-        d = val / 10.0
-        self.player.set_crossfade(duration=d)
-        self.crossfade_duration_label.setText(f"{d:.1f}s")
-        if abs(self.settings.get("crossfade_duration", 0.5) - d) > 1e-9:
-            self._save_setting("crossfade_duration", d)
 
     def _autostart(self):
         if self.settings.get("autoplay") and self.ctrl.items and not self.ctrl.is_on_air:
@@ -1231,6 +1195,7 @@ class MainWindow(QMainWindow):
                 from .prober import probe_file
                 info = probe_file(path, timeout=10)
                 item.update({k: info[k] for k in ("duration", "width", "height", "fps", "video_codec", "audio_codec", "tracks")})
+                item["source_duration"] = item.get("duration") or 0
             except Exception as e:  # noqa: BLE001
                 log.info("probe rápido falló para %s: %s", path, e)
         return item
@@ -1500,9 +1465,11 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------- señales playout
     def _onair_changed(self, idx):
         onair = idx >= 0
-        self.onair_led.set_active(onair)
-        self.play_btn.setChecked(onair)
-        self.video.set_active(onair, "" if onair else "SIN SEÑAL")
+        is_slate = idx == -2
+        self.onair_led.set_active(onair or is_slate)
+        self.play_btn.setChecked(onair or is_slate)
+        self.video.set_active(False if is_slate else onair,
+                              "TVPlayout PRO\\nPROXIMAMENTE" if is_slate else ("" if onair else "SIN SEÑAL"))
         if not onair:
             self.pause_btn.setChecked(False)
             self.clip_title.setText("Sin evento al aire")
@@ -1572,7 +1539,7 @@ class MainWindow(QMainWindow):
     def _playlist_end(self):
         if self.output and self.output.isRunning():
             self.output.stop()
-            self._status("FIN DE PLAYLIST • salida RTMP detenida")
+            self._status("FIN DE PLAYLIST • salidas IP detenidas (activa Loop o Autofill para continuidad)")
 
     def _scheduled_run(self, schedule, rows):
         items = [make_item(r) for r in rows]
@@ -1586,7 +1553,7 @@ class MainWindow(QMainWindow):
         # onair sigue siendo -1; por eso re-sincronizamos explícitamente aquí.
         if self.output and self.output.isRunning():
             self.output.sync_items(self.ctrl.export_items(), 0, force_jump=True)
-        self._status(f"PROGRAMADO • {schedule['name']} • {len(items)} eventos • LOCAL + RTMP")
+        self._status(f"PROGRAMADO • {schedule['name']} • {len(items)} eventos • LOCAL + SALIDAS IP")
         log.info("Programación %s aplicada: %d eventos", schedule["name"], len(items))
 
     # ================================================================= RTMP
@@ -1619,22 +1586,40 @@ class MainWindow(QMainWindow):
         elif new_mode == "remote" and (not self.output or not self.output.isRunning()):
             self._rtmp_start()
 
+    def _output_profiles(self):
+        """Devuelve destinos nuevos y convierte la URL única antigua."""
+        profiles = []
+        for profile in self.settings.get("outputs") or []:
+            if not isinstance(profile, dict) or not profile.get("enabled", True):
+                continue
+            target = str(profile.get("target") or profile.get("url") or "").strip()
+            if target:
+                profiles.append({"enabled": True, "name": str(profile.get("name") or profile.get("protocol", "RTMP")),
+                                 "protocol": str(profile.get("protocol", "RTMP")).upper(), "target": target})
+        if not profiles:
+            legacy = self.rtmp_url.text().strip() or str(self.settings.get("rtmp_url", "")).strip()
+            if legacy:
+                protocol = "SRT" if legacy.lower().startswith("srt://") else "RTMP"
+                profiles.append({"enabled": True, "name": f"{protocol} principal", "protocol": protocol, "target": legacy})
+        return profiles
+
     def _rtmp_start(self):
-        """v22.2.2: arranca el RTMP en modo 'remote'."""
+        """Arranca todos los destinos IP habilitados en paralelo."""
         if self._locked:
             return
-        url = self.rtmp_url.text().strip()
-        if not url:
-            QMessageBox.warning(self, "RTMP", "Escribe la URL RTMP (rtmp://servidor/app/clave).")
+        profiles = self._output_profiles()
+        if not profiles:
+            QMessageBox.warning(self, "Salidas IP", "Configura al menos un destino RTMP, SRT o NDI en Salidas IP.")
             self.rtmp_mode_local.setChecked(True)
             return
-        self._save_setting("rtmp_url", url)
-        if not FFMPEG_PATH:
-            QMessageBox.warning(self, "RTMP", "No se encontró ffmpeg.exe. Colócalo en la raíz del proyecto.")
+        self._save_setting("outputs", profiles)
+        needs_ffmpeg = any(str(p.get("protocol", "RTMP")).upper() != "NDI" for p in profiles)
+        if needs_ffmpeg and not FFMPEG_PATH:
+            QMessageBox.warning(self, "Salidas IP", "No se encontró ffmpeg.exe para RTMP/SRT. Colócalo en la raíz del proyecto.")
             self.rtmp_mode_local.setChecked(True)
             return
         if not self.ctrl.items:
-            QMessageBox.warning(self, "RTMP", "La playlist está vacía.")
+            QMessageBox.warning(self, "Salidas IP", "La playlist está vacía.")
             self.rtmp_mode_local.setChecked(True)
             return
         if not self.ctrl.is_on_air:
@@ -1649,18 +1634,20 @@ class MainWindow(QMainWindow):
         # self.player._time directamente, que podía quedar en 0 si mpv no
         # emitía property-change, y generaba un loop de drift infinito.
         mpv_time = float(self.ctrl.elapsed or 0.0)
-        self.output = OutputWorker(FFMPEG_PATH, self.ctrl.export_items(), url, s.get("resolution", "1920x1080"), s.get("fps", "29.97"),
-                                   s.get("encoder", "AUTO"), int(s.get("bitrate", 6000)), s.get("audio_pref", AUDIO_PREFS[0]),
-                                   s.get("sub_pref", "OFF"), bool(s.get("subtitle_burn", False)), int(s.get("audio_bitrate", 192)),
-                                   loop=True, start_index=max(0, self.ctrl.onair), start_offset=mpv_time,
-                                   extra_args=s.get("ffmpeg_extra", ""), logo=self._logo_config())
-        log.info("RTMP arrancado en offset %.2fs (mpv local: %.2fs)", mpv_time, mpv_time)
+        self.output = MultiOutputManager(FFMPEG_PATH, profiles, self.ctrl.export_items(), s.get("resolution", "1920x1080"), s.get("fps", "29.97"),
+                                          s.get("encoder", "AUTO"), int(s.get("bitrate", 6000)), s.get("audio_pref", AUDIO_PREFS[0]),
+                                          s.get("sub_pref", "OFF"), bool(s.get("subtitle_burn", False)), int(s.get("audio_bitrate", 192)),
+                                          loop=True, start_index=max(0, self.ctrl.onair), start_offset=mpv_time,
+                                          extra_args=s.get("ffmpeg_extra", ""), logo=self._logo_config(),
+                                          ndi_ffmpeg=FFMPEG_NDI_PATH, ndi_source=self.player, parent=self)
+        log.info("Salidas IP arrancadas (%d destinos) en offset %.2fs", len(profiles), mpv_time)
         self.output.state.connect(self._rtmp_state)
         self.output.log.connect(self._rtmp_log)
         self.output.ended.connect(self._rtmp_finished)
         self.output.start()
         self._set_rtmp_chip("CONECTANDO…")
         self.rtmp_chip.set_active(True)
+        self._refresh_output_monitor()
 
     def _rtmp_stop(self):
         """v22.2.2: detiene el RTMP si está corriendo."""
@@ -1671,10 +1658,45 @@ class MainWindow(QMainWindow):
         s = self.settings
         if not s.get("logo_enabled") or not s.get("logo_path") or not os.path.isfile(s.get("logo_path", "")):
             return None
+        hidden_categories = {"Publicidad", str(s.get("tandas_category") or "Publicidad")}
         return {"path": s["logo_path"], "position": s.get("logo_position", "arriba-derecha"), "scale": int(s.get("logo_scale", 12)),
-                "opacity": int(s.get("logo_opacity", 90)), "margin": int(s.get("logo_margin", 24))}
+                "opacity": int(s.get("logo_opacity", 90)), "margin": int(s.get("logo_margin", 24)),
+                "hide_categories": sorted(hidden_categories)}
+
+    def _refresh_output_monitor(self):
+        """Actualiza el monitor principal sin convertirlo en editor de destinos."""
+        if not hasattr(self, "rtmp_destinations"):
+            return
+        profiles = []
+        for profile in self.settings.get("outputs") or []:
+            if not isinstance(profile, dict):
+                continue
+            target = str(profile.get("target") or profile.get("url") or "").strip()
+            if target:
+                profiles.append(profile)
+        if not profiles:
+            legacy = str(self.settings.get("rtmp_url", "") or self.rtmp_url.text()).strip()
+            if legacy:
+                profiles = [{"enabled": True, "protocol": "SRT" if legacy.lower().startswith("srt://") else "RTMP",
+                             "name": "Destino principal", "target": legacy}]
+        enabled = [p for p in profiles if p.get("enabled", True)]
+        if not profiles:
+            self.rtmp_destinations.setText("Sin destinos configurados • usa Salidas IP / RTMP / SRT / NDI")
+            return
+        labels = []
+        for profile in profiles:
+            protocol = str(profile.get("protocol", "RTMP")).upper()
+            name = str(profile.get("name") or protocol)
+            state = "ACTIVO" if profile.get("enabled", True) else "INACTIVO"
+            labels.append(f"{name} [{protocol}] · {state}")
+        running = bool(self.output and self.output.isRunning())
+        self.rtmp_destinations.setText(
+            f"Monitor de salidas · {len(enabled)}/{len(profiles)} activos · "
+            f"{'EMITIENDO' if running else 'DETENIDO'}\n" + "  •  ".join(labels)
+        )
 
     def _rtmp_state(self, ok, msg):
+        self._refresh_output_monitor()
         self._status(msg)
         self.rtmp_chip.set_active(ok)
         self._set_rtmp_chip(msg.replace("RTMP ON AIR • ", "ON AIR • ") if ok else ("ERROR" if "ERROR" in msg else "OFF"))
@@ -1683,9 +1705,10 @@ class MainWindow(QMainWindow):
         elif "ERROR" in msg:
             self.rtmp_info.setText(msg)
             log.error(msg)
-            # v22.2.2: si el RTMP falla, volver a modo local automáticamente
-            # para no dejar al operador con un modo "remote" que no anda.
-            self.rtmp_mode_local.setChecked(True)
+            # Una salida puede fallar sin tumbar las demás. Solo volvemos al
+            # monitor local cuando ya no queda ningún destino activo.
+            if not self.output or not self.output.isRunning():
+                self.rtmp_mode_local.setChecked(True)
 
     def _set_rtmp_chip(self, text):
         self.rtmp_chip.setToolTip(text)
@@ -1703,18 +1726,24 @@ class MainWindow(QMainWindow):
         self.output = None
         self.rtmp_chip.set_active(False)
         self._set_rtmp_chip("OFF")
+        self._refresh_output_monitor()
         # v22.2.2: si el modo sigue siendo "remote" pero el FFmpeg terminó
         # (por error o stop externo), no forzar cambio de radio — el usuario
         # puede reintentar. Pero si terminó por stop nuestro, dejamos el
         # modo como está.
 
     def _rtmp_follow(self, index, _item):
-        """La salida RTMP salta al mismo evento que el playout local."""
+        """La salida IP sigue al evento; los perfiles activos arrancan
+        automáticamente cuando ya existe un evento al aire. El offset se
+        comparte con RTMP/SRT/NDI cuando una película vuelve de una tanda."""
+        start_offset = max(0.0, float((_item or {}).get("_start_offset", 0.0) or 0.0))
         if self.output and self.output.isRunning():
-            self.output.sync_items(self.ctrl.export_items(), index, force_jump=True)
+            self.output.sync_items(self.ctrl.export_items(), index, force_jump=True, start_offset=start_offset)
             # v22.2.1: al cambiar de clip el offset se resetea a 0 en el RTMP,
             # no tiene sentido que el watcher intente realinear durante 3s.
             self._rtmp_drift_suspend_until = time.time() + 3.0
+        elif self.settings.get("rtmp_mode") == "remote" and self._output_profiles():
+            QTimer.singleShot(0, self._rtmp_start)
 
     def _rtmp_sync_structure(self):
         if self.output and self.output.isRunning():
@@ -1823,6 +1852,43 @@ class MainWindow(QMainWindow):
                 if QMessageBox.question(self, "RTMP", "La salida RTMP está activa. ¿Reiniciarla con los nuevos ajustes?") == QMessageBox.Yes:
                     self.output.stop()
                     QTimer.singleShot(1500, self._rtmp_start)
+
+    def open_outputs(self):
+        from .dialogs_extra import OutputProfilesDialog
+        d = OutputProfilesDialog(self, self.settings)
+        if d.exec() != QDialog.Accepted:
+            return
+        profiles = d.values()
+        self._save_setting("outputs", profiles)
+        # Mantener compatibilidad con la URL única de versiones anteriores.
+        if profiles:
+            self.rtmp_url.setText(str(profiles[0].get("target", "")))
+            self._save_setting("rtmp_url", profiles[0].get("target", ""))
+        self._refresh_output_monitor()
+        enabled = any(bool(p.get("enabled", True)) for p in profiles)
+        was_running = bool(self.output and self.output.isRunning())
+        if was_running:
+            self.output.stop()
+            self.output.wait(4000)
+            self.output = None
+            self.rtmp_chip.set_active(False)
+            self._set_rtmp_chip("OFF")
+        if enabled:
+            # La casilla Activo del diálogo es ahora la única decisión del
+            # operador: al guardar, los perfiles activos pasan al aire.
+            self.rtmp_mode_group.blockSignals(True)
+            self.rtmp_mode_remote.setChecked(True)
+            self.rtmp_mode_group.blockSignals(False)
+            self._save_setting("rtmp_mode", "remote")
+            QTimer.singleShot(250, self._rtmp_start)
+        else:
+            self.rtmp_mode_group.blockSignals(True)
+            self.rtmp_mode_local.setChecked(True)
+            self.rtmp_mode_group.blockSignals(False)
+            self._save_setting("rtmp_mode", "local")
+            self.rtmp_info.setText("Salidas detenidas • ningún destino está activo")
+        self._refresh_output_monitor()
+        self._status(f"Destinos guardados: {len(profiles)} • {'activando' if enabled else 'todos desactivados'}")
 
     def open_logo(self):
         from .dialogs_extra import LogoDialog

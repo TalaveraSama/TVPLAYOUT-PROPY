@@ -2,11 +2,43 @@
 from pathlib import Path
 import os
 import shutil
+import sys
 
-ROOT = Path(__file__).resolve().parent.parent
+
+def _runtime_root():
+    """Carpeta persistente de la aplicación, también dentro de PyInstaller.
+
+    En modo desarrollo ``__file__`` apunta al checkout. En un ejecutable
+    congelado no se debe usar ``sys._MEIPASS``: en onefile es temporal y se
+    borra al cerrar, lo que perdería la base, logs y cache. La carpeta del
+    ejecutable es la raíz portable estable.
+    """
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent.parent
+
+
+ROOT = _runtime_root()
 APP_NAME = "TVPlayout PRO"
-APP_VERSION = "V22"
+APP_VERSION = "V24.0.2.10"
 IS_WINDOWS = os.name == "nt"
+
+
+def _first_asset(*paths):
+    for path in paths:
+        path = Path(path)
+        if path.is_file():
+            return path
+    return None
+
+
+# El usuario puede colocar su identidad visual sin modificar el código.
+# logo.ico se usa como icono del EXE cuando existe; logo.png como icono de la
+# ventana y como ruta sugerida para el logo de salida RTMP.
+APP_ICON_PATH = _first_asset(ROOT / "assets" / "logo.png", ROOT / "logo.png",
+                             ROOT / "assets" / "logo.ico", ROOT / "logo.ico")
+APP_EXE_ICON_PATH = _first_asset(ROOT / "assets" / "logo.ico", ROOT / "logo.ico")
+DEFAULT_LOGO_PATH = _first_asset(ROOT / "assets" / "logo.png", ROOT / "logo.png")
 
 
 def _load_env_file():
@@ -111,6 +143,10 @@ def find_binary(name: str, env_name: str = "") -> str:
 
 MPV_PATH = find_binary("mpv", "MPV_PATH")
 FFMPEG_PATH = find_binary("ffmpeg", "FFMPEG_PATH")
+# NDI no viene habilitado en la mayoría de builds genéricas de FFmpeg.
+# Permite colocar una build separada como ffmpeg-ndi.exe sin cambiar la
+# salida RTMP/SRT estable.
+FFMPEG_NDI_PATH = find_binary("ffmpeg-ndi", "FFMPEG_NDI_PATH")
 FFPROBE_PATH = ""
 if FFMPEG_PATH:
     _probe = Path(FFMPEG_PATH).with_name("ffprobe.exe" if IS_WINDOWS else "ffprobe")
