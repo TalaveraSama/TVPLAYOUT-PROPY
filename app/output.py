@@ -74,7 +74,7 @@ class OutputWorker(QThread):
     def __init__(self, ffmpeg, items, url, resolution, fps, encoder, bitrate,
                  audio_preference="AUTO", subtitle_preference="OFF", subtitle_burn=False,
                  audio_bitrate=192, loop=True, start_index=0, start_offset=0.0, extra_args="", logo=None,
-                 program_overlay=None, program_interval=1080.0, program_duration=15.0, protocol=""):
+                 program_overlay=None, program_interval=1080.0, program_duration=15.0, protocol="", monitor_feed_url=""):
         super().__init__()
         self.ffmpeg = ffmpeg
         self.items = self._norm_items(items)
@@ -96,6 +96,10 @@ class OutputWorker(QThread):
         self.program_overlay = program_overlay or ""
         self.program_interval = max(1.0, float(program_interval or 1080.0))
         self.program_duration = max(0.0, float(program_duration or 15.0))
+        # Feed local MPEG-TS opcional: contiene exactamente el vídeo/audio
+        # ya procesado que se envía al destino, incluido el subtítulo quemado.
+        # Un reproductor externo puede usarlo como monitor real del programa.
+        self.monitor_feed_url = str(monitor_feed_url or "").strip()
         self.proc = None
         self.stop_requested = False
         self._lock = threading.RLock()
@@ -357,10 +361,20 @@ class OutputWorker(QThread):
         if self.extra_args.strip():
             cmd += self.extra_args.split()
         if self.protocol == "RTMP" or low.startswith(("rtmp://", "rtmps://")):
-            cmd += ["-flvflags", "no_duration_filesize", "-f", "flv", self.url]
+            if self.monitor_feed_url:
+                # Tee después de los filtros/encoder: el monitor externo ve
+                # exactamente la señal de programa, no una segunda decodificación.
+                tee = (f"[f=flv:onfail=ignore]{self.url}|"
+                       f"[f=mpegts:onfail=ignore]{self.monitor_feed_url}")
+                cmd += ["-flvflags", "no_duration_filesize", "-f", "tee", tee]
+            else:
+                cmd += ["-flvflags", "no_duration_filesize", "-f", "flv", self.url]
         elif self.protocol == "NDI":
             ndi_name = self.url.removeprefix("ndi://") or "TVPlayout PRO"
             cmd += ["-f", "libndi_newtek", ndi_name]
+        elif self.monitor_feed_url:
+            tee = f"[f=mpegts:onfail=ignore]{self.url}|[f=mpegts:onfail=ignore]{self.monitor_feed_url}"
+            cmd += ["-f", "tee", tee]
         else:
             cmd += ["-f", "mpegts", self.url]
         return cmd, label, aid, sid
@@ -450,11 +464,20 @@ class OutputWorker(QThread):
 
     @staticmethod
     def _terminate(proc):
-        if proc and proc.poll() is None:
-            try:
-                proc.terminate()
-            except Exception:  # noqa: BLE001
-                pass
+        """Cierra FFmpeg de forma acotada para que un cambio en vivo no cuelgue RTMP."""
+        if not proc or proc.poll() is not None:
+            return
+        try:
+            proc.terminate()
+            proc.wait(timeout=2.5)
+            return
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            proc.kill()
+            proc.wait(timeout=2.0)
+        except Exception:  # noqa: BLE001
+            pass
 
     @property
     def current_index(self):
@@ -679,6 +702,7 @@ class MultiOutputManager(QObject):
                            start_index=start_index, start_offset=start_offset, extra_args=extra_args, logo=logo,
                            program_overlay=program_overlay, program_interval=program_interval,
                            program_duration=program_duration)
+        self.monitor_feed_url = str(monitor_feed_url or "").strip()
         self.workers = []
         self._ended_workers = set()
         self.ndi_senders = []
@@ -694,12 +718,13 @@ class MultiOutputManager(QObject):
         except (OSError, subprocess.SubprocessError):
             return False
 
-    def _make_worker(self, profile):
+    def _make_worker(self, profile, monitor_feed_url=""):
         protocol = str(profile.get("protocol", "RTMP")).upper()
         target = str(profile.get("target") or profile.get("url") or "").strip()
         name = str(profile.get("name") or protocol)
         binary = self.ndi_ffmpeg if protocol == "NDI" else self.ffmpeg
-        worker = OutputWorker(binary, self.items, target, protocol=protocol, **self.common)
+        worker = OutputWorker(binary, self.items, target, protocol=protocol,
+                              monitor_feed_url=monitor_feed_url, **self.common)
         worker._profile_name = name
         worker.state.connect(lambda ok, msg, n=name: self._state_from_worker(ok, msg, n))
         worker.log.connect(lambda msg, n=name: self.log.emit(f"[{n}] {msg}"))
@@ -722,6 +747,7 @@ class MultiOutputManager(QObject):
         self._ended_workers = set()
         self.ndi_senders = []
         self._ndi_connections = []
+        monitor_assigned = False
         for profile in self.profiles:
             protocol = str(profile.get("protocol", "RTMP")).upper()
             name = str(profile.get("name") or protocol)
@@ -744,7 +770,9 @@ class MultiOutputManager(QObject):
                 self.state.emit(True, f"{name}: NDI directo activo")
                 self.log.emit(f"[{name}] NDI Runtime directo activo; FFmpeg no se utiliza")
                 continue
-            worker = self._make_worker(profile)
+            feed = self.monitor_feed_url if (self.monitor_feed_url and not monitor_assigned) else ""
+            worker = self._make_worker(profile, feed)
+            monitor_assigned = monitor_assigned or bool(feed)
             self.workers.append(worker)
             worker.start()
         if not self.workers and not self.ndi_senders:

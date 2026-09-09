@@ -7,6 +7,7 @@ reloj de estación y bloqueo.
 import os
 import subprocess
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -54,6 +55,7 @@ DEFAULT_SETTINGS = {
     "midroll_enabled": False, "midroll_category": "Publicidad", "midroll_interval_minutes": 15,
     "identifiers_enabled": False, "identifier_in_path": "", "identifier_out_path": "",
     "tmdb_enabled": False, "tmdb_api_key": "", "tmdb_interval_minutes": 18, "tmdb_duration_seconds": 15,
+    "monitor_mode": "pyav", "monitor_player": "VLC", "monitor_player_path": "", "monitor_feed_port": 39000,
     "restore_playlist": True, "autoplay": False, "probe_on_scan": True,
     "mode": "auto", "loop": True, "exact_time": True, "autofill": False, "tandas": False, "autoscroll": True,
     "volume": 100, "muted": False, "emergency_clip": "", "splitter": [1120, 430],
@@ -177,6 +179,9 @@ class MainWindow(QMainWindow):
         self.scanner = None
         self.prober = None
         self.output = None
+        self._program_monitor_proc = None
+        self._program_monitor_feed_url = ""
+        self._program_monitor_forced_mute = False
         self._locked = False
         self._last_rtmp_line = ""
         self._start_times = []
@@ -1770,6 +1775,75 @@ class MainWindow(QMainWindow):
                 profiles.append({"enabled": True, "name": f"{protocol} principal", "protocol": protocol, "target": legacy})
         return profiles
 
+    def _program_monitor_url(self):
+        if str(self.settings.get("monitor_mode", "pyav")) != "program_feed":
+            return ""
+        try:
+            port = max(1024, min(65535, int(self.settings.get("monitor_feed_port", 39000))))
+        except (TypeError, ValueError):
+            port = 39000
+        return f"udp://127.0.0.1:{port}?pkt_size=1316&fifo_size=1000000&overrun_nonfatal=1"
+
+    def _stop_program_monitor(self):
+        proc = self._program_monitor_proc
+        self._program_monitor_proc = None
+        if proc is not None and proc.poll() is None:
+            try:
+                proc.terminate()
+                proc.wait(timeout=2)
+            except Exception:  # noqa: BLE001
+                try:
+                    proc.kill()
+                except Exception:  # noqa: BLE001
+                    pass
+        self._program_monitor_feed_url = ""
+        if self._program_monitor_forced_mute:
+            self._program_monitor_forced_mute = False
+            try:
+                self.player.set_mute(bool(self.settings.get("muted", False)))
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _start_program_monitor(self, feed_url):
+        """Abre VLC/mpv/ffplay sobre el feed local ya codificado por FFmpeg."""
+        self._stop_program_monitor()
+        player = str(self.settings.get("monitor_player", "VLC") or "VLC").strip().lower()
+        executable = str(self.settings.get("monitor_player_path", "") or "").strip()
+        if not executable or not os.path.isfile(executable):
+            self._status("Monitor FFmpeg no iniciado • configura VLC, mpv o ffplay en Ajustes")
+            self.video.set_active(False, "MONITOR FFmpeg\\nCONFIGURA REPRODUCTOR")
+            return False
+        if player == "vlc":
+            cmd = [executable, "--intf=dummy", "--no-video-title-show", "--network-caching=100",
+                   "--quiet", feed_url]
+        elif player == "mpv":
+            cmd = [executable, "--force-window=yes", "--title=TVPlayout FFmpeg Monitor",
+                   "--no-terminal", "--keep-open=yes", "--cache=yes", "--demuxer-lavf-format=mpegts",
+                   feed_url]
+        else:
+            cmd = [executable, "-window_title", "TVPlayout FFmpeg Monitor", "-fflags", "nobuffer",
+                   "-flags", "low_delay", "-i", feed_url]
+        try:
+            self._program_monitor_proc = subprocess.Popen(
+                cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except OSError as exc:
+            self._status(f"Monitor FFmpeg no iniciado • {exc}")
+            return False
+        self._program_monitor_feed_url = feed_url
+        # No duplicar el audio: en este modo el sonido audible pertenece al
+        # feed FFmpeg que está reproduciendo el monitor externo.
+        try:
+            self.player.set_mute(True)
+            self._program_monitor_forced_mute = True
+        except Exception:  # noqa: BLE001
+            pass
+        self.video.set_active(False, f"MONITOR EXTERNO\\n{player.upper()}")
+        self._status(f"Monitor FFmpeg activo • {player.upper()} • salida exacta con subtítulos/audio")
+        log.info("Monitor de programa iniciado: %s", subprocess.list2cmdline(cmd))
+        return True
+
     def _rtmp_start(self):
         """Arranca todos los destinos IP habilitados en paralelo."""
         if self._locked:
@@ -1801,6 +1875,11 @@ class MainWindow(QMainWindow):
         # self.player._time directamente, que podía quedar en 0 si mpv no
         # emitía property-change, y generaba un loop de drift infinito.
         mpv_time = float(self.ctrl.elapsed or 0.0)
+        monitor_feed_url = ""
+        if str(s.get("monitor_mode", "pyav")) == "program_feed":
+            candidate_feed = self._program_monitor_url()
+            if candidate_feed and self._start_program_monitor(candidate_feed):
+                monitor_feed_url = candidate_feed
         self.output = MultiOutputManager(FFMPEG_PATH, profiles, self.ctrl.export_items(), s.get("resolution", "1920x1080"), s.get("fps", "29.97"),
                                           s.get("encoder", "AUTO"), int(s.get("bitrate", 6000)), s.get("audio_pref", AUDIO_PREFS[0]),
                                           s.get("sub_pref", "OFF"),
@@ -1811,7 +1890,8 @@ class MainWindow(QMainWindow):
                                           program_overlay=self._tmdb_overlay_path,
                                           program_interval=max(1, int(s.get("tmdb_interval_minutes", 18))) * 60.0,
                                           program_duration=max(1, int(s.get("tmdb_duration_seconds", 15))),
-                                          ndi_ffmpeg=FFMPEG_NDI_PATH, ndi_source=self.player, parent=self)
+                                          ndi_ffmpeg=FFMPEG_NDI_PATH, ndi_source=self.player, parent=self,
+                                          monitor_feed_url=monitor_feed_url)
         log.info("Salidas IP arrancadas (%d destinos) en offset %.2fs", len(profiles), mpv_time)
         self.output.state.connect(self._rtmp_state)
         self.output.log.connect(self._rtmp_log)
@@ -1825,6 +1905,8 @@ class MainWindow(QMainWindow):
         """v22.2.2: detiene el RTMP si está corriendo."""
         if self.output and self.output.isRunning():
             self.output.stop()
+        else:
+            self._stop_program_monitor()
 
     def _logo_config(self):
         s = self.settings
@@ -1895,6 +1977,7 @@ class MainWindow(QMainWindow):
             self._status(line[:200])
 
     def _rtmp_finished(self):
+        self._stop_program_monitor()
         self.output = None
         self.rtmp_chip.set_active(False)
         self._set_rtmp_chip("OFF")
@@ -2076,6 +2159,8 @@ class MainWindow(QMainWindow):
             changed_output = any(self.settings.get(k) != vals[k] for k in ("resolution", "fps", "encoder", "bitrate", "audio_bitrate", "subtitle_burn", "ffmpeg_extra", "rtmp_url"))
             changed_player = any(self.settings.get(k) != vals[k] for k in ("hwdec", "audio_device"))
             changed_tracks = any(self.settings.get(k) != vals[k] for k in ("audio_pref", "sub_pref"))
+            changed_monitor = any(self.settings.get(k) != vals[k] for k in
+                                  ("monitor_mode", "monitor_player", "monitor_player_path", "monitor_feed_port"))
             for k, v in vals.items():
                 if self.settings.get(k) != v:
                     self._save_setting(k, v)
@@ -2089,8 +2174,10 @@ class MainWindow(QMainWindow):
             self._status("Ajustes guardados" + (" • idioma/subtítulo aplicado al aire" if changed_tracks else ""))
             if changed_player and self.player.running:
                 self._status("Ajustes guardados • los cambios de mpv se aplican al siguiente evento tras STOP")
-            if changed_output and self.output and self.output.isRunning():
-                if QMessageBox.question(self, "RTMP", "La salida RTMP está activa. ¿Reiniciarla con los nuevos ajustes?") == QMessageBox.Yes:
+            if changed_monitor and str(vals.get("monitor_mode", "pyav")) != "program_feed":
+                self._stop_program_monitor()
+            if (changed_output or changed_monitor) and self.output and self.output.isRunning():
+                if QMessageBox.question(self, "RTMP", "La salida está activa. ¿Reiniciarla con los nuevos ajustes y monitor de programa?") == QMessageBox.Yes:
                     self.output.stop()
                     QTimer.singleShot(1500, self._rtmp_start)
 

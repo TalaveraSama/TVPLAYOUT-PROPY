@@ -179,6 +179,18 @@ def test_windows_fit_tv_logical_resolution_and_dialogs_can_scroll():
     assert "setSizeGripEnabled(True)" in dialogs and "setSizeGripEnabled(True)" in extra
 
 
+def test_program_monitor_uses_the_encoded_ffmpeg_feed():
+    main = _read("app", "main_window.py")
+    output = _read("app", "output.py")
+    dialogs = _read("app", "dialogs.py")
+    assert "monitor_mode" in main and "program_feed" in main
+    assert "_start_program_monitor" in main and "_program_monitor_url" in main
+    assert "monitor_feed_url" in output and '"-f", "tee"' in output
+    assert "onfail=ignore" in output and "proc.wait(timeout=2.5)" in output
+    assert "Programa FFmpeg → reproductor externo" in dialogs
+    assert "monitor_player_path" in dialogs
+
+
 if __name__ == "__main__":
     tests = [(name, fn) for name, fn in globals().items() if name.startswith("test_") and callable(fn)]
     failed = 0

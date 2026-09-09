@@ -144,6 +144,11 @@ tests/                  pruebas estáticas y de continuidad del playout
 
 ## Registro de cambios
 
+### V24.0.2.22
+- Se añade el modo Monitor de programa: FFmpeg duplica la señal codificada a un feed local y VLC/mpv/ffplay puede mostrar exactamente los subtítulos y audio que salen por RTMP/SRT.
+- PyAV/libav continúa como monitor predeterminado.
+- El cierre de FFmpeg en cambios de audio/subtítulos ahora espera y fuerza el proceso si es necesario para evitar que RTMP quede colgado.
+
 ### V24.0.2.21
 - El botón TMDB de Biblioteca escanea ahora toda la biblioteca mediante una cola limitada.
 - El clic derecho permite una búsqueda manual por película con título corregido.

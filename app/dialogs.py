@@ -838,6 +838,23 @@ class SettingsDialog(BaseDialog):
         self.hwdec.setCurrentText(self.settings.get("hwdec", "auto-safe"))
         self.audio_device = QLineEdit(self.settings.get("audio_device", ""))
         self.audio_device.setPlaceholderText("vacío = predeterminado (ej. wasapi/{guid})")
+        self.monitor_mode = QComboBox()
+        self.monitor_mode.addItem("PyAV/libav (predeterminado)", "pyav")
+        self.monitor_mode.addItem("Programa FFmpeg → reproductor externo", "program_feed")
+        self.monitor_mode.setCurrentIndex(max(0, self.monitor_mode.findData(self.settings.get("monitor_mode", "pyav"))))
+        self.monitor_player = QComboBox()
+        self.monitor_player.addItems(["VLC", "mpv", "ffplay"])
+        self.monitor_player.setCurrentText(str(self.settings.get("monitor_player", "VLC")))
+        self.monitor_player_path = QLineEdit(self.settings.get("monitor_player_path", ""))
+        self.monitor_player_path.setPlaceholderText("vlc.exe, mpv.exe o ffplay.exe")
+        self.monitor_player_browse = QPushButton("Buscar…")
+        self.monitor_player_browse.clicked.connect(self._choose_monitor_player)
+        monitor_path_row = QHBoxLayout()
+        monitor_path_row.addWidget(self.monitor_player_path, 1)
+        monitor_path_row.addWidget(self.monitor_player_browse)
+        self.monitor_feed_port = QSpinBox()
+        self.monitor_feed_port.setRange(1024, 65535)
+        self.monitor_feed_port.setValue(int(self.settings.get("monitor_feed_port", 39000)))
         self.autofill_cat = QComboBox()
         self.autofill_cat.addItem("Todas")
         self.autofill_cat.addItems(parent.db.categories())
@@ -900,6 +917,11 @@ class SettingsDialog(BaseDialog):
         f2.addRow("", _note("Si hay un evento al aire, guardar estos valores cambia la pista en vivo; puede haber un corte IP breve."))
         f2.addRow("Decodificación HW (mpv)", self.hwdec)
         f2.addRow("Dispositivo de audio (mpv)", self.audio_device)
+        f2.addRow("Monitor de programa", self.monitor_mode)
+        f2.addRow("Reproductor monitor", self.monitor_player)
+        f2.addRow("Ejecutable monitor", monitor_path_row)
+        f2.addRow("Puerto feed local", self.monitor_feed_port)
+        f2.addRow("", _note("El modo Programa FFmpeg muestra en VLC/mpv/ffplay la misma señal codificada que sale por RTMP/SRT, incluyendo subtítulos y audio. PyAV sigue siendo el modo predeterminado."))
         f2.addRow("Autofill: categoría", self.autofill_cat)
         f2.addRow("Autofill: cantidad", self.autofill_n)
         f2.addRow("Tandas: categoría", self.tanda_cat)
@@ -947,6 +969,14 @@ class SettingsDialog(BaseDialog):
         v.addLayout(bottom)
         self.setModal(True)
 
+    def _choose_monitor_player(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Seleccionar reproductor del monitor", "",
+            "Ejecutables (*.exe);;Todos los archivos (*.*)",
+        )
+        if path:
+            self.monitor_player_path.setText(path)
+
     def _choose_identifier(self, field):
         path, _ = QFileDialog.getOpenFileName(
             self, "Seleccionar identificador de aproximadamente 8 segundos", "",
@@ -970,6 +1000,10 @@ class SettingsDialog(BaseDialog):
             "sub_pref": self.sub.currentText(),
             "hwdec": self.hwdec.currentText(),
             "audio_device": self.audio_device.text().strip(),
+            "monitor_mode": self.monitor_mode.currentData() or "pyav",
+            "monitor_player": self.monitor_player.currentText(),
+            "monitor_player_path": self.monitor_player_path.text().strip(),
+            "monitor_feed_port": self.monitor_feed_port.value(),
             "autofill_category": self.autofill_cat.currentText(),
             "autofill_count": self.autofill_n.value(),
             "tandas_category": self.tanda_cat.currentText(),
