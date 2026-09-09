@@ -483,6 +483,7 @@ def test_playlist_trim_is_persisted_and_applied_to_both_outputs():
     assert "trim_bounds" in playout and "start=trim_start, end=trim_end" in playout
     assert "start_at=self._trim_start" in player and "self.end_at" in player
     assert '"-t", f"{remaining_duration:.3f}"' in output
+    assert "MultiOutputManager" in output and "libndi_newtek" in output
     assert "QDoubleSpinBox" in dialog and "Restablecer corte" in dialog
     assert "trim_end" in dialog and "source_duration - trim_end" in dialog
 
@@ -499,6 +500,17 @@ def test_portable_build_keeps_runtime_root_and_external_tools_at_exe_level():
     assert "rmdir /s /q \"%~dp0build\"" in build
     assert "collect_all(\"av\")" in spec and "COLLECT(" in spec
     assert "APP_EXE_ICON" in spec and "TVPlayoutPRO.exe" in launcher
+
+
+def test_output_profiles_cover_rtmp_srt_ndi():
+    """La configuración permite varios destinos independientes y los tres protocolos."""
+    dialog = _read(os.path.join(REPO, "app", "dialogs_extra.py"))
+    main = _read(WIN)
+    assert "class OutputProfilesDialog" in dialog
+    assert '["RTMP", "SRT", "NDI"]' in dialog
+    assert '"outputs": []' in main
+    assert "MultiOutputManager" in main
+    assert "open_outputs" in main
 
 
 def test_logo_uses_professional_safe_area_guides():

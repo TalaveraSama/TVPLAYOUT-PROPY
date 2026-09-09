@@ -26,7 +26,7 @@ from .db import DB
 from .scanner import Scanner
 from .prober import ProbeWorker
 from .pyav_player import PyAVPlayer
-from .output import OutputWorker
+from .output import MultiOutputManager
 from .scheduler import SchedulerService
 from .playout import (PlayoutController, make_item, ST_ONAIR, ST_READY, ST_AIRED, ST_CUT, ST_ERROR, ST_SKIPPED,
                       ST_PENDING, DONE_STATES)
@@ -46,7 +46,7 @@ STATUS_LABEL = {ST_PENDING: "", ST_READY: "LISTO", ST_ONAIR: "AL AIRE", ST_AIRED
                 ST_ERROR: "ERROR", ST_SKIPPED: "OMITIDO"}
 
 DEFAULT_SETTINGS = {
-    "rtmp_url": "", "resolution": "1920x1080", "fps": "29.97", "encoder": "AUTO", "bitrate": 6000, "audio_bitrate": 192,
+    "rtmp_url": "", "outputs": [], "resolution": "1920x1080", "fps": "29.97", "encoder": "AUTO", "bitrate": 6000, "audio_bitrate": 192,
     "subtitle_burn": False, "ffmpeg_extra": "", "rtmp_autostart": False, "rtmp_mode": "local",
     "audio_pref": AUDIO_PREFS[0], "sub_pref": "OFF", "hwdec": "auto-safe", "audio_device": "",
     "autofill_category": "Todas", "autofill_count": 10, "tandas_category": "Publicidad", "tandas_count": 2,
@@ -592,8 +592,8 @@ class MainWindow(QMainWindow):
         funcs = [("Playlist\nManager", self.open_playlist_manager), ("Biblioteca", lambda: self.tabs.setCurrentIndex(2)),
                  ("Programador", self.open_scheduler), ("Registros\nAs-Run", self.open_logs),
                  ("Fuentes /\nCategorías", self.open_sources), ("Ajustes del\nsistema", self.open_settings),
-                 ("Escanear\nbiblioteca", self.start_scan), ("Logo / CG\n(RTMP)", self.open_logo),
-                 ("Dispositivos", self.open_devices)]
+                 ("Salidas IP\nRTMP/SRT/NDI", self.open_outputs), ("Escanear\nbiblioteca", self.start_scan),
+                 ("Logo / CG\n(RTMP)", self.open_logo), ("Dispositivos", self.open_devices)]
         self._fn_buttons = []
         for i, (text, slot) in enumerate(funcs):
             b = _btn(text, slot, "funcBtn")
@@ -602,7 +602,7 @@ class MainWindow(QMainWindow):
             self._fn_buttons.append(b)
         self.emergency_btn = _btn("🚨 EMERGENCIA", self.emergency, "danger", "Emite inmediatamente el clip de emergencia configurado")
         self.emergency_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        g.addWidget(self.emergency_btn, 3, 0, 1, 3)
+        g.addWidget(self.emergency_btn, (len(funcs) + 2) // 3, 0, 1, 3)
         fv.addLayout(g)
         rv.addWidget(fn)
 
@@ -611,7 +611,7 @@ class MainWindow(QMainWindow):
         ov = QVBoxLayout(out)
         ov.setContentsMargins(0, 0, 0, 6)
         ov.setSpacing(4)
-        ov.addWidget(_section("SALIDA RTMP / IP STREAMING"))
+        ov.addWidget(_section("SALIDAS IP · RTMP / SRT / NDI"))
         r1 = QHBoxLayout()
         r1.setContentsMargins(6, 0, 6, 0)
         self.rtmp_url = QLineEdit(self.settings.get("rtmp_url", ""))
@@ -626,10 +626,10 @@ class MainWindow(QMainWindow):
         r_modes.setSpacing(10)
         self.rtmp_mode_group = QButtonGroup(self)
         self.rtmp_mode_local = QRadioButton("Solo monitor local")
-        self.rtmp_mode_remote = QRadioButton("RTMP Remoto")
-        self.rtmp_mode_ndi = QRadioButton("RTMP Local (NDI)")
-        self.rtmp_mode_ndi.setEnabled(False)  # Próximamente
-        self.rtmp_mode_ndi.setToolTip("Próximamente")
+        self.rtmp_mode_remote = QRadioButton("Salidas IP activas")
+        self.rtmp_mode_ndi = QRadioButton("NDI")
+        self.rtmp_mode_ndi.setEnabled(False)
+        self.rtmp_mode_ndi.setToolTip("Configura NDI en Salidas IP; el modo NDI directo requiere libndi_newtek")
         for rb in (self.rtmp_mode_local, self.rtmp_mode_remote, self.rtmp_mode_ndi):
             self.rtmp_mode_group.addButton(rb)
             r_modes.addWidget(rb)
@@ -1577,22 +1577,39 @@ class MainWindow(QMainWindow):
         elif new_mode == "remote" and (not self.output or not self.output.isRunning()):
             self._rtmp_start()
 
+    def _output_profiles(self):
+        """Devuelve destinos nuevos y convierte la URL única antigua."""
+        profiles = []
+        for profile in self.settings.get("outputs") or []:
+            if not isinstance(profile, dict) or not profile.get("enabled", True):
+                continue
+            target = str(profile.get("target") or profile.get("url") or "").strip()
+            if target:
+                profiles.append({"enabled": True, "name": str(profile.get("name") or profile.get("protocol", "RTMP")),
+                                 "protocol": str(profile.get("protocol", "RTMP")).upper(), "target": target})
+        if not profiles:
+            legacy = self.rtmp_url.text().strip() or str(self.settings.get("rtmp_url", "")).strip()
+            if legacy:
+                protocol = "SRT" if legacy.lower().startswith("srt://") else "RTMP"
+                profiles.append({"enabled": True, "name": f"{protocol} principal", "protocol": protocol, "target": legacy})
+        return profiles
+
     def _rtmp_start(self):
-        """v22.2.2: arranca el RTMP en modo 'remote'."""
+        """Arranca todos los destinos IP habilitados en paralelo."""
         if self._locked:
             return
-        url = self.rtmp_url.text().strip()
-        if not url:
-            QMessageBox.warning(self, "RTMP", "Escribe la URL RTMP (rtmp://servidor/app/clave).")
+        profiles = self._output_profiles()
+        if not profiles:
+            QMessageBox.warning(self, "Salidas IP", "Configura al menos un destino RTMP, SRT o NDI en Salidas IP.")
             self.rtmp_mode_local.setChecked(True)
             return
-        self._save_setting("rtmp_url", url)
+        self._save_setting("outputs", profiles)
         if not FFMPEG_PATH:
-            QMessageBox.warning(self, "RTMP", "No se encontró ffmpeg.exe. Colócalo en la raíz del proyecto.")
+            QMessageBox.warning(self, "Salidas IP", "No se encontró ffmpeg.exe. Colócalo en la raíz del proyecto.")
             self.rtmp_mode_local.setChecked(True)
             return
         if not self.ctrl.items:
-            QMessageBox.warning(self, "RTMP", "La playlist está vacía.")
+            QMessageBox.warning(self, "Salidas IP", "La playlist está vacía.")
             self.rtmp_mode_local.setChecked(True)
             return
         if not self.ctrl.is_on_air:
@@ -1607,12 +1624,12 @@ class MainWindow(QMainWindow):
         # self.player._time directamente, que podía quedar en 0 si mpv no
         # emitía property-change, y generaba un loop de drift infinito.
         mpv_time = float(self.ctrl.elapsed or 0.0)
-        self.output = OutputWorker(FFMPEG_PATH, self.ctrl.export_items(), url, s.get("resolution", "1920x1080"), s.get("fps", "29.97"),
-                                   s.get("encoder", "AUTO"), int(s.get("bitrate", 6000)), s.get("audio_pref", AUDIO_PREFS[0]),
-                                   s.get("sub_pref", "OFF"), bool(s.get("subtitle_burn", False)), int(s.get("audio_bitrate", 192)),
-                                   loop=True, start_index=max(0, self.ctrl.onair), start_offset=mpv_time,
-                                   extra_args=s.get("ffmpeg_extra", ""), logo=self._logo_config())
-        log.info("RTMP arrancado en offset %.2fs (mpv local: %.2fs)", mpv_time, mpv_time)
+        self.output = MultiOutputManager(FFMPEG_PATH, profiles, self.ctrl.export_items(), s.get("resolution", "1920x1080"), s.get("fps", "29.97"),
+                                          s.get("encoder", "AUTO"), int(s.get("bitrate", 6000)), s.get("audio_pref", AUDIO_PREFS[0]),
+                                          s.get("sub_pref", "OFF"), bool(s.get("subtitle_burn", False)), int(s.get("audio_bitrate", 192)),
+                                          loop=True, start_index=max(0, self.ctrl.onair), start_offset=mpv_time,
+                                          extra_args=s.get("ffmpeg_extra", ""), logo=self._logo_config(), parent=self)
+        log.info("Salidas IP arrancadas (%d destinos) en offset %.2fs", len(profiles), mpv_time)
         self.output.state.connect(self._rtmp_state)
         self.output.log.connect(self._rtmp_log)
         self.output.ended.connect(self._rtmp_finished)
@@ -1641,9 +1658,10 @@ class MainWindow(QMainWindow):
         elif "ERROR" in msg:
             self.rtmp_info.setText(msg)
             log.error(msg)
-            # v22.2.2: si el RTMP falla, volver a modo local automáticamente
-            # para no dejar al operador con un modo "remote" que no anda.
-            self.rtmp_mode_local.setChecked(True)
+            # Una salida puede fallar sin tumbar las demás. Solo volvemos al
+            # monitor local cuando ya no queda ningún destino activo.
+            if not self.output or not self.output.isRunning():
+                self.rtmp_mode_local.setChecked(True)
 
     def _set_rtmp_chip(self, text):
         self.rtmp_chip.setToolTip(text)
@@ -1781,6 +1799,18 @@ class MainWindow(QMainWindow):
                 if QMessageBox.question(self, "RTMP", "La salida RTMP está activa. ¿Reiniciarla con los nuevos ajustes?") == QMessageBox.Yes:
                     self.output.stop()
                     QTimer.singleShot(1500, self._rtmp_start)
+
+    def open_outputs(self):
+        from .dialogs_extra import OutputProfilesDialog
+        d = OutputProfilesDialog(self, self.settings)
+        if d.exec() == QDialog.Accepted:
+            profiles = d.values()
+            self._save_setting("outputs", profiles)
+            # Mantener compatibilidad con la URL única de versiones anteriores.
+            if profiles:
+                self.rtmp_url.setText(str(profiles[0].get("target", "")))
+                self._save_setting("rtmp_url", profiles[0].get("target", ""))
+            self._status(f"Destinos guardados: {len(profiles)} (RTMP/SRT/NDI)")
 
     def open_logo(self):
         from .dialogs_extra import LogoDialog

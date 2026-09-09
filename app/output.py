@@ -1,9 +1,8 @@
-"""Motor de salida RTMP/SRT/UDP con FFmpeg.
+"""Motor de salida RTMP/SRT/NDI/UDP con FFmpeg.
 
-Emite la playlist clip a clip por la misma URL. El playout local (mpv) es el «master»: cada vez que
-empieza un evento, la salida salta al mismo evento (`sync_items(..., force_jump=True)`). Si un clip
-termina en FFmpeg antes de recibir la orden del master, espera un breve periodo de gracia y después
-continúa solo con el siguiente evento (red de seguridad para la continuidad 24/7).
+Emite la playlist clip a clip. Cada destino puede tener su propio proceso
+FFmpeg y el playout local PyAV es el master: cuando empieza un evento, todas
+las salidas saltan al mismo evento (`sync_items(..., force_jump=True)`).
 """
 import json
 import os
@@ -12,7 +11,7 @@ import subprocess
 import threading
 import time
 
-from PySide6.QtCore import QThread, Signal
+from PySide6.QtCore import QThread, Signal, QObject
 
 from . import logger
 from .prober import pick_audio, pick_subtitle
@@ -73,7 +72,7 @@ class OutputWorker(QThread):
 
     def __init__(self, ffmpeg, items, url, resolution, fps, encoder, bitrate,
                  audio_preference="AUTO", subtitle_preference="OFF", subtitle_burn=False,
-                 audio_bitrate=192, loop=True, start_index=0, start_offset=0.0, extra_args="", logo=None):
+                 audio_bitrate=192, loop=True, start_index=0, start_offset=0.0, extra_args="", logo=None, protocol=""):
         super().__init__()
         self.ffmpeg = ffmpeg
         self.items = self._norm_items(items)
@@ -90,6 +89,7 @@ class OutputWorker(QThread):
         self.start_index = int(start_index or 0)
         self.start_offset = float(start_offset or 0)
         self.extra_args = extra_args or ""
+        self.protocol = (protocol or self._infer_protocol(url)).upper()
         self.logo = logo
         self.proc = None
         self.stop_requested = False
@@ -180,6 +180,17 @@ class OutputWorker(QThread):
             return False
 
     @staticmethod
+    def _infer_protocol(url):
+        low = str(url or "").lower()
+        if low.startswith(("rtmp://", "rtmps://")):
+            return "RTMP"
+        if low.startswith("srt://"):
+            return "SRT"
+        if low.startswith("ndi://"):
+            return "NDI"
+        return "UDP"
+
+    @staticmethod
     def _tracks_of(item):
         tracks = item.get("tracks") or []
         if isinstance(tracks, str):
@@ -196,7 +207,11 @@ class OutputWorker(QThread):
         if not source or not os.path.isfile(source):
             raise RuntimeError("Archivo no encontrado: " + str(source))
         low = self.url.lower()
-        if not low.startswith(("rtmp://", "rtmps://", "srt://", "udp://")):
+        if self.protocol == "NDI":
+            if not self.url or "://" in self.url and not low.startswith("ndi://"):
+                # El destino NDI es un nombre visible en la red, no una URL.
+                raise RuntimeError("El destino NDI debe tener un nombre, por ejemplo TVPlayout PRO")
+        elif not low.startswith(("rtmp://", "rtmps://", "srt://", "udp://")):
             raise RuntimeError("La salida debe comenzar por rtmp://, rtmps://, srt:// o udp://")
         try:
             w, h = [int(x) for x in self.resolution.lower().split("x", 1)]
@@ -269,8 +284,11 @@ class OutputWorker(QThread):
             cmd += ["-t", f"{remaining_duration:.3f}"]
         if self.extra_args.strip():
             cmd += self.extra_args.split()
-        if low.startswith(("rtmp://", "rtmps://")):
+        if self.protocol == "RTMP" or low.startswith(("rtmp://", "rtmps://")):
             cmd += ["-flvflags", "no_duration_filesize", "-f", "flv", self.url]
+        elif self.protocol == "NDI":
+            ndi_name = self.url.removeprefix("ndi://") or "TVPlayout PRO"
+            cmd += ["-f", "libndi_newtek", ndi_name]
         else:
             cmd += ["-f", "mpegts", self.url]
         return cmd, label, aid, sid
@@ -308,7 +326,7 @@ class OutputWorker(QThread):
             self._jump.set()
             proc = self.proc
         self._terminate(proc)
-        self.log.emit(f"RTMP → evento {idx + 1}: {os.path.basename(new_items[idx]['path'])}")
+        self.log.emit(f"{self.protocol} → evento {idx + 1}: {os.path.basename(new_items[idx]['path'])}")
         return True
 
     def replace_items(self, items, start_index=0):
@@ -416,7 +434,7 @@ class OutputWorker(QThread):
             with self._lock:
                 items = list(self.items)
             if not items:
-                raise RuntimeError("No hay eventos para emitir por RTMP.")
+                raise RuntimeError(f"No hay eventos para emitir por {self.protocol}.")
             self.stop_requested = False
             index = max(0, min(self.start_index, len(items) - 1))
             offset = self.start_offset
@@ -459,7 +477,7 @@ class OutputWorker(QThread):
                 self.now_playing.emit(index, item["path"])
                 self.log.emit(("FFmpeg iniciado" if first else "FFmpeg siguiente") +
                               f" • {label} • {os.path.basename(item['path'])} • audio #{aid if aid is not None else 'auto'} • offset {self._current_offset:.2f}s")
-                log.info("RTMP %s: %s", label, subprocess.list2cmdline(cmd))
+                log.info("%s %s: %s", self.protocol, label, subprocess.list2cmdline(cmd))
                 with self._lock:
                     self.proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL,
                                                  text=True, encoding="utf-8", errors="replace", creationflags=CREATE_NO_WINDOW)
@@ -470,7 +488,7 @@ class OutputWorker(QThread):
                     self._clip_emit_started = time.time()
                     proc = self.proc
                 if first:
-                    self.state.emit(True, f"RTMP ON AIR • {label} • {self.resolution}@{self.fps} • {self.bitrate} kbps")
+                    self.state.emit(True, f"{self.protocol} ON AIR • {label} • {self.resolution}@{self.fps} • {self.bitrate} kbps")
                     first = False
                 started = time.time()
                 last_lines = []
@@ -525,10 +543,10 @@ class OutputWorker(QThread):
                 if self._jump.wait(self.GRACE_SECONDS):
                     continue
                 index += 1
-            self.state.emit(False, "RTMP detenido")
+            self.state.emit(False, f"{self.protocol} detenido")
         except Exception as e:  # noqa: BLE001
-            log.error("RTMP error: %s", e)
-            self.state.emit(False, f"RTMP ERROR • {e}")
+            log.error("%s error: %s", self.protocol, e)
+            self.state.emit(False, f"{self.protocol} ERROR • {e}")
         finally:
             with self._lock:
                 proc = self.proc
@@ -550,3 +568,109 @@ class OutputWorker(QThread):
                     proc.kill()
                 except Exception:  # noqa: BLE001
                     pass
+
+
+class MultiOutputManager(QObject):
+    """Coordina destinos RTMP, SRT y NDI independientes.
+
+    Cada destino tiene su propio FFmpeg para aislar credenciales, reconexiones
+    y fallos de red. La interfaz conserva una sola API de sincronización para
+    que todos sigan al playout local.
+    """
+
+    state = Signal(bool, str)
+    log = Signal(str)
+    ended = Signal()
+
+    def __init__(self, ffmpeg, profiles, items, resolution, fps, encoder, bitrate,
+                 audio_preference="AUTO", subtitle_preference="OFF", subtitle_burn=False,
+                 audio_bitrate=192, loop=True, start_index=0, start_offset=0.0,
+                 extra_args="", logo=None, parent=None):
+        super().__init__(parent)
+        self.ffmpeg = ffmpeg
+        self.profiles = [dict(p) for p in (profiles or []) if p.get("enabled", True)]
+        self.items = items
+        self.common = dict(resolution=resolution, fps=fps, encoder=encoder, bitrate=bitrate,
+                           audio_preference=audio_preference, subtitle_preference=subtitle_preference,
+                           subtitle_burn=subtitle_burn, audio_bitrate=audio_bitrate, loop=loop,
+                           start_index=start_index, start_offset=start_offset, extra_args=extra_args, logo=logo)
+        self.workers = []
+        self._ended_workers = set()
+
+    def _make_worker(self, profile):
+        protocol = str(profile.get("protocol", "RTMP")).upper()
+        target = str(profile.get("target") or profile.get("url") or "").strip()
+        name = str(profile.get("name") or protocol)
+        worker = OutputWorker(self.ffmpeg, self.items, target, protocol=protocol, **self.common)
+        worker._profile_name = name
+        worker.state.connect(lambda ok, msg, n=name: self._state_from_worker(ok, msg, n))
+        worker.log.connect(lambda msg, n=name: self.log.emit(f"[{n}] {msg}"))
+        worker.ended.connect(lambda n=name, w=worker: self._worker_ended(n, w))
+        return worker
+
+    def start(self):
+        self.workers = []
+        self._ended_workers = set()
+        for profile in self.profiles:
+            worker = self._make_worker(profile)
+            self.workers.append(worker)
+            worker.start()
+        if not self.workers:
+            self.state.emit(False, "No hay destinos IP habilitados")
+
+    def _state_from_worker(self, ok, msg, name):
+        self.state.emit(bool(ok), f"{name}: {msg}")
+
+    def _worker_ended(self, name, worker):
+        self._ended_workers.add(id(worker))
+        self.log.emit(f"[{name}] salida finalizada")
+        if self.workers and all(id(w) in self._ended_workers for w in self.workers):
+            self.ended.emit()
+
+    def isRunning(self):
+        return any(w.isRunning() for w in self.workers)
+
+    def stop(self):
+        for worker in self.workers:
+            worker.stop()
+
+    def wait(self, timeout=4000):
+        deadline = time.monotonic() + max(0, timeout) / 1000.0
+        for worker in self.workers:
+            remaining = max(0, int((deadline - time.monotonic()) * 1000))
+            worker.wait(remaining)
+        return not self.isRunning()
+
+    def sync_items(self, items, current_index, force_jump=False, start_offset=0.0):
+        self.items = items
+        for worker in self.workers:
+            worker.sync_items(items, current_index, force_jump=force_jump, start_offset=start_offset)
+
+    def replace_items(self, items, start_index=0):
+        self.sync_items(items, start_index, force_jump=True)
+
+    def pause_here(self, paused):
+        for worker in self.workers:
+            worker.pause_here(paused)
+
+    def seek_to(self, index, offset):
+        for worker in self.workers:
+            worker.seek_to(index, offset)
+
+    def set_logo(self, logo):
+        for worker in self.workers:
+            worker.set_logo(logo)
+
+    @property
+    def current_position(self):
+        for worker in self.workers:
+            if worker.isRunning():
+                return worker.current_position
+        return 0.0
+
+    @property
+    def current_index(self):
+        for worker in self.workers:
+            if worker.isRunning():
+                return worker.current_index
+        return -1

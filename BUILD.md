@@ -90,6 +90,18 @@ python -m PyInstaller --noconfirm --clean tvplayout.spec
 Después copia `ffmpeg.exe` y `ffprobe.exe` a `dist\TVPlayoutPRO\` si no los
 copió el BAT.
 
+## OBS, vMix y múltiples destinos
+
+Abre **Salidas IP · RTMP / SRT / NDI** desde el panel o desde Ajustes del
+sistema. Añade un perfil por receptor; los perfiles activos se emiten en
+paralelo con procesos FFmpeg independientes.
+
+La cámara virtual de OBS no es una entrada para TVPlayout: OBS la publica hacia
+otras aplicaciones. Para llevar la señal a OBS, usa una entrada RTMP/SRT o
+`obs-ndi`; para vMix, usa una entrada Stream RTMP/SRT o NDI. NDI directo solo
+funciona si el FFmpeg instalado tiene el muxer `libndi_newtek` y está instalado
+NDI Runtime.
+
 ## Limpieza
 
 El BAT elimina `build\` y `dist\` al comenzar. Cuando el build termina bien,

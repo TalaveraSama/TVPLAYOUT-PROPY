@@ -7,7 +7,8 @@ import subprocess
 from PySide6.QtCore import Qt, QRectF
 from PySide6.QtGui import QPixmap, QPainter, QColor, QPen, QFont
 from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QLabel, QPushButton, QLineEdit, QComboBox,
-                               QSpinBox, QCheckBox, QFileDialog, QPlainTextEdit, QMessageBox, QWidget)
+                               QSpinBox, QCheckBox, QFileDialog, QPlainTextEdit, QMessageBox, QWidget,
+                               QTableWidget, QTableWidgetItem, QAbstractItemView, QHeaderView)
 
 from .config import MPV_PATH, FFMPEG_PATH, FFPROBE_PATH, ROOT, APP_VERSION, DEFAULT_LOGO_PATH
 
@@ -172,6 +173,237 @@ class LogoDialog(QDialog):
                 "logo_position": self.position.currentText(), "logo_scale": self.scale.value(),
                 "logo_opacity": self.opacity.value(), "logo_margin": self.margin.value()}
 
+    """Estado del sistema: versiones de mpv/ffmpeg, encoders H.264 disponibles, GPU."""
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.setWindowTitle(f"Dispositivos y motores — TVPlayout PRO {APP_VERSION}")
+        self.resize(760, 520)
+        v = QVBoxLayout(self)
+        self.text = QPlainTextEdit()
+        self.text.setReadOnly(True)
+        self.text.setStyleSheet("font-family: Consolas, 'DejaVu Sans Mono', monospace; font-size: 11px;")
+        v.addWidget(self.text, 1)
+        row = QHBoxLayout()
+        b = QPushButton("↻ Volver a comprobar")
+        b.clicked.connect(self.refresh)
+        row.addWidget(b)
+        b2 = QPushButton("🧪 Probar encoders (3 frames cada uno)")
+        b2.clicked.connect(self.test_encoders)
+        row.addWidget(b2)
+        row.addStretch()
+        c = QPushButton("Cerrar")
+        c.clicked.connect(self.accept)
+        row.addWidget(c)
+        v.addLayout(row)
+        self.refresh()
+
+    @staticmethod
+    def _run(cmd, timeout=15):
+        try:
+            p = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                               timeout=timeout, creationflags=CREATE_NO_WINDOW)
+            return (p.stdout or "") + (p.stderr or "")
+        except Exception as e:  # noqa: BLE001
+            return f"(error: {e})"
+
+    @staticmethod
+    def _mpv_console():
+        """mpv.exe (GUI) no escribe en consola; si existe mpv.com al lado, se usa para consultas."""
+        if MPV_PATH and MPV_PATH.lower().endswith("mpv.exe"):
+            com = MPV_PATH[:-4] + ".com"
+            if os.path.isfile(com):
+                return com
+        return MPV_PATH
+
+    def refresh(self):
+        lines = []
+        lines.append("=== BINARIOS ===")
+        for name, path in (("mpv", MPV_PATH), ("ffmpeg", FFMPEG_PATH), ("ffprobe", FFPROBE_PATH)):
+            lines.append(f"{name:8s} {path or 'NO ENCONTRADO'}")
+        if MPV_PATH:
+            out = self._run([self._mpv_console(), "--version"])
+            lines.append("")
+            lines.append("=== MPV ===")
+            lines.append(out.strip().splitlines()[0] if out.strip() else out)
+        if FFMPEG_PATH:
+            out = self._run([FFMPEG_PATH, "-hide_banner", "-version"])
+            lines.append("")
+            lines.append("=== FFMPEG ===")
+            lines.extend(out.strip().splitlines()[:2])
+            enc = self._run([FFMPEG_PATH, "-hide_banner", "-encoders"])
+            lines.append("")
+            lines.append("=== ENCODERS H.264 DISPONIBLES ===")
+            for codec, label in (("libx264", "CPU/x264"), ("h264_nvenc", "NVIDIA NVENC"), ("h264_qsv", "Intel QSV"),
+                                 ("h264_amf", "AMD AMF")):
+                ok = bool(re.search(rf"\b{codec}\b", enc))
+                lines.append(f"[{'OK' if ok else '--'}] {label:14s} {codec}")
+            lines.append("")
+            lines.append("=== DISPOSITIVOS DE AUDIO (mpv) ===")
+            if MPV_PATH:
+                lines.append(self._run([self._mpv_console(), "--audio-device=help"]).strip())
+        nv = shutil.which("nvidia-smi")
+        lines.append("")
+        lines.append("=== GPU ===")
+        if nv:
+            lines.append(self._run([nv, "-L"]).strip())
+        else:
+            lines.append("nvidia-smi no disponible (sin GPU NVIDIA o driver no instalado)")
+        self.text.setPlainText("\n".join(lines))
+
+    def test_encoders(self):
+        if not FFMPEG_PATH:
+            QMessageBox.warning(self, "FFmpeg", "FFmpeg no encontrado.")
+            return
+        results = ["=== PRUEBA DE ENCODERS ==="]
+        for codec in ("libx264", "h264_nvenc", "h264_qsv", "h264_amf"):
+            cmd = [FFMPEG_PATH, "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=black:s=256x144:r=25",
+                   "-frames:v", "3", "-c:v", codec, "-f", "null", "-"]
+            try:
+                p = subprocess.run(cmd, capture_output=True, text=True, timeout=25, creationflags=CREATE_NO_WINDOW)
+                ok = p.returncode == 0
+                err = (p.stderr or "").strip().splitlines()
+                results.append(f"[{'OK' if ok else 'FALLA'}] {codec}" + ("" if ok else f" → {err[-1] if err else 'error'}"))
+            except Exception as e:  # noqa: BLE001
+                results.append(f"[FALLA] {codec} → {e}")
+        self.text.appendPlainText("\n" + "\n".join(results))
+
+class OutputProfilesDialog(QDialog):
+    """Configuración de destinos de distribución RTMP, SRT y NDI."""
+
+    HEADERS = ["Activo", "Nombre", "Protocolo", "Destino"]
+
+    def __init__(self, parent, settings):
+        super().__init__(parent)
+        self.setWindowTitle("Salidas IP — RTMP / SRT / NDI")
+        self.resize(820, 560)
+        self._profiles = [dict(p) for p in (settings.get("outputs") or [])]
+        legacy = str(settings.get("rtmp_url", "") or "").strip()
+        if not self._profiles and legacy:
+            self._profiles = [{"enabled": True, "name": "RTMP principal", "protocol": "RTMP", "target": legacy}]
+        self._edit_row = -1
+
+        root = QVBoxLayout(self)
+        note = QLabel(
+            "Cada destino usa un proceso FFmpeg independiente y sigue al mismo playout local. "
+            "RTMP y SRT son compatibles con OBS y vMix. NDI directo requiere una build de FFmpeg "
+            "con libndi_newtek y NDI Runtime instalado."
+        )
+        note.setWordWrap(True)
+        note.setStyleSheet("color:#9a9a9a;")
+        root.addWidget(note)
+
+        self.table = QTableWidget(0, len(self.HEADERS))
+        self.table.setHorizontalHeaderLabels(self.HEADERS)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
+        self.table.itemSelectionChanged.connect(self._load_selected)
+        root.addWidget(self.table, 1)
+
+        form = QFormLayout()
+        self.enabled = QCheckBox("Destino activo")
+        self.enabled.setChecked(True)
+        self.name = QLineEdit()
+        self.name.setPlaceholderText("OBS local, vMix estudio, CDN principal…")
+        self.protocol = QComboBox()
+        self.protocol.addItems(["RTMP", "SRT", "NDI"])
+        self.target = QLineEdit()
+        self.target.setPlaceholderText("rtmp://host/app/clave")
+        self.protocol.currentTextChanged.connect(self._target_hint)
+        form.addRow("", self.enabled)
+        form.addRow("Nombre", self.name)
+        form.addRow("Protocolo", self.protocol)
+        form.addRow("URL / nombre NDI", self.target)
+        root.addLayout(form)
+
+        buttons = QHBoxLayout()
+        self.add_btn = QPushButton("Añadir destino")
+        self.add_btn.clicked.connect(self._add_or_update)
+        remove = QPushButton("Eliminar seleccionado")
+        remove.clicked.connect(self._remove_selected)
+        buttons.addWidget(self.add_btn)
+        buttons.addWidget(remove)
+        buttons.addStretch()
+        cancel = QPushButton("Cancelar")
+        cancel.clicked.connect(self.reject)
+        save = QPushButton("Guardar destinos")
+        save.setObjectName("primary")
+        save.clicked.connect(self.accept)
+        buttons.addWidget(cancel)
+        buttons.addWidget(save)
+        root.addLayout(buttons)
+        self._refresh_table()
+        self._target_hint(self.protocol.currentText())
+
+    def _target_hint(self, protocol):
+        hints = {
+            "RTMP": "rtmp://host/app/clave  o  rtmps://host/app/clave",
+            "SRT": "srt://host:9000?mode=caller&latency=200000",
+            "NDI": "Nombre NDI visible en la red, por ejemplo TVPlayout PRO",
+        }
+        self.target.setPlaceholderText(hints.get(protocol, "Destino"))
+
+    def _refresh_table(self):
+        self.table.setRowCount(0)
+        for profile in self._profiles:
+            row = self.table.rowCount()
+            self.table.insertRow(row)
+            enabled = QTableWidgetItem("Sí" if profile.get("enabled", True) else "No")
+            enabled.setData(Qt.UserRole, bool(profile.get("enabled", True)))
+            self.table.setItem(row, 0, enabled)
+            self.table.setItem(row, 1, QTableWidgetItem(str(profile.get("name") or "Destino")))
+            self.table.setItem(row, 2, QTableWidgetItem(str(profile.get("protocol", "RTMP")).upper()))
+            self.table.setItem(row, 3, QTableWidgetItem(str(profile.get("target") or profile.get("url") or "")))
+
+    def _load_selected(self):
+        row = self.table.currentRow()
+        if row < 0 or row >= len(self._profiles):
+            return
+        self._edit_row = row
+        profile = self._profiles[row]
+        self.enabled.setChecked(bool(profile.get("enabled", True)))
+        self.name.setText(str(profile.get("name") or "Destino"))
+        self.protocol.setCurrentText(str(profile.get("protocol", "RTMP")).upper())
+        self.target.setText(str(profile.get("target") or profile.get("url") or ""))
+        self.add_btn.setText("Actualizar destino")
+
+    def _add_or_update(self):
+        target = self.target.text().strip()
+        name = self.name.text().strip() or self.protocol.currentText()
+        if not target:
+            QMessageBox.warning(self, "Destino", "Escribe una URL RTMP/SRT o un nombre NDI.")
+            return
+        profile = {"enabled": self.enabled.isChecked(), "name": name,
+                   "protocol": self.protocol.currentText().upper(), "target": target}
+        if self._edit_row >= 0 and self._edit_row < len(self._profiles):
+            self._profiles[self._edit_row] = profile
+        else:
+            self._profiles.append(profile)
+        self._edit_row = -1
+        self._refresh_table()
+        self.table.clearSelection()
+        self.add_btn.setText("Añadir destino")
+        self.name.clear()
+        self.target.clear()
+
+    def _remove_selected(self):
+        row = self.table.currentRow()
+        if row < 0 or row >= len(self._profiles):
+            return
+        self._profiles.pop(row)
+        self._edit_row = -1
+        self._refresh_table()
+        self.add_btn.setText("Añadir destino")
+
+    def values(self):
+        return [{"enabled": bool(p.get("enabled", True)), "name": str(p.get("name") or "Destino"),
+                 "protocol": str(p.get("protocol", "RTMP")).upper(),
+                 "target": str(p.get("target") or p.get("url") or "").strip()}
+                for p in self._profiles if str(p.get("target") or p.get("url") or "").strip()]
 
 class DevicesDialog(QDialog):
     """Estado del sistema: versiones de mpv/ffmpeg, encoders H.264 disponibles, GPU."""

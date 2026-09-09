@@ -58,6 +58,27 @@ Opcional: archivo `.env` con `FFMPEG_PATH=...`, `FFPROBE_PATH=...`, `TVPLAYOUT_D
 Primer uso: **Fuentes / Categorías** → añadir carpetas (locales o UNC) → **Escanear biblioteca**. Con ffprobe se analizan
 duración, resolución, códecs, pistas de audio/subtítulos y se generan miniaturas (en `cache\thumbs`).
 
+## Distribución hacia OBS y vMix
+
+En **Salidas IP · RTMP / SRT / NDI** se pueden guardar varios destinos
+independientes. Cada destino tiene su propio proceso FFmpeg, pero todos siguen
+el mismo evento, corte y reloj del playout local.
+
+- **OBS:** la cámara virtual de OBS es una salida de OBS hacia otras
+  aplicaciones; TVPlayout no puede enviar directamente a esa cámara virtual.
+  Para recibir TVPlayout en OBS, usa una entrada RTMP/SRT (normalmente mediante
+  Media Source/VLC o un plugin SRT) o instala `obs-ndi` y recibe el nombre NDI.
+  Después OBS puede publicar su propia cámara virtual.
+- **vMix:** añade una entrada Stream para RTMP/SRT o una entrada NDI si tienes
+  NDI Runtime. Para un OBS y un vMix simultáneos, crea dos perfiles RTMP/SRT o
+  un perfil NDI más otro perfil de red.
+- **NDI directo:** necesita NDI Runtime y una build de FFmpeg que anuncie el
+  muxer `libndi_newtek`. La mayoría de builds genéricas de FFmpeg no lo
+  incluyen; si no está disponible, usa SRT/RTMP o un puente MediaMTX/GStreamer.
+- **SRT:** es recomendable para enlaces locales o WAN con pérdida. Un ejemplo
+  caller es `srt://192.168.1.50:9000?mode=caller&latency=200000`; el receptor debe
+  escuchar en el mismo puerto y aceptar SRT.
+
 ## Estructura
 
 ```
