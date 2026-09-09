@@ -188,7 +188,25 @@ def test_tmdb_general_scan_skips_done_and_edit_dialog_searches_image_gallery():
     assert "download_image" in tmdb
     assert "TMDBSearchWorker" in dialog and "TMDBImagesWorker" in dialog
     assert "poster_file" in dialog and "backdrop_file" in dialog
-    assert "Sin póster" in dialog and "Sin backdrop" in dialog
+
+
+def test_tmdb_edit_dialog_is_simple_and_safe_to_close():
+    """v24.0.2.26: una sola galería de imágenes (clic en la imagen correcta) y
+    cierre inmediato: los hilos cuelgan de la ventana principal y nunca se
+    espera bloqueando (el wait bloqueante provocaba congelamiento y el crash
+    «QThread: Destroyed while thread is still running»)."""
+    dialog = _read("app", "dialogs_tmdb.py")
+    # Una sola galería: lista de resultados + lista de imágenes.
+    assert dialog.count("QListWidget(") == 2
+    assert "IMÁGENES DE LA PELÍCULA" in dialog
+    assert "haz clic en la imagen que quieras usar" in dialog
+    # Marca de imagen elegida por tipo.
+    assert "✓ " in dialog and '"Póster" if img["kind"] == "poster" else "Fondo"' in dialog
+    # Cierre seguro e inmediato.
+    assert "wait(4000)" not in dialog
+    assert "self._closed = True" in dialog
+    assert "parent=self._worker_parent" in dialog
+    assert "self._gallery_request += 1" in dialog and "self._search_gen += 1" in dialog
 
 
 def test_tmdb_card_position_and_style_are_editable_with_wysiwyg_preview():

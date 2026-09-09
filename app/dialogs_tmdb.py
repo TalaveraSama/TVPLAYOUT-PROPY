@@ -1,10 +1,5 @@
-"""Ventana de edición de la ficha TMDB: buscador por título y galería de imágenes.
-
-Permite corregir la ficha de cualquier medio de la biblioteca: buscar el
-título en TMDB, elegir el resultado correcto entre varios candidatos y
-seleccionar el póster y el backdrop que se guardarán de la galería completa
-de la película (no sólo la imagen principal que devuelve la búsqueda).
-"""
+"""Ventanas TMDB: edición sencilla de la ficha (buscador + una galería de
+imágenes) y configuración de la tarjeta al aire con vista previa."""
 import os
 
 from PySide6.QtCore import Qt, QRectF, QSize, QTimer
@@ -17,19 +12,26 @@ from .tmdb import TMDBImagesWorker, TMDBSearchWorker, render_movie_overlay
 
 
 class TMDBEditDialog(QDialog):
-    """Busca una película en TMDB y deja elegir póster/backdrop de su galería."""
+    """Edición sencilla de la ficha TMDB: buscar la película y hacer clic en
+    la imagen correcta.
+
+    Una sola galería mezcla los pósters y los fondos de la película; al hacer
+    clic en una imagen queda elegida como póster o como fondo según su tipo
+    (marcada con ✓). Cerrar la ventana es inmediato: los hilos de descarga
+    cuelgan de la ventana principal, nunca del diálogo.
+    """
 
     def __init__(self, parent, media, api_key):
         super().__init__(parent)
-        self.setWindowTitle(f"Editar ficha TMDB — TVPlayout PRO {APP_VERSION}")
+        self.setWindowTitle(f"Editar imágenes TMDB — TVPlayout PRO {APP_VERSION}")
         screen = (parent.screen() if parent is not None else None) or QApplication.primaryScreen()
         available = screen.availableGeometry() if screen is not None else None
-        width, height = 1080, 640
+        width, height = 940, 600
         if available is not None:
-            width = min(int(width), max(760, available.width() - 32))
-            height = min(int(height), max(480, available.height() - 56))
-        self.resize(max(760, int(width)), max(480, int(height)))
-        self.setMinimumSize(760, 480)
+            width = min(int(width), max(700, available.width() - 32))
+            height = min(int(height), max(460, available.height() - 56))
+        self.resize(max(700, int(width)), max(460, int(height)))
+        self.setMinimumSize(700, 460)
         self.setSizeGripEnabled(True)
         self.setWindowFlag(Qt.WindowMinMaxButtonsHint, True)
 
@@ -39,12 +41,18 @@ class TMDBEditDialog(QDialog):
         self._images_worker = None
         self._results = []
         self._movie = None
-        self._posters = []
-        self._backdrops = []
-        self._chosen = {"poster": "", "backdrop": ""}
+        self._images = []            # [{"kind": "poster"|"backdrop", "file": str, "lang": str}]
+        self._chosen_poster = ""
+        self._chosen_backdrop = ""
         self._gallery_request = 0
+        self._search_gen = 0
         self._meta = {}
         self._clear = False
+        self._closed = False
+        # Los workers cuelgan de la ventana principal: cerrar el diálogo nunca
+        # destruye un hilo en marcha (eso es un crash de Qt). Los resultados
+        # tardíos se ignoran con los contadores de generación.
+        self._worker_parent = self.parent() if isinstance(self.parent(), QWidget) else None
 
         root = QVBoxLayout(self)
         info = QLabel(f"<b>{self.media.get('title') or 'Medio sin título'}</b><br>"
@@ -54,16 +62,16 @@ class TMDBEditDialog(QDialog):
 
         search_row = QHBoxLayout()
         self.query = QLineEdit()
-        self.query.setPlaceholderText("Título exacto para buscar en TMDB…")
+        self.query.setPlaceholderText("Título de la película…")
         self.query.returnPressed.connect(self._search)
         self.query.setText(str(self.media.get("tmdb_title") or self.media.get("title") or ""))
         search_row.addWidget(self.query, 1)
-        self.search_btn = QPushButton("🔎 Buscar en TMDB")
+        self.search_btn = QPushButton("🔎 Buscar")
         self.search_btn.clicked.connect(self._search)
         search_row.addWidget(self.search_btn)
         root.addLayout(search_row)
 
-        self.status = QLabel("Escribe un título y pulsa Buscar, o elige un resultado.")
+        self.status = QLabel(" ")
         self.status.setStyleSheet("color:#9a9a9a;")
         root.addWidget(self.status)
 
@@ -75,8 +83,8 @@ class TMDBEditDialog(QDialog):
         lv.addWidget(self._section("RESULTADOS"))
         self.results = QListWidget()
         self.results.setViewMode(QListWidget.IconMode)
-        self.results.setIconSize(QSize(72, 108))
-        self.results.setGridSize(QSize(92, 148))
+        self.results.setIconSize(QSize(66, 99))
+        self.results.setGridSize(QSize(84, 130))
         self.results.setResizeMode(QListWidget.Adjust)
         self.results.setMovement(QListWidget.Static)
         self.results.setSelectionMode(QListWidget.SingleSelection)
@@ -88,30 +96,36 @@ class TMDBEditDialog(QDialog):
         right = QWidget()
         rv = QVBoxLayout(right)
         rv.setContentsMargins(0, 0, 0, 0)
-        self.movie_lbl = QLabel("Sin película seleccionada")
-        self.movie_lbl.setWordWrap(True)
+        rv.addWidget(self._section("IMÁGENES DE LA PELÍCULA"))
+        self.movie_lbl = QLabel("Elige una película de la izquierda para ver sus imágenes.")
         self.movie_lbl.setStyleSheet("color:#79d6ff;")
-        self.movie_lbl.setMinimumHeight(64)
+        self.movie_lbl.setWordWrap(True)
         rv.addWidget(self.movie_lbl)
-
-        gal = QHBoxLayout()
-        gal.setSpacing(8)
-        gal.addWidget(self._gallery_panel("PÓSTER", "poster", 96, 144, 116, 172))
-        gal.addWidget(self._gallery_panel("BACKDROP", "backdrop", 208, 117, 232, 152))
-        rv.addLayout(gal, 1)
+        self.images = QListWidget()
+        self.images.setViewMode(QListWidget.IconMode)
+        self.images.setIconSize(QSize(110, 110))
+        self.images.setGridSize(QSize(126, 152))
+        self.images.setResizeMode(QListWidget.Adjust)
+        self.images.setMovement(QListWidget.Static)
+        self.images.setSelectionMode(QListWidget.SingleSelection)
+        self.images.setWordWrap(True)
+        self.images.currentRowChanged.connect(self._pick_image)
+        rv.addWidget(self.images, 1)
         body.addWidget(right)
 
         body.setStretchFactor(0, 0)
         body.setStretchFactor(1, 1)
-        body.setSizes([300, 720])
+        body.setSizes([280, 640])
         root.addWidget(body, 1)
 
+        chosen = QHBoxLayout()
+        chosen.setSpacing(12)
+        chosen.addWidget(self._chosen_group("Póster", "poster"))
+        chosen.addWidget(self._chosen_group("Fondo", "backdrop"))
+        chosen.addStretch()
+        root.addLayout(chosen)
+
         buttons = QHBoxLayout()
-        self.save_btn = QPushButton("💾 Guardar ficha e imágenes")
-        self.save_btn.setObjectName("primary")
-        self.save_btn.setEnabled(False)
-        self.save_btn.clicked.connect(self._save)
-        buttons.addWidget(self.save_btn)
         clear_btn = QPushButton("🗑 Quitar ficha TMDB")
         clear_btn.clicked.connect(self._clear_ficha)
         buttons.addWidget(clear_btn)
@@ -119,10 +133,18 @@ class TMDBEditDialog(QDialog):
         close_btn = QPushButton("Cerrar")
         close_btn.clicked.connect(self.reject)
         buttons.addWidget(close_btn)
+        self.save_btn = QPushButton("💾 Guardar ficha")
+        self.save_btn.setObjectName("primary")
+        self.save_btn.setEnabled(False)
+        self.save_btn.clicked.connect(self._save)
+        buttons.addWidget(self.save_btn)
         root.addLayout(buttons)
 
         if self.query.text().strip():
-            QTimer.singleShot(200, self._search)
+            self.status.setText("Buscando en TMDB…")
+            QTimer.singleShot(250, self._search)
+        else:
+            self.status.setText("Escribe un título y pulsa Buscar.")
 
     # ------------------------------------------------------------------- UI
     @staticmethod
@@ -131,35 +153,58 @@ class TMDBEditDialog(QDialog):
         lbl.setObjectName("sectionTitle")
         return lbl
 
-    def _make_gallery(self, icon_w, icon_h, grid_w, grid_h):
-        """Lista tipo galería (IconMode) para pósters o backdrops."""
-        lst = QListWidget()
-        lst.setViewMode(QListWidget.IconMode)
-        lst.setIconSize(QSize(icon_w, icon_h))
-        lst.setGridSize(QSize(grid_w, grid_h))
-        lst.setResizeMode(QListWidget.Adjust)
-        lst.setMovement(QListWidget.Static)
-        lst.setSelectionMode(QListWidget.SingleSelection)
-        lst.setWordWrap(True)
-        return lst
-
-    def _gallery_panel(self, title, kind, icon_w, icon_h, grid_w, grid_h):
-        """Panel «título + galería» para pósters o backdrops."""
-        lst = self._make_gallery(icon_w, icon_h, grid_w, grid_h)
-        if kind == "poster":
-            self.posters = lst
-        else:
-            self.backdrops = lst
-        lst.currentRowChanged.connect(lambda row, k=kind: self._pick_image(k, row))
+    def _chosen_group(self, title, kind):
+        """Miniatura de la imagen elegida (póster o fondo) con su botón ✕."""
         panel = QWidget()
         v = QVBoxLayout(panel)
         v.setContentsMargins(0, 0, 0, 0)
-        v.addWidget(self._section(title))
-        v.addWidget(lst, 1)
+        v.setSpacing(2)
+        head = QHBoxLayout()
+        head.setContentsMargins(0, 0, 0, 0)
+        head.addWidget(QLabel(f"<b>{title}</b>"))
+        x = QPushButton("✕")
+        x.setFixedSize(22, 22)
+        x.setToolTip(f"Guardar sin {title.lower()}")
+        if kind == "poster":
+            x.clicked.connect(self._clear_poster)
+            self.poster_x = x
+        else:
+            x.clicked.connect(self._clear_backdrop)
+            self.backdrop_x = x
+        head.addWidget(x)
+        head.addStretch()
+        v.addLayout(head)
+        thumb = QLabel("—")
+        thumb.setAlignment(Qt.AlignCenter)
+        thumb.setStyleSheet("border:1px solid #333; color:#666; background:#0c0c0c;")
+        if kind == "poster":
+            thumb.setFixedSize(74, 104)
+            self.poster_thumb = thumb
+        else:
+            thumb.setFixedSize(160, 90)
+            self.backdrop_thumb = thumb
+        v.addWidget(thumb)
         return panel
+
+    # --------------------------------------------------------------- workers
+    @staticmethod
+    def _worker_running(worker):
+        if worker is None:
+            return False
+        try:
+            return worker.isRunning()
+        except RuntimeError:
+            return False  # ya liberado con deleteLater
+
+    def _worker_done(self, worker, button):
+        worker.deleteLater()
+        if button is not None:
+            button.setEnabled(True)
 
     # --------------------------------------------------------------- búsqueda
     def _search(self):
+        if self._closed:
+            return
         text = self.query.text().strip()
         if not text:
             self.status.setText("Escribe un título para buscar")
@@ -167,22 +212,24 @@ class TMDBEditDialog(QDialog):
         if not self.api_key:
             self.status.setText("Falta la API key de TMDB (configúrala en Ajustes)")
             return
+        if self._worker_running(self._search_worker):
+            self.status.setText("Espera: la búsqueda anterior sigue en curso…")
+            return
+        self._search_gen += 1
+        gen = self._search_gen
         self.search_btn.setEnabled(False)
-        self.status.setText(f"Buscando «{text}» en TMDB…")
-        worker = TMDBSearchWorker(self.api_key, text, parent=self)
+        self.status.setText(f"Buscando «{text}»…")
+        worker = TMDBSearchWorker(self.api_key, text, parent=self._worker_parent)
         self._search_worker = worker
-        worker.results.connect(self._search_ready)
-        worker.failed.connect(self._search_failed)
-        worker.finished.connect(lambda w=worker: self._worker_finished(w, self.search_btn))
+        worker.results.connect(lambda rows, g=gen: self._search_ready(g, rows))
+        worker.failed.connect(lambda err, g=gen: self._search_failed(g, err))
+        worker.finished.connect(lambda w=worker: self._worker_done(w, self.search_btn))
         worker.start()
 
-    def _worker_finished(self, worker, button):
-        worker.deleteLater()
-        if button is not None:
-            button.setEnabled(True)
-
-    def _search_ready(self, results):
-        self._results = list(results or [])
+    def _search_ready(self, gen, rows):
+        if self._closed or gen != self._search_gen:
+            return
+        self._results = list(rows or [])
         self.results.clear()
         for r in self._results:
             label = r.get("title") or r.get("original_title") or "Sin título"
@@ -192,84 +239,125 @@ class TMDBEditDialog(QDialog):
             if poster_file and os.path.isfile(poster_file):
                 pm = QPixmap(poster_file)
                 if not pm.isNull():
-                    it.setIcon(QIcon(pm.scaled(72, 108, Qt.KeepAspectRatio, Qt.SmoothTransformation)))
-            it.setToolTip((r.get("overview") or "")[:400])
+                    it.setIcon(QIcon(pm.scaled(66, 99, Qt.KeepAspectRatio, Qt.SmoothTransformation)))
             self.results.addItem(it)
         count = len(self._results)
-        self.status.setText(f"{count} resultado(s)" if count else "TMDB no encontró ese título; prueba con otro texto")
+        self.status.setText(f"{count} resultado(s)" if count else "Sin resultados; prueba con otro título")
         if count:
             self.results.setCurrentRow(0)
 
-    def _search_failed(self, error):
+    def _search_failed(self, gen, error):
+        if self._closed or gen != self._search_gen:
+            return
         self.status.setText(f"TMDB no disponible: {error}")
 
     def _pick_result(self, row):
-        if row < 0 or row >= len(self._results):
+        if self._closed or row < 0 or row >= len(self._results):
             return
         self._movie = self._results[row]
         title = self._movie.get("title") or self._movie.get("original_title") or ""
         year = self._movie.get("year") or ""
-        overview = self._movie.get("overview") or ""
-        self.movie_lbl.setText(f"<b>{title}</b> {year}<br>"
-                               f"<span style='color:#b0bec5;'>{overview[:280]}</span>")
+        self.movie_lbl.setText(f"<b>{title}</b> {year}".strip())
         self._load_gallery(self._movie)
 
     # --------------------------------------------------------------- galería
     def _load_gallery(self, movie):
         self._gallery_request += 1
         request = self._gallery_request
-        self._posters, self._backdrops = [], []
-        self._chosen = {"poster": "", "backdrop": ""}
-        self.posters.clear()
-        self.backdrops.clear()
+        self._images = []
+        self._chosen_poster = ""
+        self._chosen_backdrop = ""
+        self.results.selectionModel().blockSignals(True)  # no reentrar al limpiar
+        self.images.clear()
+        self.images.selectionModel().blockSignals(False)
+        self._refresh_marks()
+        self._update_chosen()
         self.save_btn.setEnabled(False)
-        self.status.setText(f"Descargando galería de «{movie.get('title') or ''}»…")
-        worker = TMDBImagesWorker(self.api_key, movie, parent=self)
+        self.status.setText(f"Descargando imágenes de «{movie.get('title') or ''}»…")
+        worker = TMDBImagesWorker(self.api_key, movie, parent=self._worker_parent)
         self._images_worker = worker
         worker.ready.connect(lambda data, r=request: self._gallery_ready(r, data))
-        worker.failed.connect(lambda error, r=request: self._gallery_failed(r, error))
-        worker.finished.connect(lambda w=worker: self._worker_finished(w, None))
+        worker.failed.connect(lambda err, r=request: self._gallery_failed(r, err))
+        worker.finished.connect(lambda w=worker: self._worker_done(w, None))
         worker.start()
 
     def _gallery_ready(self, request, data):
-        if request != self._gallery_request:
-            return  # llegó una galería de una selección anterior
-        self._posters = list(data.get("posters") or [])
-        self._backdrops = list(data.get("backdrops") or [])
-        self._fill_gallery(self.posters, self._posters, "✕ Sin póster", 96, 144)
-        self._fill_gallery(self.backdrops, self._backdrops, "✕ Sin backdrop", 208, 117)
-        self.save_btn.setEnabled(True)
-        self.status.setText(f"Galería lista • {len(self._posters)} pósters • {len(self._backdrops)} backdrops")
-
-    def _fill_gallery(self, lst, images, empty_label, icon_w, icon_h):
-        lst.clear()
-        lst.addItem(QListWidgetItem(empty_label))
-        for img in images:
+        if self._closed or request != self._gallery_request:
+            return
+        posters = list(data.get("posters") or [])
+        backdrops = list(data.get("backdrops") or [])
+        self._images = ([{"kind": "poster", "file": str(p.get("file") or ""), "lang": str(p.get("lang") or "")}
+                         for p in posters] +
+                        [{"kind": "backdrop", "file": str(b.get("file") or ""), "lang": str(b.get("lang") or "")}
+                         for b in backdrops])
+        self.images.clear()
+        for img in self._images:
             it = QListWidgetItem()
-            local = str(img.get("file") or "")
+            local = img["file"]
             if local and os.path.isfile(local):
                 pm = QPixmap(local)
                 if not pm.isNull():
-                    it.setIcon(QIcon(pm.scaled(icon_w, icon_h, Qt.KeepAspectRatio, Qt.SmoothTransformation)))
-            lang = str(img.get("lang") or "").upper()
-            it.setToolTip(f"Idioma: {lang or 'sin texto'}")
-            lst.addItem(it)
-        # Por defecto queda elegida la primera imagen real de cada galería.
-        lst.setCurrentRow(1 if images else 0)
+                    it.setIcon(QIcon(pm.scaled(110, 110, Qt.KeepAspectRatio, Qt.SmoothTransformation)))
+            self.images.addItem(it)
+        # Por defecto: primera imagen de cada tipo.
+        self._chosen_poster = next((i["file"] for i in self._images if i["kind"] == "poster"), "")
+        self._chosen_backdrop = next((i["file"] for i in self._images if i["kind"] == "backdrop"), "")
+        self._refresh_marks()
+        self._update_chosen()
+        self.save_btn.setEnabled(True)
+        self.status.setText(f"{len(posters)} pósters • {len(backdrops)} fondos — haz clic en la imagen que quieras usar")
 
     def _gallery_failed(self, request, error):
-        if request != self._gallery_request:
+        if self._closed or request != self._gallery_request:
             return
         self.save_btn.setEnabled(False)
-        self.status.setText(f"No se pudo descargar la galería: {error}. "
-                            "Vuelve a seleccionar la película para reintentar.")
+        self.status.setText(f"No se pudieron descargar las imágenes: {error}. "
+                            "Vuelve a hacer clic en la película para reintentar.")
 
-    def _pick_image(self, kind, row):
-        images = self._posters if kind == "poster" else self._backdrops
-        if row <= 0 or row > len(images):
-            self._chosen[kind] = ""
+    def _pick_image(self, row):
+        if self._closed or row < 0 or row >= len(self._images):
+            return
+        img = self._images[row]
+        if img["kind"] == "poster":
+            self._chosen_poster = img["file"]
         else:
-            self._chosen[kind] = str(images[row - 1].get("file") or "")
+            self._chosen_backdrop = img["file"]
+        self._refresh_marks()
+        self._update_chosen()
+
+    def _refresh_marks(self):
+        """Marca con ✓ la imagen elegida de cada tipo."""
+        for i, img in enumerate(self._images):
+            it = self.images.item(i)
+            if it is None:
+                continue
+            base = "Póster" if img["kind"] == "poster" else "Fondo"
+            chosen = self._chosen_poster if img["kind"] == "poster" else self._chosen_backdrop
+            it.setText(("✓ " if chosen and img["file"] == chosen else "") + base)
+
+    def _update_chosen(self):
+        self._set_thumb(self.poster_thumb, self._chosen_poster, 74, 104)
+        self._set_thumb(self.backdrop_thumb, self._chosen_backdrop, 160, 90)
+
+    @staticmethod
+    def _set_thumb(label, path, w, h):
+        pm = QPixmap(path) if path and os.path.isfile(path) else QPixmap()
+        if pm.isNull():
+            label.setPixmap(QPixmap())
+            label.setText("—")
+        else:
+            label.setText("")
+            label.setPixmap(pm.scaled(w, h, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+
+    def _clear_poster(self):
+        self._chosen_poster = ""
+        self._refresh_marks()
+        self._update_chosen()
+
+    def _clear_backdrop(self):
+        self._chosen_backdrop = ""
+        self._refresh_marks()
+        self._update_chosen()
 
     # ---------------------------------------------------------------- acciones
     def _save(self):
@@ -281,8 +369,8 @@ class TMDBEditDialog(QDialog):
             "title": self._movie.get("title") or self._movie.get("original_title") or "",
             "year": self._movie.get("year") or "",
             "overview": self._movie.get("overview") or "",
-            "poster_file": self._chosen.get("poster") or "",
-            "backdrop_file": self._chosen.get("backdrop") or "",
+            "poster_file": self._chosen_poster,
+            "backdrop_file": self._chosen_backdrop,
         }
         self.accept()
 
@@ -301,12 +389,12 @@ class TMDBEditDialog(QDialog):
         return bool(self._clear)
 
     def done(self, result):
-        # Esperar a los workers antes de cerrar: sus hilos usan urllib y no
-        # pueden abortarse a mitad de descarga; el diálogo sigue vivo como
-        # hijo de la ventana principal, así que es seguro dejarlos terminar.
-        for worker in (self._search_worker, self._images_worker):
-            if worker is not None and worker.isRunning():
-                worker.wait(4000)
+        # Cierre inmediato y seguro: los hilos siguen su curso colgados de la
+        # ventana principal y sus resultados tardíos se ignoran (_closed y los
+        # contadores de generación). Nunca se espera bloqueando la interfaz.
+        self._closed = True
+        self._gallery_request += 1
+        self._search_gen += 1
         super().done(result)
 
 

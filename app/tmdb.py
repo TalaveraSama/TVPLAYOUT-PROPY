@@ -197,9 +197,9 @@ class TMDBImagesWorker(QThread):
             data = _request_json(f"{TMDB_API}/movie/{movie_id}/images?{params}")
             TMDB_CACHE.mkdir(parents=True, exist_ok=True)
             posters = [img for img in (self._grab(r, movie_id, "poster", "w342")
-                                       for r in (data.get("posters") or [])[:12]) if img]
+                                       for r in (data.get("posters") or [])[:8]) if img]
             backdrops = [img for img in (self._grab(r, movie_id, "backdrop", "w780")
-                                         for r in (data.get("backdrops") or [])[:12]) if img]
+                                         for r in (data.get("backdrops") or [])[:8]) if img]
             self.ready.emit({"movie": self.movie, "posters": posters, "backdrops": backdrops})
         except Exception as exc:  # noqa: BLE001
             self.failed.emit(str(exc)[:240])
