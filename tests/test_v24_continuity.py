@@ -157,7 +157,10 @@ def test_library_can_probe_selection_and_store_tmdb_images():
     window = _read("app", "main_window.py")
     db = _read("app", "db.py")
     prober = _read("app", "prober.py")
-    assert "Escanear TMDB" in window
+    assert "Escanear TMDB biblioteca" in window
+    assert "scan_tmdb_library" in window
+    assert "scan_tmdb_manual" in window
+    assert "Escanear esta película en TMDB" in window
     assert "scan_selected_metadata" in window
     assert "Escanear metadatos de selección" in window
     assert "tmdb_poster" in window and "tmdb_backdrop" in window

@@ -1,4 +1,4 @@
-# TVPlayout PRO V24.0.2.19 — Consola de playout
+# TVPlayout PRO V24.0.2.21 — Consola de playout
 
 Playout de televisión 24/7 para Windows con interfaz inspirada en la distribución de **XPlayout** (Axel Technology),
 sin usar código ni recursos propietarios. Reproductor local **PyAV/libavcodec** + salida **RTMP/SRT/UDP** con **FFmpeg** + NDI nativo mediante el Runtime x64.
@@ -51,8 +51,10 @@ está respaldado ni certificado por TMDB.
 
 ### Escaneo manual desde Biblioteca
 
-En **Biblioteca**, selecciona una película y usa el botón **🎬 Escanear TMDB** o
-el menú de clic derecho **Escanear TMDB • imagen/película**. La ficha guarda el
+En **Biblioteca**, el botón **🎬 Escanear TMDB biblioteca** procesa toda la
+biblioteca en segundo plano con una cola limitada. Para corregir una película
+que TMDB no encontró, haz clic derecho sobre ella y usa **Escanear esta película
+en TMDB…**; podrás escribir el título exacto manualmente. La ficha guarda el
 título, año, resumen, póster y backdrop en la biblioteca; el póster aparece en
 la columna **Imagen** para confirmar visualmente que la carga terminó. El clic
 derecho también permite **Escanear metadatos de selección** para repetir ffprobe
@@ -141,6 +143,10 @@ tests/                  pruebas estáticas y de continuidad del playout
 ```
 
 ## Registro de cambios
+
+### V24.0.2.21
+- El botón TMDB de Biblioteca escanea ahora toda la biblioteca mediante una cola limitada.
+- El clic derecho permite una búsqueda manual por película con título corregido.
 
 ### V24.0.2.20
 - Hotfix de inicio: se elimina la llamada inválida `setSizeGripEnabled` sobre `QMainWindow`; el grip queda correctamente en la barra de estado.

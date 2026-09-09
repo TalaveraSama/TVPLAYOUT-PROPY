@@ -186,6 +186,10 @@ class MainWindow(QMainWindow):
         self._dialogs = {}
         self._tmdb_worker = None
         self._tmdb_library_workers = {}
+        self._tmdb_library_queue = []
+        self._tmdb_library_total = 0
+        self._tmdb_library_done = 0
+        self._tmdb_library_max_workers = 4
         self._tmdb_request_id = 0
         self._tmdb_overlay_path = ""
 
@@ -562,7 +566,7 @@ class MainWindow(QMainWindow):
                 ("↩ Volver a la playlist", lambda: self.tabs.setCurrentIndex(0), None)]
         row2 = [("🔄 Escanear fuentes", self.start_scan, "Escanea las carpetas configuradas en Fuentes"),
                 ("🧪 Analizar metadatos", self.start_probe, "Duración, resolución, pistas y miniaturas con ffprobe"),
-                ("🎬 Escanear TMDB", self.scan_tmdb_selected, "Busca la película seleccionada y carga su póster/backdrop"),
+                ("🎬 Escanear TMDB biblioteca", self.scan_tmdb_library, "Busca toda la biblioteca y carga póster/backdrop de cada película"),
                 ("🏷 Cambiar categoría", self.change_library_category, None),
                 ("🎲 Añadir aleatorios…", self.add_random, "Añade N medios al azar de la categoría filtrada"),
                 ("📁 Fuentes / Categorías", self.open_sources, None),
@@ -928,7 +932,7 @@ class MainWindow(QMainWindow):
         m.addAction("👁 Previsualizar", self.preview_library)
         m.addSeparator()
         m.addAction("🧪 Escanear metadatos de selección", self.scan_selected_metadata)
-        m.addAction("🎬 Escanear TMDB • imagen/película", self.scan_tmdb_selected)
+        m.addAction("🎬 Escanear esta película en TMDB…", self.scan_tmdb_manual)
         m.addSeparator()
         m.addAction("🏷 Cambiar categoría…", self.change_library_category)
         m.addAction("📂 Abrir carpeta", lambda: self._open_folder(self._selected_library_items()))
@@ -1019,34 +1023,79 @@ class MainWindow(QMainWindow):
             return
         self.start_probe([item.get("path") for item in items])
 
+    def scan_tmdb_library(self):
+        """Escanea toda la biblioteca, no sólo las filas visibles/seleccionadas."""
+        rows = self.db.search_media("", "Todas", limit=100000)
+        items = [make_item(row) for row in rows]
+        if not items:
+            self._status("La biblioteca está vacía")
+            return
+        self._start_tmdb_scan(items, "biblioteca completa")
+
     def scan_tmdb_selected(self):
-        """Busca en TMDB los clips seleccionados y guarda sus imágenes."""
+        """Compatibilidad: escanea las filas seleccionadas en segundo plano."""
         items = self._selected_library_items()
         if not items:
             self._status("Selecciona una película para escanearla en TMDB")
             return
+        self._start_tmdb_scan(items, "selección")
+
+    def scan_tmdb_manual(self):
+        """Permite corregir el título de búsqueda cuando TMDB no encontró el archivo."""
+        items = self._selected_library_items()
+        if not items:
+            self._status("Selecciona una película para buscarla manualmente")
+            return
+        item = items[0]
+        default = str(item.get("title") or Path(item.get("path") or "").stem)
+        query, ok = QInputDialog.getText(self, "Escaneo manual TMDB",
+                                         "Título exacto para buscar en TMDB:", text=default)
+        query = (query or "").strip()
+        if not ok or not query:
+            return
+        self._start_tmdb_scan([item], "búsqueda manual", {str(item.get("path")): query}, force=True)
+
+    def _start_tmdb_scan(self, items, label, query_overrides=None, force=False):
         api_key = str(self.settings.get("tmdb_api_key") or "").strip()
         if not api_key:
             QMessageBox.warning(self, "Escanear TMDB", "Configura primero la API key en Ajustes.")
             return
-        started = 0
+        query_overrides = query_overrides or {}
+        queued_paths = {entry[0] for entry in self._tmdb_library_queue}
+        if force:
+            forced = {str(item.get("path") or "") for item in items}
+            self._tmdb_library_queue = [entry for entry in self._tmdb_library_queue if entry[0] not in forced]
+            queued_paths -= forced
+        added = 0
         for item in items:
             path = str(item.get("path") or "")
-            title = str(item.get("title") or Path(path).stem)
-            if not path or path in self._tmdb_library_workers:
+            if not path or path in self._tmdb_library_workers or path in queued_paths:
                 continue
-            worker = TMDBLookupWorker(api_key, title, parent=self)
+            title = str(query_overrides.get(path) or item.get("title") or Path(path).stem)
+            self._tmdb_library_queue.append((path, title))
+            queued_paths.add(path)
+            added += 1
+        if not added:
+            self._tmdb_launch_tmdb_workers()
+            self._status("Las películas indicadas ya están en la cola de TMDB")
+            return
+        self._tmdb_library_total += added
+        self._tmdb_library_done = 0
+        self._tmdb_library_label = label
+        self._tmdb_launch_tmdb_workers()
+        self.lib_status.setText(f"TMDB • {label} • {added} añadidas • cola {len(self._tmdb_library_queue)}")
+        self._status(f"TMDB: escaneando {label} ({added} película(s))…")
+
+    def _tmdb_launch_tmdb_workers(self):
+        api_key = str(self.settings.get("tmdb_api_key") or "").strip()
+        while self._tmdb_library_queue and len(self._tmdb_library_workers) < self._tmdb_library_max_workers:
+            path, query = self._tmdb_library_queue.pop(0)
+            worker = TMDBLookupWorker(api_key, query, parent=self)
             self._tmdb_library_workers[path] = worker
             worker.result.connect(lambda _query, metadata, p=path: self._tmdb_library_ready(p, metadata))
             worker.failed.connect(lambda _query, error, p=path: self._tmdb_library_failed(p, error))
             worker.finished.connect(lambda p=path, w=worker: self._tmdb_library_finished(p, w))
             worker.start()
-            started += 1
-        if started:
-            self.lib_status.setText(f"TMDB escaneando • {started} película(s)…")
-            self._status(f"TMDB: buscando {started} película(s)…")
-        else:
-            self._status("Las películas seleccionadas ya están siendo escaneadas en TMDB")
 
     def _tmdb_library_ready(self, path, metadata):
         self.db.update_tmdb_metadata(path, metadata)
@@ -1064,8 +1113,10 @@ class MainWindow(QMainWindow):
     def _tmdb_library_finished(self, path, worker):
         if self._tmdb_library_workers.get(path) is worker:
             self._tmdb_library_workers.pop(path, None)
-        if not self._tmdb_library_workers:
-            self.lib_status.setText("TMDB: escaneo finalizado")
+        self._tmdb_library_done += 1
+        self._tmdb_launch_tmdb_workers()
+        if not self._tmdb_library_workers and not self._tmdb_library_queue:
+            self.lib_status.setText(f"TMDB: escaneo finalizado • {self._tmdb_library_done} procesadas")
 
     # ================================================================ grid
     def _selected_rows(self):
