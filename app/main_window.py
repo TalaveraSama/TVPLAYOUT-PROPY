@@ -34,6 +34,7 @@ from .playout import (PlayoutController, make_item, ST_ONAIR, ST_READY, ST_AIRED
                       ST_PENDING, DONE_STATES)
 from .widgets import StationClock, VUMeter, VideoSurface, LedLabel, ProgressBarThin, fmt_tc
 from .dialogs import (PlaylistManagerDialog, SourcesDialog, SchedulerDialog, LogsDialog, SettingsDialog, EditClipDialog)
+from .dialogs_tmdb import TMDBEditDialog
 from .theme import QSS
 
 log = logger.get("ui")
@@ -195,6 +196,8 @@ class MainWindow(QMainWindow):
         self._tmdb_library_total = 0
         self._tmdb_library_done = 0
         self._tmdb_library_max_workers = 4
+        self._tmdb_lib_ok = 0
+        self._tmdb_lib_fail = 0
         self._tmdb_request_id = 0
         self._tmdb_overlay_path = ""
 
@@ -571,7 +574,8 @@ class MainWindow(QMainWindow):
                 ("↩ Volver a la playlist", lambda: self.tabs.setCurrentIndex(0), None)]
         row2 = [("🔄 Escanear fuentes", self.start_scan, "Escanea las carpetas configuradas en Fuentes"),
                 ("🧪 Analizar metadatos", self.start_probe, "Duración, resolución, pistas y miniaturas con ffprobe"),
-                ("🎬 Escanear TMDB biblioteca", self.scan_tmdb_library, "Busca toda la biblioteca y carga póster/backdrop de cada película"),
+                ("🎬 Escanear TMDB biblioteca", self.scan_tmdb_library, "Escaneo general: completa la ficha TMDB de todos los medios que aún no la tienen"),
+                ("✎ Editar ficha TMDB…", self.edit_tmdb_selected, "Busca el título en TMDB y elige póster y backdrop de su galería"),
                 ("🏷 Cambiar categoría", self.change_library_category, None),
                 ("🎲 Añadir aleatorios…", self.add_random, "Añade N medios al azar de la categoría filtrada"),
                 ("📁 Fuentes / Categorías", self.open_sources, None),
@@ -937,6 +941,7 @@ class MainWindow(QMainWindow):
         m.addAction("👁 Previsualizar", self.preview_library)
         m.addSeparator()
         m.addAction("🧪 Escanear metadatos de selección", self.scan_selected_metadata)
+        m.addAction("✎ Editar ficha TMDB…", self.edit_tmdb_selected)
         m.addAction("🎬 Escanear esta película en TMDB…", self.scan_tmdb_manual)
         m.addSeparator()
         m.addAction("🏷 Cambiar categoría…", self.change_library_category)
@@ -1028,14 +1033,53 @@ class MainWindow(QMainWindow):
             return
         self.start_probe([item.get("path") for item in items])
 
-    def scan_tmdb_library(self):
-        """Escanea toda la biblioteca, no sólo las filas visibles/seleccionadas."""
+    def scan_tmdb_library(self, force=False):
+        """Escaneo general: recorre toda la biblioteca y completa sólo lo que falta.
+
+        Los medios que ya tienen ficha TMDB se saltan (no se re-descargan).
+        Si ya está todo escaneado, se ofrece re-escanear todo de todas formas.
+        """
         rows = self.db.search_media("", "Todas", limit=100000)
-        items = [make_item(row) for row in rows]
-        if not items:
+        if not rows:
             self._status("La biblioteca está vacía")
             return
-        self._start_tmdb_scan(items, "biblioteca completa")
+        pending = [r for r in rows if not (r["tmdb_id"] or r["tmdb_poster"])]
+        if not pending:
+            if not force:
+                question = (f"Toda la biblioteca ya tiene ficha TMDB ({len(rows)} medios).\n"
+                            "¿Volver a escanear todo de todas formas?")
+                if QMessageBox.question(self, "Escanear TMDB", question) != QMessageBox.Yes:
+                    self._status("TMDB: toda la biblioteca ya tiene ficha")
+                    return
+            pending = rows
+        self._start_tmdb_scan([make_item(r) for r in pending], "escaneo general")
+
+    def edit_tmdb_selected(self):
+        """Ventana de edición de la ficha TMDB con buscador y galería de imágenes."""
+        rows = sorted({i.row() for i in self.library.selectedIndexes()})
+        row = self._lib_rows[rows[0]] if rows and rows[0] < len(self._lib_rows) else None
+        if row is None:
+            self._status("Selecciona un medio para editar su ficha TMDB")
+            return
+        api_key = str(self.settings.get("tmdb_api_key") or "").strip()
+        if not api_key:
+            QMessageBox.warning(self, "Ficha TMDB", "Configura primero la API key de TMDB en Ajustes.")
+            return
+        dlg = TMDBEditDialog(self, dict(row), api_key)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        if dlg.wants_clear():
+            self.db.update_tmdb_metadata(row["path"], {})
+            self.ctrl.refresh_meta_from_db(row["path"])
+            self.refresh_library()
+            self._status(f"TMDB: ficha quitada • {Path(row['path']).stem}")
+            return
+        meta = dlg.values()
+        if meta:
+            self.db.update_tmdb_metadata(row["path"], meta)
+            self.ctrl.refresh_meta_from_db(row["path"])
+            self.refresh_library()
+            self._status(f"TMDB: ficha actualizada • {meta.get('title') or ''} {meta.get('year') or ''}".strip())
 
     def scan_tmdb_selected(self):
         """Compatibilidad: escanea las filas seleccionadas en segundo plano."""
@@ -1066,6 +1110,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Escanear TMDB", "Configura primero la API key en Ajustes.")
             return
         query_overrides = query_overrides or {}
+        fresh = not self._tmdb_library_queue and not self._tmdb_library_workers
         queued_paths = {entry[0] for entry in self._tmdb_library_queue}
         if force:
             forced = {str(item.get("path") or "") for item in items}
@@ -1084,6 +1129,10 @@ class MainWindow(QMainWindow):
             self._tmdb_launch_tmdb_workers()
             self._status("Las películas indicadas ya están en la cola de TMDB")
             return
+        if fresh:
+            # Escaneo nuevo: reiniciar el resumen de cargadas / sin resultado.
+            self._tmdb_lib_ok = 0
+            self._tmdb_lib_fail = 0
         self._tmdb_library_total += added
         self._tmdb_library_done = 0
         self._tmdb_library_label = label
@@ -1106,12 +1155,14 @@ class MainWindow(QMainWindow):
         self.db.update_tmdb_metadata(path, metadata)
         self.ctrl.refresh_meta_from_db(path)
         self.refresh_library()
+        self._tmdb_lib_ok += 1
         title = metadata.get("title") or Path(path).stem
         self._status(f"TMDB cargado • {title} • imagen guardada")
         log.info("TMDB biblioteca cargado path=%s id=%s poster=%s backdrop=%s",
                  path, metadata.get("id"), metadata.get("poster_file"), metadata.get("backdrop_file"))
 
     def _tmdb_library_failed(self, path, error):
+        self._tmdb_lib_fail += 1
         self._status(f"TMDB no disponible • {Path(path).stem}: {error}")
         log.warning("TMDB biblioteca falló path=%s: %s", path, error)
 
@@ -1121,7 +1172,12 @@ class MainWindow(QMainWindow):
         self._tmdb_library_done += 1
         self._tmdb_launch_tmdb_workers()
         if not self._tmdb_library_workers and not self._tmdb_library_queue:
-            self.lib_status.setText(f"TMDB: escaneo finalizado • {self._tmdb_library_done} procesadas")
+            summary = (f"TMDB: escaneo finalizado • {self._tmdb_library_done} procesadas • "
+                       f"{self._tmdb_lib_ok} cargadas")
+            if self._tmdb_lib_fail:
+                summary += f" • {self._tmdb_lib_fail} sin resultado"
+            self.lib_status.setText(summary)
+            self._status(summary)
 
     # ================================================================ grid
     def _selected_rows(self):

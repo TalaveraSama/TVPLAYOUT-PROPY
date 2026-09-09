@@ -168,6 +168,29 @@ def test_library_can_probe_selection_and_store_tmdb_images():
     assert "paths=None" in prober and "paths=self.paths" in prober
 
 
+def test_tmdb_general_scan_skips_done_and_edit_dialog_searches_image_gallery():
+    window = _read("app", "main_window.py")
+    tmdb = _read("app", "tmdb.py")
+    dialog = _read("app", "dialogs_tmdb.py")
+    # Escaneo general: sólo lo pendiente, con resumen al terminar.
+    assert "escaneo general" in window
+    assert "tmdb_id\"] or r[\"tmdb_poster" in window
+    assert "_tmdb_lib_ok" in window and "_tmdb_lib_fail" in window
+    assert "sin resultado" in window
+    # Ventana de edición con buscador y galería de imágenes.
+    assert "edit_tmdb_selected" in window and "TMDBEditDialog" in window
+    assert "Editar ficha TMDB" in window
+    assert "wants_clear" in window
+    # Workers: búsqueda multi-resultado y galería de imágenes por película.
+    assert "class TMDBSearchWorker" in tmdb and "class TMDBImagesWorker" in tmdb
+    assert "/movie/{movie_id}/images" in tmdb
+    assert "include_image_language" in tmdb
+    assert "download_image" in tmdb
+    assert "TMDBSearchWorker" in dialog and "TMDBImagesWorker" in dialog
+    assert "poster_file" in dialog and "backdrop_file" in dialog
+    assert "Sin póster" in dialog and "Sin backdrop" in dialog
+
+
 def test_windows_fit_tv_logical_resolution_and_dialogs_can_scroll():
     main = _read("app", "main_window.py")
     dialogs = _read("app", "dialogs.py")
