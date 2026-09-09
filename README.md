@@ -1,4 +1,4 @@
-# TVPlayout PRO V24.0.2.10 — Consola de playout
+# TVPlayout PRO V24.0.2.11 — Consola de playout
 
 Playout de televisión 24/7 para Windows con interfaz inspirada en la distribución de **XPlayout** (Axel Technology),
 sin usar código ni recursos propietarios. Reproductor local **PyAV/libavcodec** + salida **RTMP/SRT/UDP** con **FFmpeg** + NDI nativo mediante el Runtime x64.
@@ -121,6 +121,12 @@ tests/                  pruebas estáticas y de continuidad del playout
 ```
 
 ## Registro de cambios
+
+### V24.0.2.11
+- El cambio de idioma de audio y subtítulos desde Ajustes se aplica inmediatamente al evento al aire.
+- Se reinicia PyAV y cada worker RTMP/SRT en el mismo offset; el corte IP breve evita desincronización.
+- Se añadieron las opciones explícitas `en`, `eng` y `English` para audio y subtítulos.
+- Cuando está activado el quemado de subtítulos, FFmpeg aplica la nueva pista al reiniciar sin esperar al siguiente evento.
 
 ### V24.0.2.10
 - Se conserva la tanda automática al finalizar cada evento y se añade una tanda intermedia independiente, con categoría e intervalo configurables.

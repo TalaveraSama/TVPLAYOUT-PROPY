@@ -87,6 +87,30 @@ def test_automatic_end_tanda_remains_in_the_controller():
     assert "self.tandas_category" in playout
 
 
+def test_live_track_change_restarts_local_and_remote_at_same_offset():
+    playout = _read("app", "playout.py")
+    player = _read("app", "pyav_player.py")
+    output = _read("app", "output.py")
+    window = _read("app", "main_window.py")
+    assert "def set_track_preferences" in playout
+    assert "start=trim_start + offset" in playout
+    assert "sub_id=sid" in playout
+    assert "subtitle_id=sub_id" in player
+    assert "_live_audio_preference" in output and "_live_subtitle_preference" in output
+    assert "self.output.set_track_preferences" in window
+    assert "self.ctrl.set_track_preferences" in window
+
+
+def test_live_track_change_is_exposed_from_settings_and_supports_burned_subtitles():
+    dialog = _read("app", "dialogs.py")
+    output = _read("app", "output.py")
+    config = _read("app", "config.py")
+    assert "guardar estos valores cambia la pista en vivo" in dialog
+    assert "if self.subtitle_burn" in output
+    assert "pick_subtitle(tracks, subtitle_preference)" in output
+    assert '"en"' in config and '"eng"' in config and '"English"' in config
+
+
 if __name__ == "__main__":
     tests = [(name, fn) for name, fn in globals().items() if name.startswith("test_") and callable(fn)]
     failed = 0

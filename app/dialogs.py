@@ -856,6 +856,7 @@ class SettingsDialog(BaseDialog):
         self.probe_on_scan.setChecked(bool(self.settings.get("probe_on_scan", True)))
         f2.addRow("Audio preferido", self.audio)
         f2.addRow("Subtítulos preferidos", self.sub)
+        f2.addRow("", QLabel("Si hay un evento al aire, guardar estos valores cambia la pista en vivo; puede haber un corte IP breve."))
         f2.addRow("Decodificación HW (mpv)", self.hwdec)
         f2.addRow("Dispositivo de audio (mpv)", self.audio_device)
         f2.addRow("Autofill: categoría", self.autofill_cat)

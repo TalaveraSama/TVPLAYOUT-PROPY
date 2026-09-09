@@ -42,12 +42,18 @@ class _DecodeJob(QObject):
     finished = Signal(str, int)                     # eof | stop | error, generación
     error = Signal(str, int)
 
-    def __init__(self, path, generation, loop=False, audio_id=None, start_at=0.0, end_at=0.0, parent=None):
+    def __init__(self, path, generation, loop=False, audio_id=None, subtitle_id=None,
+                 start_at=0.0, end_at=0.0, parent=None):
         super().__init__(parent)
         self.path = str(path)
         self.generation = generation
         self.loop = bool(loop)
         self.audio_id = audio_id
+        # Se conserva el índice seleccionado para que el reinicio en vivo y
+        # las salidas mantengan una API de pistas coherente. El monitor PyAV
+        # no quema subtítulos en la imagen; RTMP/SRT los quema en FFmpeg cuando
+        # está activada la opción correspondiente.
+        self.subtitle_id = subtitle_id
         self.start_at = max(0.0, float(start_at or 0.0))
         self.end_at = max(0.0, float(end_at or 0.0))
         self.stop_event = threading.Event()
@@ -551,7 +557,7 @@ class PyAVPlayer(QObject):
             return False
         return True
 
-    def _begin(self, path, loop=False, audio_id=None, start=0.0, end=0.0):
+    def _begin(self, path, loop=False, audio_id=None, sub_id=None, start=0.0, end=0.0):
         absolute = os.path.abspath(path)
         if not os.path.isfile(absolute):
             log.error("PyAV source missing path=%s", absolute)
@@ -565,7 +571,7 @@ class PyAVPlayer(QObject):
         self._trim_start = max(0.0, float(start or 0.0))
         self._trim_end = max(0.0, float(end or 0.0))
         self._job = _DecodeJob(absolute, generation, loop=loop, audio_id=audio_id,
-                               start_at=self._trim_start, end_at=self._trim_end)
+                               subtitle_id=sub_id, start_at=self._trim_start, end_at=self._trim_end)
         self._job.loaded.connect(self._on_loaded)
         self._job.ready.connect(self._on_ready)
         self._job.frame.connect(self._on_frame)
@@ -590,7 +596,7 @@ class PyAVPlayer(QObject):
     def play(self, path, audio_id=None, sub_id=None, start=0.0, end=0.0, loop=False):
         if not self.start():
             return False
-        ok = self._begin(path, loop=loop, audio_id=audio_id, start=start, end=end)
+        ok = self._begin(path, loop=loop, audio_id=audio_id, sub_id=sub_id, start=start, end=end)
         log.debug("PyAV track request gen=%d audio_id=%s subtitle_id=%s trim=%.3f..%.3f",
                   self._generation, audio_id, sub_id, self._trim_start, self._trim_end)
         return ok

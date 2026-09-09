@@ -20,7 +20,7 @@ def _runtime_root():
 
 ROOT = _runtime_root()
 APP_NAME = "TVPlayout PRO"
-APP_VERSION = "V24.0.2.10"
+APP_VERSION = "V24.0.2.11"
 IS_WINDOWS = os.name == "nt"
 
 
@@ -80,8 +80,8 @@ VIDEO_EXTS = {
 LANG_PRIORITY = ["es-MX", "es-419", "Latino", "Latin", "LAT", "spa", "es", "esp", "Spanish", "Español", "Castellano"]
 SUB_PRIORITY = ["es-MX", "spa-MX", "es-419", "Latino", "Latin", "spa", "es", "esp", "Spanish", "Español", "Castellano"]
 
-AUDIO_PREFS = ["AUTO / Español latino preferido", "es-MX", "es-419", "spa", "es", "Original"]
-SUB_PREFS = ["AUTO / Español MX preferido", "es-MX", "spa-MX", "es-419", "spa", "es", "OFF"]
+AUDIO_PREFS = ["AUTO / Español latino preferido", "es-MX", "es-419", "spa", "es", "en", "eng", "English", "Original"]
+SUB_PREFS = ["AUTO / Español MX preferido", "es-MX", "spa-MX", "es-419", "spa", "es", "en", "eng", "English", "OFF"]
 
 RESOLUTIONS = ["1920x1080", "1280x720", "720x576", "720x480", "3840x2160"]
 FPS_LIST = ["23.976", "24", "25", "29.97", "30", "50", "59.94", "60"]

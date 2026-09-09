@@ -1241,7 +1241,13 @@ class MainWindow(QMainWindow):
         it = self.ctrl.items[rows[0]]
         d = EditClipDialog(self, it, self.db.categories())
         if d.exec() == QDialog.Accepted:
-            self.ctrl.update_item(rows[0], **d.values())
+            values = d.values()
+            self.ctrl.update_item(rows[0], **values)
+            if rows[0] == self.ctrl.onair and ("audio_lang" in values or "subtitle_lang" in values):
+                self.ctrl.set_track_preferences(
+                    values.get("audio_lang") or self.ctrl.audio_pref,
+                    values.get("subtitle_lang") or self.ctrl.sub_pref,
+                )
 
     def set_fixed_time(self):
         if self._locked:
@@ -1841,11 +1847,18 @@ class MainWindow(QMainWindow):
             vals = d.values()
             changed_output = any(self.settings.get(k) != vals[k] for k in ("resolution", "fps", "encoder", "bitrate", "audio_bitrate", "subtitle_burn", "ffmpeg_extra", "rtmp_url"))
             changed_player = any(self.settings.get(k) != vals[k] for k in ("hwdec", "audio_device"))
+            changed_tracks = any(self.settings.get(k) != vals[k] for k in ("audio_pref", "sub_pref"))
             for k, v in vals.items():
                 if self.settings.get(k) != v:
                     self._save_setting(k, v)
             self.apply_settings()
-            self._status("Ajustes guardados")
+            if changed_tracks:
+                # Cambia el evento actual inmediatamente. El reinicio breve
+                # mantiene local, RTMP/SRT y la selección de pistas alineados.
+                if self.output and self.output.isRunning():
+                    self.output.set_track_preferences(vals.get("audio_pref"), vals.get("sub_pref"))
+                self.ctrl.set_track_preferences(vals.get("audio_pref"), vals.get("sub_pref"))
+            self._status("Ajustes guardados" + (" • idioma/subtítulo aplicado al aire" if changed_tracks else ""))
             if changed_player and self.player.running:
                 self._status("Ajustes guardados • los cambios de mpv se aplican al siguiente evento tras STOP")
             if changed_output and self.output and self.output.isRunning():

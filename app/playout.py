@@ -445,6 +445,65 @@ class PlayoutController(QObject):
                 self.item_changed.emit(old)
         self.cue_changed.emit(self.cue)
 
+    def _track_preferences_for_item(self, item):
+        audio = item.get("_live_audio_preference")
+        subtitle = item.get("_live_subtitle_preference")
+        if audio is None:
+            audio = item.get("audio_lang") or self.audio_pref
+        if subtitle is None:
+            subtitle = item.get("subtitle_lang") or self.sub_pref
+        return audio, subtitle
+
+    def set_track_preferences(self, audio_preference, subtitle_preference, restart_current=True):
+        """Cambia idioma/pista durante el evento actual.
+
+        PyAV no puede cambiar el stream de un ``DecodeJob`` ya abierto sin
+        perder su demuxer. Se reinicia el mismo archivo en el offset actual;
+        el callback normal obliga a RTMP/SRT a hacer el mismo salto. El corte
+        breve es intencional y evita que audio, subtítulo y vídeo queden en
+        posiciones distintas.
+        """
+        self.audio_pref = str(audio_preference or "AUTO / Español latino preferido")
+        self.sub_pref = str(subtitle_preference or "OFF")
+        if not restart_current or not self.is_on_air:
+            return True
+        item = self.current
+        if not item or not item.get("path") or not os.path.isfile(item["path"]):
+            return False
+        try:
+            offset = max(0.0, float(self._pos or 0.0))
+        except (TypeError, ValueError):
+            offset = 0.0
+        trim_start, trim_end, effective_duration = trim_bounds(item)
+        if effective_duration > 0:
+            offset = min(offset, effective_duration)
+        aid = pick_audio(item.get("tracks"), self.audio_pref)
+        sid = pick_subtitle(item.get("tracks"), self.sub_pref)
+        item["_live_audio_preference"] = self.audio_pref
+        item["_live_subtitle_preference"] = self.sub_pref
+        item["_start_offset"] = offset
+        try:
+            ok = self.player.play(item["path"], audio_id=aid, sub_id=sid,
+                                  start=trim_start + offset, end=trim_end)
+        except TypeError:
+            ok = self.player.play(item["path"], audio_id=aid, start=trim_start + offset)
+        if not ok:
+            self.message.emit("No se pudo cambiar idioma/subtítulos del evento actual")
+            return False
+        self._position_base = offset
+        self._pos = offset
+        self._dur = effective_duration or self._dur
+        self._started_at = time.time()
+        self.position.emit(self._pos, self._dur)
+        self.message.emit(f"PISTAS EN VIVO • audio: {self.audio_pref} • subtítulos: {self.sub_pref}")
+        for cb in list(self.on_start_callbacks):
+            try:
+                cb(self.onair, item)
+            except Exception as exc:  # noqa: BLE001
+                log.error("callback de cambio de pistas: %s", exc)
+        self._mark_dirty()
+        return True
+
     def _identifier_eligible(self, item):
         return bool(item and item.get("category") in self.identifier_categories)
 
@@ -558,8 +617,9 @@ class PlayoutController(QObject):
             return False
         # cierra el anterior (si terminó solo ya está marcado EMITIDO; si lo cortamos, CORTADO)
         self._finish_current(ST_CUT)
-        aid = pick_audio(item.get("tracks"), item.get("audio_lang") or self.audio_pref)
-        sid = pick_subtitle(item.get("tracks"), item.get("subtitle_lang") or self.sub_pref)
+        audio_preference, subtitle_preference = self._track_preferences_for_item(item)
+        aid = pick_audio(item.get("tracks"), audio_preference)
+        sid = pick_subtitle(item.get("tracks"), subtitle_preference)
         trim_start, trim_end, effective_duration = trim_bounds(item)
         try:
             resume_offset = max(0.0, float(start_offset or 0.0))

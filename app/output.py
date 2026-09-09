@@ -127,6 +127,12 @@ class OutputWorker(QThread):
                 out.append(dict(it))
         return out
 
+    def set_track_preferences(self, audio_preference, subtitle_preference):
+        """Actualiza las preferencias para el próximo salto de FFmpeg."""
+        with self._lock:
+            self.audio_preference = str(audio_preference or "AUTO / Español latino preferido")
+            self.subtitle_preference = str(subtitle_preference or "OFF")
+
     # ------------------------------------------------------------- helpers
     def _available_encoders(self):
         try:
@@ -238,8 +244,14 @@ class OutputWorker(QThread):
         except (TypeError, ValueError):
             mark_in = mark_out = source_offset = local_offset = trim_duration = remaining_duration = 0.0
         tracks = self._tracks_of(item)
-        aid = pick_audio(tracks, item.get("audio_lang") or self.audio_preference)
-        sid = pick_subtitle(tracks, item.get("subtitle_lang") or self.subtitle_preference) if self.subtitle_burn else -1
+        audio_preference = item.get("_live_audio_preference")
+        subtitle_preference = item.get("_live_subtitle_preference")
+        if audio_preference is None:
+            audio_preference = item.get("audio_lang") or self.audio_preference
+        if subtitle_preference is None:
+            subtitle_preference = item.get("subtitle_lang") or self.subtitle_preference
+        aid = pick_audio(tracks, audio_preference)
+        sid = pick_subtitle(tracks, subtitle_preference) if self.subtitle_burn else -1
 
         vf = [f"scale={w}:{h}:force_original_aspect_ratio=decrease", f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2",
               f"fps={self.fps}", "format=yuv420p"]
@@ -714,6 +726,18 @@ class MultiOutputManager(QObject):
             remaining = max(0, int((deadline - time.monotonic()) * 1000))
             worker.wait(remaining)
         return not self.isRunning()
+
+    def set_track_preferences(self, audio_preference, subtitle_preference):
+        """Actualiza idioma/subtítulos sin reconstruir la salida todavía.
+
+        El siguiente ``sync_items(..., force_jump=True)`` reinicia cada
+        worker en el offset actual y usa estas preferencias si el evento no
+        lleva una selección en vivo más específica.
+        """
+        self.common["audio_preference"] = str(audio_preference or "AUTO / Español latino preferido")
+        self.common["subtitle_preference"] = str(subtitle_preference or "OFF")
+        for worker in self.workers:
+            worker.set_track_preferences(audio_preference, subtitle_preference)
 
     def sync_items(self, items, current_index, force_jump=False, start_offset=0.0):
         self.items = items or []
