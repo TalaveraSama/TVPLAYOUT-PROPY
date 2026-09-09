@@ -141,6 +141,8 @@ class DB:
             ("tmdb_overview", "TEXT DEFAULT ''"),
             ("tmdb_poster", "TEXT DEFAULT ''"),
             ("tmdb_backdrop", "TEXT DEFAULT ''"),
+            ("mark_in", "REAL DEFAULT 0"),
+            ("mark_out", "REAL DEFAULT 0"),
         ]:
             if name not in m:
                 self.conn.execute(f"ALTER TABLE media ADD COLUMN {name} {ddl}")
@@ -305,7 +307,8 @@ class DB:
 
     def update_media_meta(self, path, **fields):
         allowed = {"duration", "width", "height", "fps", "video_codec", "audio_codec", "tracks",
-                   "thumb", "metadata_ok", "probe_error", "title", "category"}
+                   "thumb", "metadata_ok", "probe_error", "title", "category",
+                   "mark_in", "mark_out"}
         cols = [(k, v) for k, v in fields.items() if k in allowed]
         if not cols:
             return
@@ -431,6 +434,13 @@ class DB:
                     for k in ("width", "height", "fps", "video_codec", "audio_codec", "tracks", "thumb",
                               "tmdb_poster", "tmdb_backdrop", "tmdb_title", "tmdb_year", "tmdb_overview"):
                         item[k] = media[k] if k in media.keys() else ""
+                    # v24.0.2.30: los recortes de biblioteca (auto-recorte /
+                    # Editar clip) se heredan si el evento no tiene propios.
+                    if item["mark_in"] <= 0 and "mark_in" in media.keys():
+                        item["mark_in"] = max(0.0, float(media["mark_in"] or 0))
+                    if item["mark_out"] <= 0 and "mark_out" in media.keys():
+                        item["mark_out"] = max(0.0, float(media["mark_out"] or 0))
+                    item["duration"] = trim_effective(item)
                 if item["path"]:
                     out.append(item)
             return out
@@ -536,3 +546,19 @@ class DB:
             self.conn.execute("UPDATE air_log SET status='INTERRUMPIDO', ended_at=? WHERE ended_at='' OR ended_at IS NULL",
                               (datetime.now().isoformat(timespec="seconds"),))
             self.conn.commit()
+
+
+def trim_effective(item):
+    """Duración efectiva de un item de playlist aplicando sus recortes."""
+    source = float(item.get("source_duration") or item.get("duration") or 0)
+    start = max(0.0, float(item.get("mark_in") or 0))
+    end = float(item.get("mark_out") or 0)
+    if source > 0:
+        start = min(start, source)
+        if end > 0:
+            end = min(end, source)
+    if end <= 0:
+        end = source
+    if end < start:
+        end = start
+    return max(0.0, end - start)

@@ -363,6 +363,12 @@ class PlayoutController(QObject):
                 for k in ("width", "height", "fps", "video_codec", "audio_codec", "tracks", "thumb",
                           "tmdb_poster", "tmdb_backdrop", "tmdb_title", "tmdb_year", "tmdb_overview"):
                     it[k] = meta[k]
+                # v24.0.2.30: los recortes guardados en la biblioteca (auto-recorte
+                # o Editar clip) llegan también a los eventos ya cargados, siempre
+                # que el evento no tenga recortes propios.
+                if not it.get("mark_in") and not it.get("mark_out"):
+                    it["mark_in"] = float(meta.get("mark_in") or 0)
+                    it["mark_out"] = float(meta.get("mark_out") or 0)
                 self.item_changed.emit(i)
 
     def clear(self):

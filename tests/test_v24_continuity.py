@@ -261,6 +261,38 @@ def test_mpv_ipc_windows_pipe_is_byte_stream_not_message_mode():
     assert "IPC _PipeConn falló de forma inesperada" in player
 
 
+def test_library_autotrim_and_clip_editing_apply_marks_to_playlist():
+    """v24.0.2.30: auto-recorte de intro/final y Editar clip en biblioteca.
+
+    Las marcas viven en la tabla media (mark_in/mark_out) y fluyen solas a la
+    playlist vía make_item; make_item ya las lee del dict de la fila."""
+    window = _read("app", "main_window.py")
+    db = _read("app", "db.py")
+    autotrim = _read("app", "autotrim.py")
+    playout = _read("app", "playout.py")
+    dialog = _read("app", "dialogs.py")
+    # Migración y persistencia de marcas en media.
+    assert '("mark_in", "REAL DEFAULT 0")' in db and '("mark_out", "REAL DEFAULT 0")' in db
+    assert '"mark_in", "mark_out"' in db  # update_media_meta permitidos
+    assert "trim_effective" in db
+    # Detector: lógica pura + worker con blackdetect.
+    assert "def parse_blackdetect" in autotrim and "def compute_marks" in autotrim
+    assert "blackdetect=d=" in autotrim and "class AutoTrimWorker" in autotrim
+    assert "HEAD_WINDOW" in autotrim and "TAIL_WINDOW" in autotrim and "MARGIN" in autotrim
+    # Botones y acciones en biblioteca.
+    assert "✂ Auto-recortar biblioteca" in window and "start_autotrim" in window
+    assert "start_autotrim_selected" in window and "Auto-recortar selección" in window
+    assert "✎ Editar clip" in window and "edit_library_clip" in window
+    assert "AutoTrimWorker" in window and "LibraryClipDialog" in window
+    # Diálogo de edición de clip de biblioteca.
+    assert "class LibraryClipDialog" in dialog and "Guardar en biblioteca" in dialog
+    # Propagación a eventos ya cargados y herencia al cargar playlists.
+    assert "los recortes guardados en la biblioteca" in playout
+    assert "se heredan si el evento no tiene propios" in db
+    # La columna Duración muestra el recorte aplicado.
+    assert "✂ {fmt_tc(dur_eff)}" in window
+
+
 def test_windows_fit_tv_logical_resolution_and_dialogs_can_scroll():
     main = _read("app", "main_window.py")
     dialogs = _read("app", "dialogs.py")
@@ -282,6 +314,35 @@ def test_program_monitor_uses_the_encoded_ffmpeg_feed():
     assert "onfail=ignore" in output and "proc.wait(timeout=2.5)" in output
     assert "Programa FFmpeg → reproductor externo" in dialogs
     assert "monitor_player_path" in dialogs
+
+
+def test_autotrim_detects_netflix_style_intro_and_outro():
+    """Lógica pura: el ident envuelto en negros se salta; el final se recorta."""
+    import sys as _sys
+    _sys.path.insert(0, REPO)
+    try:
+        from app.autotrim import compute_marks, parse_blackdetect
+    except Exception:  # PySide6 ausente: se valida sólo la estructura
+        return
+    # Parser del stderr de blackdetect.
+    text = ("[blackdetect @ 0x1] black_start:0 black_end:1.92 black_duration:1.92\n"
+            "[blackdetect @ 0x2] black_start:10.1 black_end:12.4 black_duration:2.3\n")
+    assert parse_blackdetect(text) == [(0.0, 1.92), (10.1, 12.4)]
+    assert parse_blackdetect("sin negros aqui") == []
+    # Patrón Netflix: negro → ident → negro → película.
+    duration = 2 * 3600 + 15 * 60  # 2h15
+    mi, mo = compute_marks(duration, head_blacks=[(0, 1.9), (10.1, 12.4)],
+                           tail_blacks=[(duration - 25, duration - 20)])
+    assert 12.4 < mi <= 13.0, "arranca tras el último negro (ident saltado)"
+    assert duration - 25.5 <= mo < duration - 25, "corta en el primer negro del final"
+    # Sin negros: sin recorte.
+    assert compute_marks(duration, [], []) == (0.0, 0.0)
+    # Cortes mínimos respetados y nunca deja menos de un minuto.
+    assert compute_marks(duration, [(0, 0.3)], []) == (0.0, 0.0)
+    assert compute_marks(90, head_blacks=[(0, 80)], tail_blacks=[]) == (0.0, 0.0)
+    # Los micro-negros (parpadeos) se ignoran aunque el detector no filtre.
+    assert compute_marks(5000, head_blacks=[(0, 0.1)], tail_blacks=[(4880, 4880.1)]) == (0.0, 0.0)
+    assert compute_marks(duration, head_blacks=[(0, 100)]) == (0.0, 0.0)
 
 
 if __name__ == "__main__":

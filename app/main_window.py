@@ -29,11 +29,13 @@ from .prober import ProbeWorker
 from .pyav_player import PyAVPlayer
 from .output import MultiOutputManager
 from .tmdb import TMDBLookupWorker, build_movie_overlay
+from .autotrim import AutoTrimWorker
 from .scheduler import SchedulerService
 from .playout import (PlayoutController, make_item, ST_ONAIR, ST_READY, ST_AIRED, ST_CUT, ST_ERROR, ST_SKIPPED,
                       ST_PENDING, DONE_STATES)
 from .widgets import StationClock, VUMeter, VideoSurface, LedLabel, ProgressBarThin, fmt_tc
-from .dialogs import (PlaylistManagerDialog, SourcesDialog, SchedulerDialog, LogsDialog, SettingsDialog, EditClipDialog)
+from .dialogs import (PlaylistManagerDialog, SourcesDialog, SchedulerDialog, LogsDialog, SettingsDialog, EditClipDialog,
+                        LibraryClipDialog)
 from .dialogs_tmdb import TMDBEditDialog, TMDBCardDialog
 from .theme import QSS
 
@@ -202,6 +204,7 @@ class MainWindow(QMainWindow):
         self._tmdb_library_max_workers = 4
         self._tmdb_lib_ok = 0
         self._tmdb_lib_fail = 0
+        self._autotrim_worker = None
         self._tmdb_request_id = 0
         self._tmdb_overlay_path = ""
         self._tmdb_last_metadata = None
@@ -576,11 +579,13 @@ class MainWindow(QMainWindow):
                 ("⤵ Insertar en selección", lambda: self.add_library_selected("at_selection"), "Antes de la fila seleccionada en la grid"),
                 ("▶ Emitir ahora", lambda: self.add_library_selected("now"), "Corta lo que esté al aire y emite este medio"),
                 ("👁 Previsualizar", self.preview_library, "Ventana mpv aparte"),
+                ("✎ Editar clip", self.edit_library_clip, "Título, categoría y recorte de inicio/fin del medio (se aplica siempre que se use en playlist)"),
                 ("↩ Volver a la playlist", lambda: self.tabs.setCurrentIndex(0), None)]
         row2 = [("🔄 Escanear fuentes", self.start_scan, "Escanea las carpetas configuradas en Fuentes"),
                 ("🧪 Analizar metadatos", self.start_probe, "Duración, resolución, pistas y miniaturas con ffprobe"),
                 ("🎬 Escanear TMDB biblioteca", self.scan_tmdb_library, "Escaneo general: completa la ficha TMDB de todos los medios que aún no la tienen"),
                 ("✎ Editar ficha TMDB…", self.edit_tmdb_selected, "Busca el título en TMDB y elige póster y backdrop de su galería"),
+                ("✂ Auto-recortar biblioteca", self.start_autotrim, "Detecta y recorta solo la intro y el final de todas las películas (salta lo que ya está recortado)"),
                 ("🏷 Cambiar categoría", self.change_library_category, None),
                 ("🎲 Añadir aleatorios…", self.add_random, "Añade N medios al azar de la categoría filtrada"),
                 ("📁 Fuentes / Categorías", self.open_sources, None),
@@ -843,7 +848,13 @@ class MainWindow(QMainWindow):
         for i, r in enumerate(rows):
             d = dict(r)
             fmt = f"{d.get('width') or ''}x{d.get('height') or ''} {d.get('video_codec') or ''}".strip(" x") if d.get("width") else (d.get("video_codec") or "")
-            vals = ["", d["title"], fmt_tc(d.get("duration") or 0) if d.get("duration") else "", d["category"], fmt, d["path"]]
+            # v24.0.2.30: duración al aire aplicando los recortes de biblioteca.
+            dur_total = float(d.get("duration") or 0)
+            m_in = max(0.0, float(d.get("mark_in") or 0))
+            m_out = max(0.0, float(d.get("mark_out") or 0))
+            dur_eff = max(0.0, dur_total - m_in - ((dur_total - m_out) if m_out > 0 else 0.0)) if dur_total else 0.0
+            dur_txt = (f"✂ {fmt_tc(dur_eff)}" if (m_in or m_out) and dur_total else (fmt_tc(dur_total) if dur_total else ""))
+            vals = ["", d["title"], dur_txt, d["category"], fmt, d["path"]]
             image_path = str(d.get("tmdb_poster") or d.get("thumb") or "")
             for c, v in enumerate(vals):
                 it = QTableWidgetItem(v)
@@ -856,6 +867,10 @@ class MainWindow(QMainWindow):
                     it.setTextAlignment(Qt.AlignCenter)
                 if c == 2:
                     it.setTextAlignment(Qt.AlignCenter)
+                    if dur_total and (m_in or m_out):
+                        it.setToolTip(f"Recorte de biblioteca: quita {fmt_tc(m_in)} del inicio"
+                                      + (f" y {fmt_tc(max(0.0, dur_total - m_out))} del final" if m_out > 0 else "")
+                                      + f"\nDuración total: {fmt_tc(dur_total)}")
                 if c == 3:
                     it.setForeground(QBrush(QColor(category_color(d["category"]))))
                 if c == 1 and d.get("tmdb_title"):
@@ -945,8 +960,10 @@ class MainWindow(QMainWindow):
         m.addSeparator()
         m.addAction("👁 Previsualizar", self.preview_library)
         m.addSeparator()
+        m.addAction("✎ Editar clip…", self.edit_library_clip)
         m.addAction("🧪 Escanear metadatos de selección", self.scan_selected_metadata)
         m.addAction("✎ Editar ficha TMDB…", self.edit_tmdb_selected)
+        m.addAction("✂ Auto-recortar selección…", self.start_autotrim_selected)
         m.addAction("🎬 Escanear esta película en TMDB…", self.scan_tmdb_manual)
         m.addSeparator()
         m.addAction("🏷 Cambiar categoría…", self.change_library_category)
@@ -1037,6 +1054,71 @@ class MainWindow(QMainWindow):
             self._status("Selecciona uno o más medios para analizar sus metadatos")
             return
         self.start_probe([item.get("path") for item in items])
+
+    def edit_library_clip(self):
+        """Editar clip de biblioteca: título, categoría y recortes (mark in/out)."""
+        rows = sorted({i.row() for i in self.library.selectedIndexes()})
+        row = self._lib_rows[rows[0]] if rows and rows[0] < len(self._lib_rows) else None
+        if row is None:
+            self._status("Selecciona un medio para editarlo")
+            return
+        d = LibraryClipDialog(self, dict(row), self.db.categories())
+        if d.exec() != QDialog.Accepted:
+            return
+        vals = d.values()
+        self.db.update_media_meta(row["path"], title=vals["title"], category=vals["category"],
+                                  mark_in=vals["mark_in"], mark_out=vals["mark_out"])
+        self.refresh_categories()
+        self.refresh_library()
+        # Llevar los recortes a los eventos ya cargados en la playlist.
+        n = 0
+        for i, it in enumerate(self.ctrl.items):
+            if it.get("path") == row["path"]:
+                self.ctrl.update_item(i, mark_in=vals["mark_in"], mark_out=vals["mark_out"],
+                                      title=vals["title"], category=vals["category"])
+                n += 1
+        self._status(f"Biblioteca actualizada • {vals['title']}" + (f" • {n} evento(s) en playlist sincronizado(s)" if n else ""))
+
+    def start_autotrim(self):
+        """Auto-recorta toda la biblioteca de Películas (salta lo ya recortado)."""
+        if self._autotrim_worker and self._autotrim_worker.isRunning():
+            self._autotrim_worker.stop()
+            self._status("Deteniendo auto-recorte…")
+            return
+        rows = [r for r in self.db.search_media("", "Películas", limit=100000) if (r["duration"] or 0) > 0]
+        if not rows:
+            self._status("No hay películas analizadas en la biblioteca")
+            return
+        self._launch_autotrim(rows, force=False, label="biblioteca de Películas")
+
+    def start_autotrim_selected(self):
+        """Auto-recorta los medios seleccionados (cualquier categoría, forzado)."""
+        rows = sorted({i.row() for i in self.library.selectedIndexes()})
+        picked = [self._lib_rows[r] for r in rows if r < len(self._lib_rows)]
+        if not picked:
+            self._status("Selecciona uno o más medios para auto-recortarlos")
+            return
+        self._launch_autotrim(picked, force=True, label=f"{len(picked)} selección(es)")
+
+    def _launch_autotrim(self, rows, force, label):
+        if not FFMPEG_PATH:
+            QMessageBox.warning(self, "Auto-recorte", "No se encontró ffmpeg.exe; colócalo en la raíz del proyecto.")
+            return
+        self.tabs.setCurrentIndex(2)
+        self._autotrim_worker = AutoTrimWorker(self.db, FFMPEG_PATH, rows, force=force, parent=self)
+        self._autotrim_worker.progress.connect(
+            lambda done, total, title: self.lib_status.setText(f"Auto-recorte • {done}/{total} • {title[:40]}"))
+        self._autotrim_worker.item_done.connect(
+            lambda path, mi, mo, changed: (self.ctrl.refresh_meta_from_db(path), self.refresh_library()))
+        def _done(processed, trimmed):
+            self.refresh_library()
+            self.rebuild_grid()
+            self._status(f"Auto-recorte finalizado • {processed} analizadas • {trimmed} recortadas"
+                         f" • usa ✎ Editar clip para ajustar cualquier corte a mano")
+        self._autotrim_worker.finished_all.connect(_done)
+        self._autotrim_worker.start()
+        self._status(f"Auto-recorte en segundo plano • {label} • detecta intro y final automáticamente")
+        log.info("Auto-recorte iniciado (%s, %d medios, force=%s)", label, len(rows), force)
 
     def scan_tmdb_library(self, force=False):
         """Escaneo general: recorre toda la biblioteca y completa sólo lo que falta.

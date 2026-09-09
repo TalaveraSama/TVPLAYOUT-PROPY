@@ -1173,3 +1173,123 @@ class EditClipDialog(QDialog):
                 "fixed_time": ft, "audio_lang": self.audio.currentData() or "", "subtitle_lang": self.sub.currentData() or "",
                 "mark_in": trim_start, "mark_out": mark_out,
                 "source_duration": self.source_duration}
+
+
+class LibraryClipDialog(QDialog):
+    """Editar un medio de la biblioteca: título, categoría y recortes.
+
+    Los recortes (mark in / mark out) se guardan en la biblioteca y se aplican
+    automáticamente cuando el medio se añade a la playlist; el archivo original
+    nunca se modifica. La interfaz usa la misma metáfora que Editar evento:
+    segundos quitados al principio y al final.
+    """
+
+    def __init__(self, parent, media, categories):
+        super().__init__(parent)
+        self.setWindowTitle("Editar clip (biblioteca)")
+        screen = (parent.screen() if parent is not None else None) or QApplication.primaryScreen()
+        available = screen.availableGeometry() if screen is not None else None
+        width, height = 540, 400
+        if available is not None:
+            width = min(int(width), max(480, available.width() - 32))
+            height = min(int(height), max(340, available.height() - 56))
+        self.resize(max(480, int(width)), max(340, int(height)))
+        self.setMinimumSize(480, 340)
+        self.setSizeGripEnabled(True)
+        self.setWindowFlag(Qt.WindowMinMaxButtonsHint, True)
+
+        m = dict(media or {})
+        self.source_duration = max(0.0, float(m.get("duration") or 0))
+        self.path = str(m.get("path") or "")
+
+        f = QFormLayout(self)
+        self.title = QLineEdit(str(m.get("title") or ""))
+        self.cat = QComboBox()
+        self.cat.setEditable(True)
+        self.cat.addItems(categories)
+        if m.get("category") in categories:
+            self.cat.setCurrentText(str(m["category"]))
+        trim_max = max(86400.0, self.source_duration)
+        mark_in = max(0.0, float(m.get("mark_in") or 0))
+        mark_out = max(0.0, float(m.get("mark_out") or 0))
+        end_removed = max(0.0, self.source_duration - mark_out) if mark_out > 0 and self.source_duration > 0 else 0.0
+        self.trim_start = QDoubleSpinBox()
+        self.trim_start.setDecimals(3)
+        self.trim_start.setRange(0.0, trim_max)
+        self.trim_start.setSingleStep(0.5)
+        self.trim_start.setSuffix(" s")
+        self.trim_start.setToolTip("Segundos que se quitarán al principio (intro, logotipos…)")
+        self.trim_start.setValue(min(self.source_duration, mark_in) if self.source_duration else mark_in)
+        self.trim_end = QDoubleSpinBox()
+        self.trim_end.setDecimals(3)
+        self.trim_end.setRange(0.0, trim_max)
+        self.trim_end.setSingleStep(0.5)
+        self.trim_end.setSuffix(" s")
+        self.trim_end.setToolTip("Segundos que se quitarán del final (créditos, cierre…)")
+        self.trim_end.setValue(min(self.source_duration, end_removed))
+        self.trim_preview = QLabel()
+        self.trim_preview.setStyleSheet("color:#8fd6a3;")
+        self.trim_start.valueChanged.connect(self._update_trim_preview)
+        self.trim_end.valueChanged.connect(self._update_trim_preview)
+        reset = _btn("Restablecer corte", self._reset_trim)
+        trim_box = QHBoxLayout()
+        trim_box.addWidget(self.trim_start)
+        trim_box.addWidget(QLabel("quitar del inicio"))
+        trim_box.addWidget(self.trim_end)
+        trim_box.addWidget(QLabel("quitar del final"))
+        trim_box.addWidget(reset)
+        path_lbl = QLabel(self.path)
+        path_lbl.setWordWrap(True)
+        path_lbl.setStyleSheet("color:#9a9a9a;")
+        dur_lbl = QLabel(f"Duración total: {fmt_tc(self.source_duration)}" +
+                         (f" • resolución {m.get('width') or '?'}x{m.get('height') or '?'}" if m.get("width") else ""))
+        dur_lbl.setStyleSheet("color:#9a9a9a;")
+        f.addRow("Título", self.title)
+        f.addRow("Categoría", self.cat)
+        f.addRow("Recorte", trim_box)
+        f.addRow("", self.trim_preview)
+        f.addRow("", dur_lbl)
+        f.addRow("Archivo", path_lbl)
+        btns = QHBoxLayout()
+        btns.addStretch()
+        cancel = QPushButton("Cancelar")
+        cancel.clicked.connect(self.reject)
+        ok = QPushButton("💾 Guardar en biblioteca")
+        ok.setObjectName("primary")
+        ok.clicked.connect(self._accept)
+        btns.addWidget(cancel)
+        btns.addWidget(ok)
+        f.addRow(btns)
+        self._update_trim_preview()
+
+    def _reset_trim(self):
+        self.trim_start.setValue(0.0)
+        self.trim_end.setValue(0.0)
+
+    def _update_trim_preview(self):
+        start = float(self.trim_start.value())
+        end = float(self.trim_end.value())
+        if self.source_duration > 0:
+            effective = max(0.0, self.source_duration - start - end)
+            self.trim_preview.setText(
+                f"Duración al aire: {fmt_tc(effective)}  •  empieza en {fmt_tc(start)}  •  termina en {fmt_tc(max(start, self.source_duration - end))}")
+        else:
+            self.trim_preview.setText("Duración desconocida: analiza los metadatos para ver la vista previa del corte.")
+
+    def _accept(self):
+        start = float(self.trim_start.value())
+        end = float(self.trim_end.value())
+        if self.source_duration > 0 and start + end >= self.source_duration:
+            QMessageBox.warning(self, "Corte",
+                                "Los segundos quitados al principio y al final deben dejar al menos una fracción de video.")
+            return
+        self.accept()
+
+    def values(self):
+        trim_start = float(self.trim_start.value())
+        trim_end = float(self.trim_end.value())
+        mark_out = max(0.0, self.source_duration - trim_end) if trim_end > 0 else 0.0
+        return {"title": self.title.text().strip() or "",
+                "category": self.cat.currentText().strip() or "Otros",
+                "mark_in": trim_start,
+                "mark_out": mark_out}
