@@ -126,7 +126,7 @@ def test_subtitles_are_selected_and_logged_in_pyav():
     output = _read("app", "output.py")
     assert '"subtitle_id": self.subtitle_id' in player
     assert "PyAV subtitle event" in player
-    assert "subtitles=filename=" in output
+    assert 'subtitles=\'{_ffmpeg_filter_path(source)}\':si=' in output
 
 
 def test_live_track_change_restarts_local_and_remote_at_same_offset():

@@ -301,9 +301,9 @@ class OutputWorker(QThread):
         vf = [f"scale={w}:{h}:force_original_aspect_ratio=decrease", f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2",
               f"fps={self.fps}", "format=yuv420p"]
         if subtitle_burn and sid is not None and sid >= 0:
-            # filename= y la unidad escapada son necesarios para rutas
-            # Windows como Z:/PELICULAS/... dentro del parser de filtros.
-            vf.insert(0, f"subtitles=filename='{_ffmpeg_filter_path(source)}':si={sid}")
+            # Mantener la sintaxis compatible que ya funcionaba con FFmpeg
+            # en v24.0.2.13 para rutas Windows y unidades de red.
+            vf.insert(0, f"subtitles='{_ffmpeg_filter_path(source)}':si={sid}")
         gop = int(round(float(self.fps) * 2))
         cmd = [self.ffmpeg, "-hide_banner", "-loglevel", "warning", "-nostdin", "-re"]
         if source_offset > 0:
