@@ -130,6 +130,13 @@ class NDISender:
     def find_library(cls):
         if os.name != "nt":
             return ""
+        # El instalador oficial del NDI Runtime registra la DLL en System32:
+        # intentar primero por nombre directo cubre la instalación típica.
+        try:
+            ctypes.WinDLL("Processing.NDI.Lib.x64.dll")
+            return "Processing.NDI.Lib.x64.dll"
+        except OSError:
+            pass
         for path in cls._candidates():
             try:
                 if path.is_file():
@@ -161,7 +168,10 @@ class NDISender:
             if not path:
                 raise RuntimeError("Processing.NDI.Lib.x64.dll no encontrado")
             try:
-                dll_dir = str(Path(path).parent)
+                # os.path.abspath: add_dll_directory exige una ruta absoluta y
+                # find_library puede devolver sólo el nombre de la DLL cuando
+                # el Runtime la registró en System32.
+                dll_dir = os.path.dirname(os.path.abspath(path))
                 if hasattr(os, "add_dll_directory"):
                     cls._runtime_dir = os.add_dll_directory(dll_dir)
                 lib = ctypes.WinDLL(path, use_last_error=True)

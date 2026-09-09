@@ -345,6 +345,79 @@ def test_autotrim_detects_netflix_style_intro_and_outro():
     assert compute_marks(duration, head_blacks=[(0, 100)]) == (0.0, 0.0)
 
 
+def _qt_app():
+    """QApplication compartida para las pruebas de runtime (o None sin PySide6)."""
+    try:
+        from PySide6.QtWidgets import QApplication
+    except Exception:
+        return None
+    return QApplication.instance() or QApplication([])
+
+
+def test_rtmp_manager_accepts_monitor_feed_kwarg():
+    """v24.0.2.31: _rtmp_start pasa monitor_feed_url y el gestor debe aceptarlo.
+
+    Sin este parámetro en la firma, arrancar cualquier salida RTMP/SRT/NDI
+    lanza TypeError y la salida queda DETENIDA para siempre.
+    """
+    main = _read("app", "main_window.py")
+    output = _read("app", "output.py")
+    assert "monitor_feed_url=monitor_feed_url)" in main
+    block = output.split("class MultiOutputManager", 1)[1]
+    block = block.split("def __init__", 1)[1].split("):", 1)[0]
+    assert "monitor_feed_url" in block, "MultiOutputManager.__init__ debe aceptar monitor_feed_url"
+
+
+def test_multi_output_manager_constructor_matches_rtmp_start_call():
+    """El constructor acepta exactamente los kwargs que usa _rtmp_start."""
+    if _qt_app() is None:
+        return
+    from app.output import MultiOutputManager
+    manager = MultiOutputManager(
+        "ffmpeg", [{"enabled": True, "name": "Principal", "protocol": "RTMP",
+                    "target": "rtmp://servidor/live"}],
+        [{"path": "/p/peli.mkv", "duration": 60.0}], "1920x1080", "29.97", "AUTO", 6000,
+        "AUTO / Español latino preferido", "OFF", True, 192,
+        loop=True, start_index=0, start_offset=12.5, extra_args="",
+        logo=None, program_overlay=None, program_interval=1080.0,
+        program_duration=15.0, ndi_ffmpeg=None, ndi_source=None, parent=None,
+        monitor_feed_url="udp://127.0.0.1:39000")
+    assert manager.monitor_feed_url == "udp://127.0.0.1:39000"
+    w = manager._make_worker({"protocol": "RTMP", "target": "rtmp://servidor/live", "name": "P"},
+                             "udp://127.0.0.1:39000")
+    assert w.monitor_feed_url == "udp://127.0.0.1:39000"
+    w2 = manager._make_worker({"protocol": "RTMP", "target": "rtmp://otro/live", "name": "Q"}, "")
+    assert w2.monitor_feed_url == ""
+
+
+def test_ndi_sender_fails_gracefully_without_runtime():
+    """Sin NDI Runtime (Linux/desarrollo) el emisor informa la causa y no revienta."""
+    if os.name == "nt":
+        return
+    from app.ndi_sender import NDISender
+    sender = NDISender("Prueba NDI")
+    assert sender.start() is False and sender.error
+    ok, detail, path = NDISender.probe()
+    assert ok is False and detail
+
+
+def test_multi_output_manager_reports_ndi_unavailable():
+    """Un perfil NDI sin Runtime emite estado claro y deja el gestor estable."""
+    if os.name == "nt" or _qt_app() is None:
+        return
+    from app.output import MultiOutputManager
+    manager = MultiOutputManager("ffmpeg", [{"enabled": True, "name": "NDI local",
+                                             "protocol": "NDI", "target": "Studio Monitor"}],
+                                 [], "1920x1080", "29.97", "AUTO", 6000)
+    states = []
+    manager.state.connect(lambda ok, msg: states.append((bool(ok), str(msg))))
+    manager.start()
+    assert states and not any(ok for ok, _ in states)
+    assert any("NDI no disponible" in msg for _, msg in states)
+    assert manager.isRunning() is False
+    manager.stop()
+
+
 if __name__ == "__main__":
     tests = [(name, fn) for name, fn in globals().items() if name.startswith("test_") and callable(fn)]
     failed = 0

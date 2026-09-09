@@ -687,7 +687,8 @@ class MultiOutputManager(QObject):
                  audio_preference="AUTO", subtitle_preference="OFF", subtitle_burn=False,
                  audio_bitrate=192, loop=True, start_index=0, start_offset=0.0,
                  extra_args="", logo=None, program_overlay=None, program_interval=1080.0,
-                 program_duration=15.0, ndi_ffmpeg=None, ndi_source=None, parent=None):
+                 program_duration=15.0, ndi_ffmpeg=None, ndi_source=None,
+                 monitor_feed_url="", parent=None):
         super().__init__(parent)
         self.ffmpeg = ffmpeg
         self.ndi_ffmpeg = ndi_ffmpeg or ffmpeg
@@ -757,7 +758,8 @@ class MultiOutputManager(QObject):
                 # contra el Runtime x64 instalado en Windows.
                 sender = NDISender(target or name, self.common.get("logo"), self.common.get("fps", "29.97"))
                 if not sender.start():
-                    self.state.emit(False, f"{name}: NDI no disponible • {sender.error}")
+                    self.state.emit(False, f"{name}: NDI no disponible • {sender.error} "
+                                            f"• instala el NDI Runtime x64 desde ndi.video/tools")
                     continue
                 sender.set_content_category(self._current_category())
                 self.ndi_senders.append(sender)
