@@ -1,4 +1,4 @@
-# TVPlayout PRO V24.0.2.2 — Consola de playout
+# TVPlayout PRO V24.0.2.3 — Consola de playout
 
 Playout de televisión 24/7 para Windows con interfaz inspirada en la distribución de **XPlayout** (Axel Technology),
 sin usar código ni recursos propietarios. Reproductor local **PyAV/libavcodec** + salida **RTMP/SRT/UDP** con **FFmpeg**.
@@ -99,6 +99,12 @@ tests/                  pruebas estáticas y de continuidad del playout
 ```
 
 ## Registro de cambios
+
+### V24.0.2.3
+- Se agregó el apartado **Salidas IP · RTMP / SRT / NDI** con perfiles múltiples y procesos FFmpeg independientes por destino.
+- RTMP y SRT pueden alimentar OBS y vMix; NDI directo queda disponible cuando FFmpeg incluye `libndi_newtek` y NDI Runtime está instalado.
+- La configuración de logo muestra las guías 16:9 y el área segura 4:3 entre 12.5% y 87.5%, y mantiene la mosca dentro de ese margen.
+- El empaquetado limpia los artefactos temporales de PyInstaller al terminar correctamente.
 
 ### V24.0.2.2
 - Se corrigió el build PyInstaller en Windows: los archivos `.spec` no dependen de `__file__`, que PyInstaller no define al ejecutar el spec.
