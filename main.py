@@ -15,7 +15,11 @@ if __name__ == "__main__":
     try:
         from app.main_window import main
     except ImportError as e:
-        _fatal("Falta una dependencia: %s\n\nEjecuta INSTALL.bat (instala PySide6)." % e)
+        if getattr(sys, "frozen", False):
+            hint = "Copia la carpeta completa de distribución, incluida _internal."
+        else:
+            hint = "Ejecuta INSTALL.bat para instalar PySide6 y PyAV."
+        _fatal("Falta una dependencia: %s\n\n%s" % (e, hint))
         sys.exit(1)
     try:
         main()

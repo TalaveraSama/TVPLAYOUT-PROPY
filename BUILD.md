@@ -1,91 +1,134 @@
-# Generar ejecutable de TVPlayout PRO V22
+# Empaquetar TVPlayout PRO V24.0.2.18 para Windows
 
-## Camino rápido (recomendado)
+## Camino recomendado
 
-Doble clic en `build_exe.bat`. El script:
+En Windows, desde la raíz del checkout, ejecuta:
 
-1. Detecta Python 3.13 / 3.10.
-2. Crea un entorno virtual `.venv-build` (no toca el `.venv` de runtime).
-3. Instala PySide6 y PyInstaller dentro de ese venv.
-4. Empaqueta todo en `dist\TVPlayoutPRO.exe`.
-5. Copia `mpv.exe` y `ffmpeg.exe` al lado del .exe si están en sus
-   ubicaciones estándar del proyecto (`mpv-x86_64\mpv.exe` y
-   `ffmpeg\ffmpeg.exe` o `ffmpeg.exe` en la raíz).
+```bat
+build_exe.bat
+```
 
-Tiempo total: 5-10 minutos (depende de la conexión y la CPU).
+El script crea un entorno aislado `.venv-build`, instala las dependencias,
+construye PySide6 + PyAV/libav con PyInstaller y genera una distribución
+**onedir** portable en:
 
-## Requisitos
+```text
+dist\TVPlayoutPRO\
+├── TVPlayoutPRO.exe
+├── _internal\              librerías Python, PySide6 y PyAV
+├── ffmpeg.exe              salida RTMP/SRT/UDP (si está disponible)
+├── ffprobe.exe             análisis de biblioteca (si está disponible)
+├── assets\logo.png         logo opcional de ventana y Logo / CG
+├── assets\logo.ico         icono opcional del ejecutable
+├── tvplayout.db            se copia si existe en la raíz al construir
+├── INICIAR_EXE.bat
+└── LEEME_PORTABLE.txt
+```
 
-- **Python 3.10 o 3.13** instalado y en el PATH.
-  - Descarga: https://www.python.org/downloads/
-  - Al instalar, **tildar "Add Python to PATH"** (es la primera casilla
-    del instalador, abajo del todo).
-- **Windows 10/11 64 bits**.
-- **~500 MB libres** en disco (el venv de build + el .exe final pesan).
-- **Conexión a internet** en el momento del build (pip baja PySide6 y
-  PyInstaller, pesan ~200 MB juntos).
+**No copies solo `TVPlayoutPRO.exe`**: la carpeta `_internal` contiene las
+librerías necesarias para PySide6 y PyAV. Copia la carpeta completa
+`dist\TVPlayoutPRO` al equipo de emisión y ejecuta `INICIAR_EXE.bat`.
 
-## Camino manual (si el .bat falla)
+La aplicación congelada usa la carpeta donde está el EXE como raíz persistente.
+Ahí quedan `tvplayout.db`, `cache\`, `logs\` y `.env`; no se usa la carpeta
+TEMP de PyInstaller para datos permanentes.
+
+## Herramientas externas
+
+Coloca antes del build:
+
+```text
+ffmpeg.exe                         raíz del proyecto
+ffprobe.exe                        raíz del proyecto
+ffmpeg-ndi.exe                     compatibilidad heredada opcional (no necesaria para NDI directo)
+bin\ffmpeg.exe / bin\ffprobe.exe
+ffmpeg\bin\ffmpeg.exe / ffmpeg\bin\ffprobe.exe
+```
+
+El BAT copia también las DLL que estén junto a FFmpeg. El aire local usa
+PyAV/libav y no necesita reproductores externos; FFmpeg sí es necesario para
+RTMP/SRT/UDP y ffprobe para escanear metadatos y generar miniaturas. NDI directo
+usa `Processing.NDI.Lib.x64.dll` mediante ctypes y no necesita `ffmpeg-ndi.exe`
+ni el muxer `libndi_newtek`. En Windows instala el NDI Runtime x64 oficial;
+la aplicación busca sus rutas habituales y solo marca NDI como disponible
+cuando carga, inicializa y crea correctamente un sender de prueba. La copia
+opcional de `ffmpeg-ndi.exe` solo conserva compatibilidad con instalaciones
+heredadas y no participa en el perfil NDI directo.
+
+## Logo e identidad visual
+
+Para personalizar la aplicación, crea esta carpeta en la raíz del proyecto:
+
+```text
+assets\logo.png
+assets\logo.ico
+```
+
+- `logo.png` se carga como icono de la ventana y aparece como ruta sugerida en
+  **Logo / CG (RTMP)**.
+- `logo.ico` se usa como icono del `TVPlayoutPRO.exe` durante el build.
+- En **Logo / CG (RTMP)** se puede activar el logo, seleccionar posición,
+  tamaño, opacidad y margen. La vista previa dibuja el lienzo 16:9 y las
+  líneas `12.5%` / `87.5%` del área central 4:3.
+- La salida FFmpeg mantiene automáticamente el logo dentro del área 4:3. El
+  tamaño predeterminado es 10% del ancho, un valor normal para una mosca de
+  cadena profesional, con margen predeterminado de 48 px en 1920x1080.
+- El logo afecta la salida FFmpeg y también el frame enviado por NDI directo; no altera el monitor local.
+- Si el usuario todavía no tiene un logo, estos archivos son opcionales y el
+  programa funciona normalmente sin ellos.
+
+## Requisitos del equipo de build
+
+- Windows 10/11 de 64 bits.
+- Python x64 3.13 recomendado; el BAT acepta otra versión `py -3` compatible.
+- Internet durante el primer build para descargar PySide6, PyAV y PyInstaller.
+- Aproximadamente 1 GB libre para el entorno y los artefactos temporales.
+
+## Build manual
 
 ```bat
 py -3.13 -m venv .venv-build
 .venv-build\Scripts\activate
-pip install PySide6==6.7.* PyInstaller==6.*
-pyinstaller --noconfirm --clean --windowed --onefile --name TVPlayoutPRO ^
-    --collect-submodules app --collect-data app ^
-    --hidden-import PySide6.QtSvg --hidden-import PySide6.QtMultimedia ^
-    main.py
+python -m pip install --upgrade pip setuptools wheel
+python -m pip install -r requirements.txt PyInstaller==6.*
+python -m PyInstaller --noconfirm --clean tvplayout.spec
 ```
 
-Después copiá `mpv.exe` y `ffmpeg.exe` al lado de
-`dist\TVPlayoutPRO.exe`.
+Después copia `ffmpeg.exe` y `ffprobe.exe` a `dist\TVPlayoutPRO\` si no los
+copió el BAT.
 
-## Estructura final esperada
+## OBS, vMix y múltiples destinos
 
-Una vez generado, la carpeta donde lo pongas tiene que verse así:
+Abre **Salidas IP · RTMP / SRT / NDI** desde el panel o desde Ajustes del
+sistema. Añade un perfil por receptor; los perfiles RTMP/SRT se emiten en
+procesos FFmpeg independientes y los perfiles NDI en senders independientes
+contra el Runtime x64.
 
-```
-TVPLAYOUT-PROPY-22.2.3\
-├── TVPlayoutPRO.exe          (el .exe generado, ~80-120 MB)
-├── mpv.exe                    (binario externo, mismo de antes)
-├── ffmpeg.exe                 (binario externo, mismo de antes)
-├── tvplayout.db               (la base de datos, se crea sola al iniciar)
-├── cache\                     (se crea sola)
-└── logs\                      (se crea sola)
-```
+La cámara virtual de OBS no es una entrada para TVPlayout: OBS la publica hacia
+otras aplicaciones. Para llevar la señal a OBS, usa una entrada RTMP/SRT o
+`obs-ndi`; para vMix, usa una entrada Stream RTMP/SRT o NDI. NDI directo
+requiere el NDI Runtime x64 instalado en Windows y que Dispositivos muestre
+la prueba del Runtime como OK; no depende de FFmpeg.
 
-## Si algo falla
+## Limpieza
 
-1. **"No se encontró Python"**: instalalo desde python.org, **tildá
-   "Add Python to PATH"**, y reiniciá la consola.
+El BAT elimina `build\` y `dist\` al comenzar. Cuando el build termina bien,
+elimina también `build\`, que solo contiene artefactos temporales de PyInstaller
+como `.toc`, `.pyz`, `warn-*.txt` y reportes HTML. La carpeta `dist\TVPlayoutPRO`
+es la única salida que debe conservarse para distribuir el programa.
 
-2. **"Fallo la instalación de dependencias"**: probablemente sin
-   internet o pip desactualizado. Probá:
-   ```
-   .venv-build\Scripts\python.exe -m pip install --upgrade pip
-   .venv-build\Scripts\python.exe -m pip install PySide6==6.7.* PyInstaller==6.* --verbose
-   ```
+Para eliminar manualmente solo los artefactos locales:
 
-3. **"PyInstaller falló"**: leé el error completo. Lo más común es un
-   módulo de la app que no se está recolectando. Reportá el error y
-   ajustamos.
-
-4. **El .exe arranca pero crashea**: abrí un CMD y ejecutá
-   `TVPlayoutPRO.exe` desde ahí (sin doble clic) para ver la traza
-   completa. Después mandame el error.
-
-5. **"No se encontró mpv.exe" o "No se encontró ffmpeg.exe"**: la
-   consola principal los busca en subcarpetas estándar. Si no los
-   tenés, descargalos:
-   - mpv: https://mpv.io/installation/ (Windows: build de shinchiro o
-     zhongfly)
-   - ffmpeg: https://ffmpeg.org/download.html#build-windows (cualquier
-     build gpl/shared sirve)
-
-## Desinstalar el venv de build
-
-```
+```bat
 rmdir /s /q .venv-build
+rmdir /s /q build
+rmdir /s /q dist
 ```
 
-No afecta al runtime.
+## Diagnóstico
+
+Si el build falla, `build\` se conserva para revisar `warn-tvplayout.txt` y
+los reportes de PyInstaller. Para ver errores de Python en una build de prueba,
+cambia temporalmente `console=False` por `console=True` en `tvplayout.spec` y
+vuelve a ejecutar el BAT. En producción se recomienda mantener la build sin
+consola y revisar `logs\tvplayout.log`.

@@ -1,7 +1,7 @@
-# TVPlayout PRO V22 — Consola de playout 
+# TVPlayout PRO V24.0.2.18 — Consola de playout
 
 Playout de televisión 24/7 para Windows con interfaz inspirada en la distribución de **XPlayout** (Axel Technology),
-sin usar código ni recursos propietarios. Reproductor local **mpv** embebido + salida **RTMP/SRT/UDP** con **FFmpeg**.
+sin usar código ni recursos propietarios. Reproductor local **PyAV/libavcodec** + salida **RTMP/SRT/UDP** con **FFmpeg** + NDI nativo mediante el Runtime x64.
 
 ![Panel principal](docs/panel.png)
 
@@ -12,12 +12,12 @@ sin usar código ni recursos propietarios. Reproductor local **mpv** embebido + 
 | Cabecera | Título, resolución/fps de salida, reloj principal, fecha |
 | Transporte | ▶ PLAY · ❚❚ PAUSA (solo local) · ■ STOP · ▶▏ SIGUIENTE · miniatura · nombre/ruta/formato del clip · barra de progreso · indicador **ON-AIR** |
 | Contadores | CATEGORÍA · DURACIÓN · POSICIÓN · RESTANTE (naranja, rojo en los últimos 10 s) · RESTA PLAYLIST · DESFASE · CODEC · SIGUIENTE |
-| Modos | Autofill · Tandas auto · Hora exacta · Loop · Autoscroll · Modo Automático/Manual |
+| Modos | Autofill · Tandas auto · Tanda intermedia · Hora exacta · Loop · Autoscroll · Modo Automático/Manual |
 | GRID MODE | Playlist con filas coloreadas por categoría: #, Día, Hora (estimada), Hora real, Duración, Categoría, Título, Estado, ⏰ hora fija, Archivo, Formato. Fila azul = AL AIRE, lila = LISTO (cue), gris = emitido |
 | GRAPHIC MODE | La misma playlist con miniaturas |
 | BIBLIOTECA | Buscador + filtro por categoría, añadir al final / tras el aire / en selección / emitir ahora |
-| Botonera | Insertar archivo, Preparar, Editar clip, Subir/Bajar, Quitar, Limpiar emitidos, Ir al aire, Hora fija, Reiniciar estados, Duplicar, Vaciar, Previsualizar, Mezclar pendientes, Playlist Manager |
-| Monitor | VU meter estéreo (dBFS) + vídeo mpv embebido, volumen/mute **solo local**, aspecto |
+| Botonera | Insertar archivo, Preparar, Editar clip (título, pistas y corte no destructivo), Subir/Bajar, Quitar, Limpiar emitidos, Ir al aire, Hora fija, Reiniciar estados, Duplicar, Vaciar, Previsualizar, Mezclar pendientes, Playlist Manager |
+| Monitor | VU meter estéreo (dBFS) + vídeo PyAV/libavcodec pintado en Qt, volumen/mute **solo local**, aspecto |
 | FUNCIONES | Playlist Manager · Biblioteca · Programador · Registros As-Run · Fuentes/Categorías · Ajustes del sistema · Escanear · Logo/CG (RTMP) · Dispositivos · 🚨 EMERGENCIA |
 | SALIDA RTMP | URL, INICIAR/DETENER, estado (encoder, resolución, bitrate) |
 | Reloj de estación | Anillo de 60 segundos + HH:MM / SS, bloqueo de consola, minimizar/salir |
@@ -32,30 +32,94 @@ Se pueden **arrastrar archivos o carpetas** desde el Explorador a la grid.
 - **Hora exacta**: los eventos con hora fija (⏰) cortan lo que esté al aire a su hora; la columna DESFASE muestra el retraso real.
 - **Loop**: al acabar la playlist vuelve a empezar. **Autofill**: rellena con medios aleatorios de la categoría configurada.
 - **Tandas auto**: inserta N anuncios (categoría Publicidad) después de cada evento que no sea publicidad.
+- **Tanda intermedia**: control independiente, con categoría e intervalo en minutos configurables; sólo interrumpe Películas/Música y reanuda desde el segundo exacto en PyAV y las salidas IP.
+- **Identificadores**: permite un vídeo de entrada y otro de salida, normalmente de unos 8 segundos; se aplican sólo a Películas/Música y no a Publicidad, filler ni slate.
 - **Emergencia**: emite de inmediato el clip de emergencia configurado (se pide la primera vez).
 - La playlist actual se guarda sola y se restaura al abrir; opción de **poner al aire automáticamente** e **iniciar RTMP** al arrancar.
 - **As-Run log**: todo lo emitido queda registrado (inicio, fin, estado EMITIDO/CORTADO/ERROR) y se exporta a CSV.
 
+## Tarjeta de película TMDB
+
+En **Ajustes → Reproducción / Automatización** se puede activar la tarjeta TMDB,
+introducir la API key y configurar el intervalo/duración. Por defecto se busca
+la película actual cada **18 minutos** y se muestra durante **15 segundos**.
+La tarjeta combina backdrop, póster, título y año en la franja superior y se
+compone en el monitor PyAV, RTMP/SRT y NDI directo. Se requiere una API key de
+TMDB y conexión a Internet para la primera consulta; las imágenes quedan en
+`cache/tmdb` para reutilizarse. Este producto utiliza la API de TMDB, pero no
+está respaldado ni certificado por TMDB.
+
+### Escaneo manual desde Biblioteca
+
+En **Biblioteca**, selecciona una película y usa el botón **🎬 Escanear TMDB** o
+el menú de clic derecho **Escanear TMDB • imagen/película**. La ficha guarda el
+título, año, resumen, póster y backdrop en la biblioteca; el póster aparece en
+la columna **Imagen** para confirmar visualmente que la carga terminó. El clic
+derecho también permite **Escanear metadatos de selección** para repetir ffprobe
+sólo sobre los clips elegidos.
+
 ## Salida RTMP
 
-La salida sigue al playout local: cada vez que empieza un evento en mpv, FFmpeg salta al mismo evento. Se emite clip por clip
+La salida sigue al playout local: cada vez que empieza un evento en PyAV, FFmpeg salta al mismo evento. Se emite clip por clip
 sobre la misma URL (el servidor ve una reconexión breve entre clips). Encoders: AUTO (prueba NVENC → QSV → AMF → x264),
 CPU/x264, NVIDIA NVENC, Intel QSV, AMD AMF. Audio AAC 48 kHz estéreo, pista de audio elegida por preferencia
 (es-MX / es-419 / Latino / spa / es…). Opcional: quemar subtítulos preferidos y superponer un **logo PNG** (posición, tamaño,
-opacidad). También acepta `srt://` y `udp://`.
+opacidad). La vista previa muestra el marco 16:9 y el área segura 4:3 (12.5%–87.5%); la posición final
+se mantiene dentro de ese margen con un tamaño profesional predeterminado del 10% del ancho. También acepta `srt://` y `udp://`.
 
 ## Instalación (Windows)
 
 1. Instala **Python 3.13 x64** (o 3.11/3.12).
-2. Ejecuta `INSTALL.bat` (crea `.venv` e instala PySide6 6.8.3).
-3. Copia `mpv.exe` en `mpv-x86_64\` (build de mpv para Windows x86_64).
-4. Copia `ffmpeg.exe` y `ffprobe.exe` en la raíz del proyecto (o en `ffmpeg\bin\`, `bin\`).
+2. Ejecuta `INSTALL.bat` (crea `.venv` e instala PySide6 y PyAV/libav).
+3. Copia `ffmpeg.exe` y `ffprobe.exe` en la raíz del proyecto (o en `ffmpeg\bin\`, `bin\`) para RTMP y análisis.
+4. Coloca opcionalmente `assets\logo.png` y `assets\logo.ico` para la identidad visual.
 5. Ejecuta `INICIAR.bat` (`INICIAR_CONSOLA.bat` para ver mensajes de depuración).
 
-Opcional: archivo `.env` con `MPV_PATH=...`, `FFMPEG_PATH=...`, `FFPROBE_PATH=...`, `TVPLAYOUT_DB=...`.
+Opcional: archivo `.env` con `FFMPEG_PATH=...`, `FFPROBE_PATH=...`, `TVPLAYOUT_DB=...`. El monitor local usa PyAV/libav y no necesita mpv.
 
 Primer uso: **Fuentes / Categorías** → añadir carpetas (locales o UNC) → **Escanear biblioteca**. Con ffprobe se analizan
 duración, resolución, códecs, pistas de audio/subtítulos y se generan miniaturas (en `cache\thumbs`).
+
+## Distribución hacia OBS y vMix
+
+En **Salidas IP · RTMP / SRT / NDI** se pueden guardar varios destinos
+independientes. Cada destino RTMP/SRT tiene su propio proceso FFmpeg y cada
+destino NDI su propio sender del Runtime; todos siguen el mismo evento, corte
+y reloj del playout local.
+
+- **OBS:** la cámara virtual de OBS es una salida de OBS hacia otras
+  aplicaciones; TVPlayout no puede enviar directamente a esa cámara virtual.
+  Para recibir TVPlayout en OBS, usa una entrada RTMP/SRT (normalmente mediante
+  Media Source/VLC o un plugin SRT) o instala `obs-ndi` y recibe el nombre NDI.
+  Después OBS puede publicar su propia cámara virtual.
+- **vMix:** añade una entrada Stream para RTMP/SRT o una entrada NDI si tienes
+  NDI Runtime. Para un OBS y un vMix simultáneos, crea dos perfiles RTMP/SRT o
+  un perfil NDI más otro perfil de red.
+- **NDI directo:** instala el **NDI Runtime x64** en Windows. TVPlayout busca
+  `Processing.NDI.Lib.x64.dll`, la carga mediante ctypes, llama a
+  `NDIlib_initialize` y crea un sender de prueba antes de mostrar NDI como
+  disponible. El vídeo BGRA/BGRX y el audio PCM estéreo s16le convertido a
+  float32 planar se envían directamente al Runtime; no se necesita
+  `ffmpeg-ndi.exe` ni `libndi_newtek`. Comprueba **Dispositivos** antes de
+  iniciar y recibe el nombre en NDI Studio Monitor, OBS o vMix.
+- **SRT:** es recomendable para enlaces locales o WAN con pérdida. Un ejemplo
+  caller es `srt://192.168.1.50:9000?mode=caller&latency=200000`; el receptor debe
+  escuchar en el mismo puerto y aceptar SRT.
+
+## Generación diaria y continuidad
+
+En **Programador** crea una regla **Diario**, selecciona la categoría, cantidad,
+orden y hora de generación. La lista se crea una vez por fecha; si la aplicación
+se inicia después de la hora configurada, ejecuta el catch-up automáticamente.
+
+- **Loop:** repite la lista cuando termina hasta que llegue la siguiente
+  generación diaria.
+- **Autofill:** añade medios nuevos de la categoría configurada cuando se agota
+  la lista.
+- Al llegar el siguiente día, el scheduler reemplaza la lista por la nueva
+  generación y mantiene sincronizadas las salidas IP.
+- Si se desactivan Loop y Autofill, al terminar la lista se pasa a filler/slate
+  y las salidas IP se detienen de forma controlada.
 
 ## Estructura
 
@@ -63,7 +127,8 @@ duración, resolución, códecs, pistas de audio/subtítulos y se generan miniat
 main.py                 punto de entrada
 app/main_window.py      consola principal (layout XPlayout)
 app/playout.py          controlador de continuidad (auto/manual, cue, hora fija, loop, autofill, tandas)
-app/mpv_player.py       mpv embebido por IPC (named pipe / socket), VU meter
+app/pyav_player.py       PyAV/libavcodec: decodificación local de vídeo/audio
+app/mpv_player.py        legado no usado en el aire (solo compatibilidad)
 app/output.py           motor RTMP/SRT/UDP con FFmpeg (sigue al playout local, logo, subtítulos)
 app/prober.py           ffprobe: metadatos, pistas, miniaturas; selección de pista preferida
 app/scanner.py          escaneo recursivo de fuentes
@@ -72,17 +137,126 @@ app/db.py               SQLite: biblioteca, playlists, programaciones, ajustes, 
 app/dialogs*.py         Playlist Manager, Fuentes, Programador, Registros, Ajustes, Logo, Dispositivos
 app/widgets.py          reloj de estación, VU meter, superficie de vídeo, barra de progreso
 app/theme.py            hoja de estilos oscura
-tests/                  pruebas (python tests/test_core.py) y mpv simulado para pruebas
+tests/                  pruebas estáticas y de continuidad del playout
 ```
 
 ## Registro de cambios
 
-### V22
+### V24.0.2.18
+- Biblioteca con escaneo manual de metadatos y botón/menú de escaneo TMDB.
+- La ficha TMDB guarda póster/backdrop y muestra el póster en la columna Imagen para confirmar que cargó.
+
+### V24.0.2.17
+- RTMP vuelve al motor exacto de v24.0.2.13.
+- El watcher de drift no interviene mientras FFmpeg está entre procesos o reconectando.
+
+### V24.0.2.16
+- Se restaura exactamente la sintaxis de filtro de subtítulos FFmpeg que funcionaba en v24.0.2.13.
+- El cambio de pistas en vivo y el diagnóstico PyAV se conservan separados del comando RTMP estable.
+
+### V24.0.2.15
+- Se corrige la ruta Windows del filtro FFmpeg `subtitles=filename=...`.
+- PyAV registra la pista de subtítulos seleccionada y los primeros eventos decodificados para verificar por qué una pista no aparece.
+- Si un build de FFmpeg no soporta libass/subtitles, RTMP ya no cae: continúa con vídeo/audio y deja el error exacto en el log.
+- Se mantiene el monitor local con subtítulos de texto y el cambio exacto por índice.
+
+### V24.0.2.14
+- Se corrige el cambio de pista desde Editar clip para guardar el índice exacto del stream (`#0`, `#1`, etc.), incluso cuando el archivo no tiene etiquetas `eng`/`es`.
+- Se corrige el reinicio de audio/subtítulos en vivo y se registra el índice seleccionado para verificarlo en el log.
+- Se hace más tolerante el watchdog de drift para que RTMP no entre en un ciclo de reconexiones por diferencias transitorias de 2–3 segundos.
+
+### V24.0.2.13
+- Se añade integración opcional con TMDB para buscar la película actual y crear una tarjeta con backdrop, póster, título y año.
+- La tarjeta aparece cada 18 minutos por defecto durante 15 segundos en el monitor, RTMP/SRT y NDI directo mediante el frame PyAV.
+- El intervalo, duración y API key son configurables desde Ajustes.
+
+### V24.0.2.12
+- Se muestran subtítulos de texto en el monitor PyAV cuando se selecciona una pista.
+- Seleccionar un idioma de subtítulos activa automáticamente su composición visible en RTMP/SRT.
+- Editar audio o subtítulos desde el menú contextual del evento al aire ahora reinicia una sola vez en el mismo offset y aplica el cambio en vivo.
+- Se corrigió la selección explícita de pistas inglesas (`en`, `eng`, `English`).
+
+### V24.0.2.11
+- El cambio de idioma de audio y subtítulos desde Ajustes se aplica inmediatamente al evento al aire.
+- Se reinicia PyAV y cada worker RTMP/SRT en el mismo offset; el corte IP breve evita desincronización.
+- Se añadieron las opciones explícitas `en`, `eng` y `English` para audio y subtítulos.
+- Cuando está activado el quemado de subtítulos, FFmpeg aplica la nueva pista al reiniciar sin esperar al siguiente evento.
+
+### V24.0.2.10
+- Se conserva la tanda automática al finalizar cada evento y se añade una tanda intermedia independiente, con categoría e intervalo configurables.
+- La tanda intermedia pausa la continuidad en el offset exacto de PyAV, reproduce los anuncios y reanuda Películas/Música sin perder la sincronización con RTMP, SRT o NDI directo.
+- Se añaden identificadores temporales de entrada y salida, configurables como dos archivos separados y limitados a Películas/Música.
+- Se añaden pruebas puras y estructurales de scheduler/continuidad sin requerir PySide6.
+
+### V24.0.2.9
+- Si un perfil activo se guardó antes de cargar la playlist, la salida se inicia automáticamente cuando el primer evento entra al aire.
+- Se mantiene la pantalla principal como monitor y la activación por perfil en Salidas IP.
+
+### V24.0.2.8
+- La casilla `Destino activo` del diálogo de Salidas IP es la única opción para activar o desactivar cada perfil.
+- La pantalla principal ahora funciona como monitor de salidas: muestra destinos, protocolo, estado activo/inactivo y estado de emisión sin editar URLs ni nombres.
+- Al guardar perfiles activos se inicia la salida; al guardar todos los perfiles desactivados se detienen las salidas.
+
+### V24.0.2.7
+- El logo/CG se oculta automáticamente durante los eventos cuya categoría sea `Publicidad`, tanto en RTMP/SRT/FFmpeg como en NDI directo.
+- También se respeta la categoría configurada para las tandas automáticas.
+- Los eventos normales continúan mostrando el logo sin cambiar la configuración de identidad visual.
+
+### V24.0.2.6
+- Se corrigió la compatibilidad con NDI Runtime 6: algunas DLL exportan `NDIlib_send_send_video_async_v2` y no `NDIlib_send_send_video_v2_async`; TVPlayout acepta ambos nombres.
+- Se añadió la ruta `C:\Program Files\NDI\NDI 6 Tools\Runtime` a la detección de DLL.
+- El diagnóstico informa el símbolo de vídeo seleccionado y el sender ya puede crearse con el Runtime mostrado por Windows.
+
+### V24.0.2.5
+- NDI nativo usa directamente `Processing.NDI.Lib.x64.dll` mediante ctypes, con un sender independiente por destino.
+- PyAV entrega frames BGRA/BGRX y PCM s16le; el puente convierte el audio a float32 planar para `NDIlib_audio_frame_v3_t` y sincroniza la destrucción de cada sender.
+- RTMP/SRT continúan usando workers FFmpeg independientes; `ffmpeg-ndi.exe` y `libndi_newtek` ya no son requisitos de NDI.
+- El logo/CG configurado también se aplica al frame enviado por NDI.
+- Se añadieron detección del Runtime, diagnóstico real y pruebas mock multiplataforma.
+- Se corrigió la estructura del diálogo Logo / CG para conservar correctamente la configuración y la vista previa.
+
+
+### V24.0.2.4
+- Se conserva la ruta heredada opcional de `ffmpeg-ndi.exe`, manteniendo el FFmpeg normal para RTMP/SRT.
+- Se muestra el estado del binario NDI en Dispositivos.
+
+### V24.0.2.3
+- Se agregó el apartado **Salidas IP · RTMP / SRT / NDI** con perfiles múltiples y procesos FFmpeg independientes por destino.
+- RTMP y SRT pueden alimentar OBS y vMix; la ruta NDI de esa versión era experimental y dependía de una build FFmpeg con `libndi_newtek`; la implementación actual usa directamente el NDI Runtime x64.
+- La configuración de logo muestra las guías 16:9 y el área segura 4:3 entre 12.5% y 87.5%, y mantiene la mosca dentro de ese margen.
+- El empaquetado limpia los artefactos temporales de PyInstaller al terminar correctamente.
+
+### V24.0.2.2
+- Se corrigió el build PyInstaller en Windows: los archivos `.spec` no dependen de `__file__`, que PyInstaller no define al ejecutar el spec.
+- El empaquetado usa `SPECPATH` o la raíz actual del proyecto como ruta de análisis.
+
+### V24.0.2.1
+- La edición de cortes ahora pide segundos a quitar del inicio y del final: para eliminar 5 segundos iniciales y 2 finales se escriben simplemente `5` y `2`.
+- El resultado efectivo se muestra en el diálogo y se conserva el corte no destructivo interno.
+
+### V24.0.2.0
+- Se agregaron cortes no destructivos por evento: mark-in/mark-out se guardan en la playlist y se aplican al monitor PyAV y a la salida FFmpeg.
+- El archivo original nunca se modifica; el corte se realiza en tiempo de reproducción y el tiempo efectivo aparece en la playlist.
+
+### V24.0.1.9
+- Cortes no destructivos por evento con mark-in/mark-out, persistidos en SQLite, JSON y M3U8.
+- PyAV y FFmpeg respetan el mismo segmento; el archivo fuente nunca se sobrescribe.
+
+### V24.0.1.8
+- RTMP ya no selecciona NVENC/QSV/AMF solo porque FFmpeg los liste: prueba el encoder y usa CPU/x264 si falta la GPU o el controlador.
+- Si un encoder de hardware falla al iniciar, la salida reintenta el mismo evento con CPU/x264 en el mismo offset.
+
+### V24.0.1.7
+- Corrección del ruido constante del monitor local: se descarta el padding de alineación de FFmpeg antes de enviar PCM a QAudioSink.
+- Se conserva el prebuffer local de seis segundos y la salida RTMP/SRT/UDP continúa independiente.
+
+### V24.0.1.6
+- Hotfix: buffer de audio del monitor local reducido para evitar atraso y desfase; la salida RTMP/FFmpeg permanece independiente.
 - Rediseño completo de la interfaz al estilo XPlayout: cabecera con reloj, transporte, contadores, modos, grid coloreada,
   modo gráfico, biblioteca integrada, botonera, VU meter, monitor, funciones, salida RTMP y reloj de estación.
-- Continuidad real: encadenado automático por eventos de mpv (fin de archivo), modo manual con cue, hora fija, loop,
+- Continuidad real: encadenado automático por eventos de fin de PyAV, modo manual con cue, hora fija, loop,
   autofill, tandas, emergencia, bloqueo de consola, as-run log.
-- mpv por IPC bidireccional: posición/duración en tiempo real, VU meter, pista de audio/subtítulos por evento.
+- PyAV/libav decodifica vídeo y audio localmente; QAudioSink entrega PCM y VideoSurface pinta los frames.
 - RTMP sincronizado con el playout local (mismo evento), logo PNG, subtítulos quemados opcionales, SRT/UDP.
 - ffprobe en segundo plano: duración, formato, pistas, miniaturas. Filtro de audio español latino mejorado.
 - Playlist Manager (guardar/cargar/renombrar/exportar/importar M3U/JSON), Fuentes con edición, Programador con próxima

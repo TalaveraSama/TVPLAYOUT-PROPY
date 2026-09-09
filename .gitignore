@@ -2,7 +2,10 @@
 __pycache__/
 *.pyc
 .venv/
+.venv-build/
 venv/
+build/
+dist/
 # Datos en tiempo de ejecución
 logs/
 cache/
