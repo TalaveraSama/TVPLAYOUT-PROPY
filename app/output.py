@@ -15,7 +15,7 @@ from PySide6.QtCore import QThread, Signal, QObject
 
 from . import logger
 from .prober import pick_audio, pick_subtitle
-from .ndi_sender import NDISender
+from .ndi_sender import NDISender, logo_suppressed_for_category
 
 log = logger.get("rtmp")
 CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -252,7 +252,8 @@ class OutputWorker(QThread):
             # la posición absoluta mark-in + offset dentro del archivo.
             cmd += ["-ss", f"{source_offset:.3f}"]
         cmd += ["-i", source]
-        logo = self.logo if (self.logo and os.path.isfile(self.logo.get("path", ""))) else None
+        logo = (self.logo if (self.logo and os.path.isfile(self.logo.get("path", ""))
+                 and not logo_suppressed_for_category(item.get("category", ""), self.logo)) else None)
         amap = f"0:a:{aid}?" if isinstance(aid, int) and aid >= 0 else "0:a:0?"
         if logo:
             cmd += ["-loop", "1", "-framerate", "1", "-i", logo["path"]]
@@ -592,7 +593,9 @@ class MultiOutputManager(QObject):
         self.ndi_ffmpeg = ndi_ffmpeg or ffmpeg
         self.ndi_source = ndi_source
         self.profiles = [dict(p) for p in (profiles or []) if p.get("enabled", True)]
-        self.items = items
+        self.items = items or []
+        self.current_item = (self.items[int(start_index)]
+                             if 0 <= int(start_index or 0) < len(self.items) else None)
         self.common = dict(resolution=resolution, fps=fps, encoder=encoder, bitrate=bitrate,
                            audio_preference=audio_preference, subtitle_preference=subtitle_preference,
                            subtitle_burn=subtitle_burn, audio_bitrate=audio_bitrate, loop=loop,
@@ -624,8 +627,18 @@ class MultiOutputManager(QObject):
         worker.ended.connect(lambda n=name, w=worker: self._worker_ended(n, w))
         return worker
 
+    def _current_category(self):
+        return (self.current_item or {}).get("category", "")
+
+    def _set_current_item(self, item):
+        self.current_item = item or None
+        category = self._current_category()
+        for sender in self.ndi_senders:
+            sender.set_content_category(category)
+
     def start(self):
         self._stop_ndi()
+        self._set_current_item(self.current_item)
         self.workers = []
         self._ended_workers = set()
         self.ndi_senders = []
@@ -641,6 +654,7 @@ class MultiOutputManager(QObject):
                 if not sender.start():
                     self.state.emit(False, f"{name}: NDI no disponible • {sender.error}")
                     continue
+                sender.set_content_category(self._current_category())
                 self.ndi_senders.append(sender)
                 if self.ndi_source is not None:
                     frame_slot = lambda image, position, duration, s=sender: s.send_frame(image, position, duration)
@@ -702,7 +716,9 @@ class MultiOutputManager(QObject):
         return not self.isRunning()
 
     def sync_items(self, items, current_index, force_jump=False, start_offset=0.0):
-        self.items = items
+        self.items = items or []
+        if 0 <= int(current_index) < len(self.items):
+            self._set_current_item(self.items[int(current_index)])
         for worker in self.workers:
             worker.sync_items(items, current_index, force_jump=force_jump, start_offset=start_offset)
 

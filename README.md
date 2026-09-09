@@ -1,4 +1,4 @@
-# TVPlayout PRO V24.0.2.6 — Consola de playout
+# TVPlayout PRO V24.0.2.7 — Consola de playout
 
 Playout de televisión 24/7 para Windows con interfaz inspirada en la distribución de **XPlayout** (Axel Technology),
 sin usar código ni recursos propietarios. Reproductor local **PyAV/libavcodec** + salida **RTMP/SRT/UDP** con **FFmpeg** + NDI nativo mediante el Runtime x64.
@@ -119,6 +119,11 @@ tests/                  pruebas estáticas y de continuidad del playout
 ```
 
 ## Registro de cambios
+
+### V24.0.2.7
+- El logo/CG se oculta automáticamente durante los eventos cuya categoría sea `Publicidad`, tanto en RTMP/SRT/FFmpeg como en NDI directo.
+- También se respeta la categoría configurada para las tandas automáticas.
+- Los eventos normales continúan mostrando el logo sin cambiar la configuración de identidad visual.
 
 ### V24.0.2.6
 - Se corrigió la compatibilidad con NDI Runtime 6: algunas DLL exportan `NDIlib_send_send_video_async_v2` y no `NDIlib_send_send_video_v2_async`; TVPlayout acepta ambos nombres.

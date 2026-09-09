@@ -35,6 +35,20 @@ FOURCC_BGRA = _fourcc("B", "G", "R", "A")
 FOURCC_BGRX = _fourcc("B", "G", "R", "X")
 FOURCC_FLTP = _fourcc("F", "L", "T", "p")
 FRAME_PROGRESSIVE = 1
+DEFAULT_LOGO_HIDDEN_CATEGORIES = ("publicidad",)
+
+
+def logo_suppressed_for_category(category, logo=None):
+    """Indica si el logo debe ocultarse para el evento actual.
+
+    La comparación es insensible a mayúsculas y espacios para cubrir tanto
+    ``Publicidad`` como categorías importadas desde bases antiguas.
+    """
+    configured = (logo or {}).get("hide_categories", DEFAULT_LOGO_HIDDEN_CATEGORIES)
+    if isinstance(configured, str):
+        configured = [configured]
+    hidden = {str(value or "").strip().casefold() for value in (configured or ())}
+    return str(category or "").strip().casefold() in hidden
 
 
 class _SendCreate(ctypes.Structure):
@@ -183,6 +197,7 @@ class NDISender:
     def __init__(self, name, logo=None, fps="29.97"):
         self.name = str(name or "TVPlayout PRO").removeprefix("ndi://")
         self.logo = logo
+        self.content_category = ""
         self.frame_rate_N, self.frame_rate_D = self._fps_ratio(fps)
         self.lib = None
         self.sender = None
@@ -258,7 +273,14 @@ class NDISender:
     def set_logo(self, logo):
         self.logo = logo
 
-    def _with_logo(self, image):
+    def set_content_category(self, category):
+        """Actualiza la categoría sin alterar la configuración del logo."""
+        self.content_category = str(category or "")
+
+    def _with_logo(self, image, apply_logo=True):
+        if not apply_logo or logo_suppressed_for_category(self.content_category, self.logo):
+            return image
+
         if not self.logo or not self.logo.get("path") or not os.path.isfile(self.logo.get("path", "")):
             return image
         if QImage is None or QPainter is None:
@@ -297,7 +319,8 @@ class NDISender:
         if not self.running or image is None:
             return
         try:
-            self._tx_queue.put_nowait(("video", image, position, duration))
+            show_logo = not logo_suppressed_for_category(self.content_category, self.logo)
+            self._tx_queue.put_nowait(("video", image, position, duration, show_logo))
         except queue.Full:
             # El video es asíncrono: si el Runtime se atasca, descartamos el
             # frame viejo en lugar de frenar PyAV y el monitor local.
@@ -306,22 +329,22 @@ class NDISender:
     def _tx_loop(self):
         while not self._tx_stop.is_set():
             try:
-                kind, payload, position, duration = self._tx_queue.get(timeout=0.05)
+                kind, payload, position, duration, show_logo = self._tx_queue.get(timeout=0.05)
             except queue.Empty:
                 continue
             try:
                 if kind == "video":
-                    self._send_frame_now(payload, position, duration)
+                    self._send_frame_now(payload, position, duration, show_logo)
                 else:
                     self._send_audio_now(payload)
             finally:
                 self._tx_queue.task_done()
 
-    def _send_frame_now(self, image, position=0.0, duration=0.0):
+    def _send_frame_now(self, image, position=0.0, duration=0.0, apply_logo=True):
         if not self.running or self.sender is None or image is None or QImage is None:
             return
         try:
-            image = self._with_logo(image).convertToFormat(QImage.Format.Format_BGRX8888)
+            image = self._with_logo(image, apply_logo).convertToFormat(QImage.Format.Format_BGRX8888)
             width, height = image.width(), image.height()
             stride = image.bytesPerLine()
             bits = image.constBits()
@@ -350,7 +373,7 @@ class NDISender:
         if not self.running or not pcm:
             return
         try:
-            self._tx_queue.put_nowait(("audio", bytes(pcm), 0.0, 0.0))
+            self._tx_queue.put_nowait(("audio", bytes(pcm), 0.0, 0.0, True))
         except queue.Full:
             # Si el enlace no da abasto, perder un bloque corto es preferible
             # a crear una cola creciente y atrasar el aire.

@@ -1645,8 +1645,10 @@ class MainWindow(QMainWindow):
         s = self.settings
         if not s.get("logo_enabled") or not s.get("logo_path") or not os.path.isfile(s.get("logo_path", "")):
             return None
+        hidden_categories = {"Publicidad", str(s.get("tandas_category") or "Publicidad")}
         return {"path": s["logo_path"], "position": s.get("logo_position", "arriba-derecha"), "scale": int(s.get("logo_scale", 12)),
-                "opacity": int(s.get("logo_opacity", 90)), "margin": int(s.get("logo_margin", 24))}
+                "opacity": int(s.get("logo_opacity", 90)), "margin": int(s.get("logo_margin", 24)),
+                "hide_categories": sorted(hidden_categories)}
 
     def _rtmp_state(self, ok, msg):
         self._status(msg)

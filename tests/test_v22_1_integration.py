@@ -626,6 +626,23 @@ def test_ndi_profiles_use_independent_direct_senders_and_pyav_signals():
     assert "ndi_source=self.player" in main
 
 
+def test_logo_is_hidden_for_publicidad_in_ffmpeg_and_ndi():
+    """Publicidad no debe recibir logo en FFmpeg ni en el sender NDI."""
+    output = _read(OUT)
+    ndi = _read(os.path.join(REPO, "app", "ndi_sender.py"))
+    window = _read(WIN)
+    assert "logo_suppressed_for_category" in output
+    assert "item.get(\"category\", \"\")" in output
+    assert "set_content_category" in output and "self.content_category" in ndi
+    assert "show_logo = not logo_suppressed_for_category" in ndi
+    assert "hide_categories" in window
+
+    from app.ndi_sender import logo_suppressed_for_category
+    assert logo_suppressed_for_category("Publicidad")
+    assert logo_suppressed_for_category(" publicidad ")
+    assert not logo_suppressed_for_category("Películas")
+
+
 def test_ndi_audio_waits_for_local_prebuffer():
     """El prebuffer de seis segundos alimenta el monitor, no adelanta el NDI."""
     player = _read(os.path.join(REPO, "app", "pyav_player.py"))
