@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (QApplication, QDialog, QVBoxLayout, QHBoxLayout, 
                                QPlainTextEdit, QTabWidget, QWidget, QListWidget, QListWidgetItem, QGroupBox, QScrollArea, QFrame)
 
 from . import logger
-from .config import (MPV_PATH, FFMPEG_PATH, FFPROBE_PATH, ROOT, RESOLUTIONS, FPS_LIST, ENCODERS, AUDIO_PREFS, SUB_PREFS,
+from .config import (MPV_PATH, VLC_PATH, FFMPEG_PATH, FFPROBE_PATH, ROOT, RESOLUTIONS, FPS_LIST, ENCODERS, AUDIO_PREFS, SUB_PREFS,
                      category_color, DB_PATH, APP_VERSION)
 from .scheduler import MODE_LABELS, DAY_LABELS
 from .widgets import fmt_tc
@@ -952,12 +952,14 @@ class SettingsDialog(BaseDialog):
             l.setTextInteractionFlags(Qt.TextSelectableByMouse)
             return l
         f3.addRow("mpv", chip(MPV_PATH))
+        f3.addRow("VLC (opcional)", chip(VLC_PATH))
         f3.addRow("ffmpeg", chip(FFMPEG_PATH))
         f3.addRow("ffprobe", chip(FFPROBE_PATH))
         f3.addRow("Base de datos", chip(str(DB_PATH)))
         f3.addRow("Carpeta del proyecto", chip(str(ROOT)))
         note = QLabel("Coloca mpv.exe en mpv-x86_64\\ y ffmpeg.exe + ffprobe.exe en la raíz del proyecto (o carpeta ffmpeg\\bin). "
-                      "También puedes definir MPV_PATH / FFMPEG_PATH en un archivo .env. Reinicia tras cambiar rutas.")
+                      "VLC es opcional: se usa como reproductor alternativo de vistas previas y del monitor de programa. "
+                      "También puedes definir MPV_PATH / FFMPEG_PATH / VLC_PATH en un archivo .env. Reinicia tras cambiar rutas.")
         note.setWordWrap(True)
         f3.addRow(note)
         tabs.addTab(self.scroll_page(w3), "SISTEMA")

@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (QApplication, QDialog, QVBoxLayout, QHBoxLayout, 
                                QSpinBox, QCheckBox, QFileDialog, QPlainTextEdit, QMessageBox, QWidget,
                                QTableWidget, QTableWidgetItem, QAbstractItemView, QHeaderView)
 
-from .config import MPV_PATH, FFMPEG_PATH, FFMPEG_NDI_PATH, FFPROBE_PATH, ROOT, APP_VERSION, DEFAULT_LOGO_PATH
+from .config import MPV_PATH, VLC_PATH, FFMPEG_PATH, FFMPEG_NDI_PATH, FFPROBE_PATH, ROOT, APP_VERSION, DEFAULT_LOGO_PATH
 from .ndi_sender import NDISender
 
 CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -376,7 +376,8 @@ class DevicesDialog(QDialog):
         lines = []
         lines.append("=== BINARIOS ===")
         for name, path in (("ffmpeg", FFMPEG_PATH), ("ffmpeg-ndi heredado", FFMPEG_NDI_PATH),
-                           ("ffprobe", FFPROBE_PATH), ("mpv", MPV_PATH)):
+                           ("ffprobe", FFPROBE_PATH), ("mpv (preview)", MPV_PATH),
+                           ("vlc (preview alternativo)", VLC_PATH)):
             lines.append(f"{name:18s} {path or 'NO ENCONTRADO'}")
         ndi_ok, ndi_detail, ndi_path = NDISender.probe()
         lines.append("")
@@ -391,6 +392,11 @@ class DevicesDialog(QDialog):
             out = self._run([self._mpv_console(), "--version"])
             lines.append("")
             lines.append("=== MPV ===")
+            lines.append(out.strip().splitlines()[0] if out.strip() else out)
+        if VLC_PATH:
+            out = self._run([VLC_PATH, "--version"])
+            lines.append("")
+            lines.append("=== VLC ===")
             lines.append(out.strip().splitlines()[0] if out.strip() else out)
         if FFMPEG_PATH:
             out = self._run([FFMPEG_PATH, "-hide_banner", "-version"])

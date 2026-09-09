@@ -418,6 +418,71 @@ def test_multi_output_manager_reports_ndi_unavailable():
     manager.stop()
 
 
+def test_library_preview_prefers_mpv_with_vlc_fallback_and_clear_feedback():
+    """v24.0.2.32: la vista previa de biblioteca usa mpv o VLC y avisa si no hay ninguno."""
+    config = _read("app", "config.py")
+    player = _read("app", "pyav_player.py")
+    main = _read("app", "main_window.py")
+    dialogs = _read("app", "dialogs.py")
+    extra = _read("app", "dialogs_extra.py")
+    assert "def find_vlc()" in config and "VLC_PATH = find_vlc()" in config
+    assert 'vlc_path=""' in player and "--no-one-instance" in player
+    assert "Preview abierto en" in player and "no se encontró mpv.exe ni VLC" in player
+    assert 'vlc_path=VLC_PATH' in main
+    assert 'open_external_preview(items[0]["path"], "BIBLIOTECA")' in main
+    assert 'open_external_preview(self.ctrl.items[rows[0]]["path"], "PREVIEW")' in main
+    assert "No se encontró mpv.exe ni VLC" in main
+    assert "VLC (opcional)" in dialogs and "vlc (preview alternativo)" in extra
+
+
+def test_open_external_preview_runtime_prefers_mpv_then_vlc():
+    """Runtime: mpv primero, VLC de reserva y aviso claro sin ninguno."""
+    if _qt_app() is None or os.name != "posix":
+        return
+    import stat
+    import tempfile
+    import time
+    from app.pyav_player import PyAVPlayer
+    witness = tempfile.mktemp(suffix=".txt")
+    fake_mpv = tempfile.mktemp(suffix=".sh")
+    fake_vlc = tempfile.mktemp(suffix=".sh")
+    with open(fake_mpv, "w") as fh:
+        fh.write(f'#!/bin/bash\necho mpv >> "{witness}"\n')
+    with open(fake_vlc, "w") as fh:
+        fh.write(f'#!/bin/bash\necho vlc >> "{witness}"\n')
+    for exe in (fake_mpv, fake_vlc):
+        os.chmod(exe, os.stat(exe).st_mode | stat.S_IEXEC)
+
+    def statuses_of(player):
+        msgs = []
+        player.status.connect(msgs.append)
+        return msgs
+
+    # 1) Con ambos: mpv gana.
+    p1 = PyAVPlayer(None, mpv_path=fake_mpv, vlc_path=fake_vlc)
+    m1 = statuses_of(p1)
+    assert p1.open_external_preview("/tmp/media/peli.mkv", "TEST") is True
+    assert any("Preview abierto en mpv" in m for m in m1), m1
+    # 2) Sin mpv: VLC de reserva.
+    p2 = PyAVPlayer(None, mpv_path="", vlc_path=fake_vlc)
+    m2 = statuses_of(p2)
+    assert p2.open_external_preview("/tmp/media/peli.mkv", "TEST") is True
+    assert any("Preview abierto en VLC" in m for m in m2), m2
+    # 3) Sin ninguno: False + mensaje claro.
+    p3 = PyAVPlayer(None, mpv_path="", vlc_path="")
+    m3 = statuses_of(p3)
+    assert p3.open_external_preview("/tmp/media/peli.mkv", "TEST") is False
+    assert any("no se encontró mpv.exe ni VLC" in m for m in m3), m3
+    # Los procesos de prueba realmente arrancaron.
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        if os.path.exists(witness):
+            break
+        time.sleep(0.1)
+    content = open(witness).read() if os.path.exists(witness) else ""
+    assert "mpv" in content and "vlc" in content, content
+
+
 if __name__ == "__main__":
     tests = [(name, fn) for name, fn in globals().items() if name.startswith("test_") and callable(fn)]
     failed = 0

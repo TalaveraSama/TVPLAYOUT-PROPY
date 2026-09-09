@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                                QDialog)
 
 from . import logger
-from .config import (DB_PATH, MPV_PATH, FFMPEG_PATH, FFMPEG_NDI_PATH, FFPROBE_PATH, APP_NAME, APP_VERSION, APP_ICON_PATH, VIDEO_EXTS,
+from .config import (DB_PATH, MPV_PATH, VLC_PATH, FFMPEG_PATH, FFMPEG_NDI_PATH, FFPROBE_PATH, APP_NAME, APP_VERSION, APP_ICON_PATH, VIDEO_EXTS,
                      AUDIO_PREFS, category_color)
 from .db import DB
 from .scanner import Scanner
@@ -210,7 +210,7 @@ class MainWindow(QMainWindow):
         self._tmdb_last_metadata = None
 
         self._build()
-        self.player = PyAVPlayer(self.video, MPV_PATH, self)
+        self.player = PyAVPlayer(self.video, MPV_PATH, self, vlc_path=VLC_PATH)
         self.player.status.connect(self._status)
         self.player.levels.connect(self.vu.set_levels)
         self.ctrl = PlayoutController(self.db, self.player, self)
@@ -508,7 +508,7 @@ class MainWindow(QMainWindow):
                 ("⧉ Duplicar", self.duplicate_selected, None),
                 ("▼ Bajar", lambda: self.move_selected(1), "Ctrl+↓"),
                 ("🗑 Vaciar playlist", self.clear_playlist, None),
-                ("👁 Previsualizar", self.preview_selected, "Abre el clip en una ventana mpv aparte, sin afectar al aire"),
+                ("👁 Previsualizar", self.preview_selected, "Abre el clip en una ventana aparte (mpv o VLC), sin afectar al aire"),
                 ("🔀 Mezclar pendientes", self.shuffle_pending, "Orden aleatorio de los eventos pendientes"),
                 ("💾 Playlist Manager", self.open_playlist_manager, None)]
         self._pl_buttons = []
@@ -578,7 +578,7 @@ class MainWindow(QMainWindow):
                 ("⤵ Insertar tras el aire", lambda: self.add_library_selected("after_onair"), "Se emitirá a continuación del evento actual"),
                 ("⤵ Insertar en selección", lambda: self.add_library_selected("at_selection"), "Antes de la fila seleccionada en la grid"),
                 ("▶ Emitir ahora", lambda: self.add_library_selected("now"), "Corta lo que esté al aire y emite este medio"),
-                ("👁 Previsualizar", self.preview_library, "Ventana mpv aparte"),
+                ("👁 Previsualizar", self.preview_library, "Ventana aparte con mpv o VLC, sin afectar el aire"),
                 ("✎ Editar clip", self.edit_library_clip, "Título, categoría y recorte de inicio/fin del medio (se aplica siempre que se use en playlist)"),
                 ("↩ Volver a la playlist", lambda: self.tabs.setCurrentIndex(0), None)]
         row2 = [("🔄 Escanear fuentes", self.start_scan, "Escanea las carpetas configuradas en Fuentes"),
@@ -915,8 +915,13 @@ class MainWindow(QMainWindow):
 
     def preview_library(self):
         items = self._selected_library_items()
-        if items:
-            self.player.open_external_preview(items[0]["path"])
+        if not items:
+            return
+        if not self.player.open_external_preview(items[0]["path"], "BIBLIOTECA"):
+            QMessageBox.warning(self, "Previsualizar",
+                                "No se encontró mpv.exe ni VLC para abrir la vista previa.\n\n"
+                                "Coloca mpv.exe en la raíz del proyecto o en mpv-x86_64\\ "
+                                "(o instala VLC) y reinicia la aplicación.")
 
     def change_library_category(self):
         items = self._selected_library_items()
@@ -1655,8 +1660,13 @@ class MainWindow(QMainWindow):
 
     def preview_selected(self):
         rows = self._selected_rows()
-        if rows:
-            self.player.open_external_preview(self.ctrl.items[rows[0]]["path"])
+        if not rows:
+            return
+        if not self.player.open_external_preview(self.ctrl.items[rows[0]]["path"], "PREVIEW"):
+            QMessageBox.warning(self, "Previsualizar",
+                                "No se encontró mpv.exe ni VLC para abrir la vista previa.\n\n"
+                                "Coloca mpv.exe en la raíz del proyecto o en mpv-x86_64\\ "
+                                "(o instala VLC) y reinicia la aplicación.")
 
     def scroll_to_onair(self):
         if self.ctrl.onair >= 0:

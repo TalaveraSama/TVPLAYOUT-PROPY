@@ -20,7 +20,7 @@ def _runtime_root():
 
 ROOT = _runtime_root()
 APP_NAME = "TVPlayout PRO"
-APP_VERSION = "V24.0.2.31"
+APP_VERSION = "V24.0.2.32"
 IS_WINDOWS = os.name == "nt"
 
 
@@ -154,3 +154,26 @@ if FFMPEG_PATH:
         FFPROBE_PATH = str(_probe)
 if not FFPROBE_PATH:
     FFPROBE_PATH = find_binary("ffprobe", "FFPROBE_PATH")
+
+
+# v24.0.2.32: VLC es el reproductor alternativo para las vistas previas de
+# biblioteca/playlist y para el monitor de programa FFmpeg. El instalador
+# oficial lo deja en Program Files\VideoLAN\VLC (no siempre está en el PATH).
+def find_vlc() -> str:
+    found = find_binary("vlc", "VLC_PATH")
+    if found:
+        return found
+    if IS_WINDOWS:
+        bases = [os.environ.get("ProgramFiles", ""), os.environ.get("ProgramW6432", ""),
+                 os.environ.get("ProgramFiles(x86)", "")]
+        for base in (b for b in bases if b):
+            exe = Path(base) / "VideoLAN" / "VLC" / "vlc.exe"
+            try:
+                if exe.is_file():
+                    return str(exe.resolve())
+            except OSError:
+                continue
+    return ""
+
+
+VLC_PATH = find_vlc()

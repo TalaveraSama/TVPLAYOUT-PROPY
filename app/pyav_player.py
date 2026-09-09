@@ -511,10 +511,12 @@ class PyAVPlayer(QObject):
     idle = Signal(bool)
     process_died = Signal()
 
-    def __init__(self, video_widget, mpv_path="", parent=None):
+    def __init__(self, video_widget, mpv_path="", parent=None, vlc_path=""):
         super().__init__(parent)
         self.widget = video_widget
         self.preview_mpv_path = mpv_path or ""
+        # v24.0.2.32: VLC como reproductor alternativo para la vista previa.
+        self.preview_vlc_path = vlc_path or ""
         self.proc = None
         self.ipc_path = None
         self.hwdec = "software/libav"
@@ -869,18 +871,29 @@ class PyAVPlayer(QObject):
         log.debug("PyAV track preference audio=%s subtitle=%s", alang, slang)
 
     def open_external_preview(self, path, title="PREVIEW"):
-        """La previsualización es opcional y separada del aire PyAV."""
-        if not self.preview_mpv_path or not os.path.isfile(self.preview_mpv_path):
-            self.status.emit("Preview externo: mpv.exe no encontrado")
-            return False
+        """La previsualización es opcional y separada del aire PyAV.
+
+        v24.0.2.32: usa mpv si está disponible y VLC como alternativa. El
+        resultado se informa por la señal de estado para que la ventana
+        pueda avisar con un cuadro claro si no hay ningún reproductor.
+        """
         import subprocess
         flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-        cmd = [self.preview_mpv_path, f"--title={title} — {os.path.basename(path)}", "--force-window=yes",
-               "--keep-open=yes", "--osc=yes", "--geometry=40%", "--no-terminal", path]
-        try:
-            subprocess.Popen(cmd, creationflags=flags, stdin=subprocess.DEVNULL,
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            return True
-        except Exception as exc:  # noqa: BLE001
-            self.status.emit(f"Preview: {exc}")
-            return False
+        candidates = []
+        if self.preview_mpv_path and os.path.isfile(self.preview_mpv_path):
+            candidates.append(("mpv", [self.preview_mpv_path,
+                                       f"--title={title} — {os.path.basename(path)}", "--force-window=yes",
+                                       "--keep-open=yes", "--osc=yes", "--geometry=40%", "--no-terminal", path]))
+        if self.preview_vlc_path and os.path.isfile(self.preview_vlc_path):
+            candidates.append(("VLC", [self.preview_vlc_path, "--no-one-instance", "--no-video-title-show",
+                                       f"--meta-title={title} — {os.path.basename(path)}", path]))
+        for name, cmd in candidates:
+            try:
+                subprocess.Popen(cmd, creationflags=flags, stdin=subprocess.DEVNULL,
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                self.status.emit(f"Preview abierto en {name} • {os.path.basename(path)}")
+                return True
+            except Exception as exc:  # noqa: BLE001
+                log.debug("Preview con %s falló: %s", name, exc)
+        self.status.emit("Preview externo: no se encontró mpv.exe ni VLC")
+        return False
