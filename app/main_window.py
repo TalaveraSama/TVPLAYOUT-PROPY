@@ -207,7 +207,11 @@ class MainWindow(QMainWindow):
         # respecto del mpv local; cada 2s comparamos y, si la diferencia
         # supera el umbral, realineamos reiniciando FFmpeg con el offset
         # correcto. El umbral default es 2.0s.
-        self._rtmp_drift_threshold = 2.0
+        # Tolerar el arranque/reconexión de FFmpeg: con NVENC y filtros
+        # subtitles/logo la primera lectura puede tardar varios segundos.
+        self._rtmp_drift_threshold = 6.0
+        self._rtmp_drift_bad_count = 0
+        self._rtmp_drift_last_restart = 0.0
         self._rtmp_drift_timer = QTimer(self)
         self._rtmp_drift_timer.setInterval(2000)
         self._rtmp_drift_timer.timeout.connect(self._rtmp_check_drift)
@@ -1409,7 +1413,8 @@ class MainWindow(QMainWindow):
             self.output.seek_to(self.ctrl.onair, self.ctrl.elapsed)
             # v22.2.1: suspender el watcher de drift 3s para no realinear
             # mientras FFmpeg está reconectando.
-            self._rtmp_drift_suspend_until = time.time() + 3.0
+            self._rtmp_drift_bad_count = 0
+            self._rtmp_drift_suspend_until = time.time() + 8.0
 
     def toggle_mute(self):
         muted = self.mute_btn.isChecked()
@@ -1755,7 +1760,8 @@ class MainWindow(QMainWindow):
             self.output.sync_items(self.ctrl.export_items(), index, force_jump=True, start_offset=start_offset)
             # v22.2.1: al cambiar de clip el offset se resetea a 0 en el RTMP,
             # no tiene sentido que el watcher intente realinear durante 3s.
-            self._rtmp_drift_suspend_until = time.time() + 3.0
+            self._rtmp_drift_bad_count = 0
+            self._rtmp_drift_suspend_until = time.time() + 8.0
         elif self.settings.get("rtmp_mode") == "remote" and self._output_profiles():
             QTimer.singleShot(0, self._rtmp_start)
 
@@ -1821,7 +1827,8 @@ class MainWindow(QMainWindow):
             self._status(f"RTMP {'pausado' if cur_paused else 'reanudado'} • sincronizado con playout local")
             # v22.2.1: suspender el watcher de drift 3s para no realinear
             # mientras el RTMP se está ajustando tras la pausa/reanudación.
-            self._rtmp_drift_suspend_until = time.time() + 3.0
+            self._rtmp_drift_bad_count = 0
+            self._rtmp_drift_suspend_until = time.time() + 8.0
 
     def _rtmp_check_drift(self):
         """v22.2.2: detecta desincronización entre el playout local y el RTMP
@@ -1854,15 +1861,23 @@ class MainWindow(QMainWindow):
         # que arrancó el clip). current_position se calcula internamente
         # como current_offset + (now - clip_emit_started).
         ffmpeg_pos = float(self.output.current_position or 0.0)
-        # Diferencia absoluta
+        # Dos lecturas consecutivas y enfriamiento: una reconexión normal de
+        # 1–3 segundos no debe convertirse en un bucle que mate RTMP.
         drift = abs(mpv_time - ffmpeg_pos)
+        now = time.time()
         if drift >= self._rtmp_drift_threshold:
-            log.info("RTMP drift %.2fs (mpv=%.2fs, ffmpeg_est=%.2fs) — realineando",
-                     drift, mpv_time, ffmpeg_pos)
-            self.output.seek_to(self.ctrl.onair, mpv_time)
-            # Suspender el watcher 3s para no realinear otra vez mientras
-            # FFmpeg termina de reconectar.
-            self._rtmp_drift_suspend_until = time.time() + 3.0
+            self._rtmp_drift_bad_count += 1
+        else:
+            self._rtmp_drift_bad_count = 0
+        if self._rtmp_drift_bad_count < 2 or now - self._rtmp_drift_last_restart < 12.0:
+            return
+        log.info("RTMP drift %.2fs (mpv=%.2fs, ffmpeg_est=%.2fs) — realineando",
+                 drift, mpv_time, ffmpeg_pos)
+        self.output.seek_to(self.ctrl.onair, mpv_time)
+        self._rtmp_drift_bad_count = 0
+        self._rtmp_drift_last_restart = now
+        # Suspender el watcher mientras FFmpeg reconecta.
+        self._rtmp_drift_suspend_until = now + 8.0
 
     # ============================================================== diálogos
     def _show_dialog(self, key, factory):

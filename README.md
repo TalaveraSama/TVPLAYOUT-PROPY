@@ -1,4 +1,4 @@
-# TVPlayout PRO V24.0.2.13 — Consola de playout
+# TVPlayout PRO V24.0.2.14 — Consola de playout
 
 Playout de televisión 24/7 para Windows con interfaz inspirada en la distribución de **XPlayout** (Axel Technology),
 sin usar código ni recursos propietarios. Reproductor local **PyAV/libavcodec** + salida **RTMP/SRT/UDP** con **FFmpeg** + NDI nativo mediante el Runtime x64.
@@ -132,6 +132,11 @@ tests/                  pruebas estáticas y de continuidad del playout
 ```
 
 ## Registro de cambios
+
+### V24.0.2.14
+- Se corrige el cambio de pista desde Editar clip para guardar el índice exacto del stream (`#0`, `#1`, etc.), incluso cuando el archivo no tiene etiquetas `eng`/`es`.
+- Se corrige el reinicio de audio/subtítulos en vivo y se registra el índice seleccionado para verificarlo en el log.
+- Se hace más tolerante el watchdog de drift para que RTMP no entre en un ciclo de reconexiones por diferencias transitorias de 2–3 segundos.
 
 ### V24.0.2.13
 - Se añade integración opcional con TMDB para buscar la película actual y crear una tarjeta con backdrop, póster, título y año.

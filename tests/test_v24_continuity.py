@@ -101,6 +101,23 @@ def test_tmdb_card_is_periodic_and_shared_by_monitor_and_ip_outputs():
     assert "Mostrar tarjeta TMDB periódica" in dialog
 
 
+def test_context_menu_track_selection_uses_exact_stream_indices():
+    dialog = _read("app", "dialogs.py")
+    playout = _read("app", "playout.py")
+    assert 'self.audio.addItem(label, f"#{t.get(\'idx\')}")' in dialog
+    assert 'self.sub.addItem(label, f"#{t.get(\'idx\')}")' in dialog
+    assert "pick_audio(item.get(\"tracks\"), self.audio_pref)" in playout
+    assert "log.info(\"Cambio de pistas en vivo" in playout
+
+
+def test_rtmp_drift_guard_does_not_restart_in_a_fast_loop():
+    window = _read("app", "main_window.py")
+    assert 'self._rtmp_drift_threshold = 6.0' in window
+    assert "_rtmp_drift_bad_count < 2" in window
+    assert "_rtmp_drift_last_restart < 12.0" in window
+    assert "_rtmp_drift_suspend_until = now + 8.0" in window
+
+
 def test_live_track_change_restarts_local_and_remote_at_same_offset():
     playout = _read("app", "playout.py")
     player = _read("app", "pyav_player.py")

@@ -1015,12 +1015,26 @@ class EditClipDialog(QDialog):
         for t in item.get("tracks") or []:
             label = f"#{t.get('idx', 0) + 1} {t.get('lang') or '?'} {t.get('title') or ''} ({t.get('codec', '')})".strip()
             if t.get("type") == "a":
-                self.audio.addItem(label, t.get("lang") or f"#{t.get('idx')}")
+                # Guardar el índice real evita depender de que el archivo
+                # tenga correctamente etiquetado el idioma (eng/es).
+                self.audio.addItem(label, f"#{t.get('idx')}")
             elif t.get("type") == "s":
-                self.sub.addItem(label, t.get("lang") or f"#{t.get('idx')}")
+                self.sub.addItem(label, f"#{t.get('idx')}")
         cur_a = self.audio.findData(item.get("audio_lang", ""))
+        if cur_a < 0:
+            for track in item.get("tracks") or []:
+                if (track.get("type") == "a" and item.get("audio_lang") and
+                        item.get("audio_lang").lower() in {str(track.get("lang") or "").lower(), str(track.get("title") or "").lower()}):
+                    cur_a = self.audio.findData(f"#{track.get('idx')}")
+                    break
         self.audio.setCurrentIndex(max(0, cur_a))
         cur_s = self.sub.findData(item.get("subtitle_lang", ""))
+        if cur_s < 0:
+            for track in item.get("tracks") or []:
+                if (track.get("type") == "s" and item.get("subtitle_lang") and
+                        item.get("subtitle_lang").lower() in {str(track.get("lang") or "").lower(), str(track.get("title") or "").lower()}):
+                    cur_s = self.sub.findData(f"#{track.get('idx')}")
+                    break
         self.sub.setCurrentIndex(max(0, cur_s))
         path = QLabel(item.get("path", ""))
         path.setWordWrap(True)

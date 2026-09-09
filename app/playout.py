@@ -485,6 +485,8 @@ class PlayoutController(QObject):
             offset = min(offset, effective_duration)
         aid = pick_audio(item.get("tracks"), self.audio_pref)
         sid = pick_subtitle(item.get("tracks"), self.sub_pref)
+        log.info("Cambio de pistas en vivo • audio_pref=%s audio_id=%s subtitle_pref=%s subtitle_id=%s offset=%.3f",
+                 self.audio_pref, aid, self.sub_pref, sid, offset)
         item["_live_audio_preference"] = self.audio_pref
         item["_live_subtitle_preference"] = self.sub_pref
         item["_start_offset"] = offset
