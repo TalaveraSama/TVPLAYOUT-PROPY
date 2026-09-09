@@ -1,4 +1,4 @@
-# TVPlayout PRO V24.0.2.5 — Consola de playout
+# TVPlayout PRO V24.0.2.6 — Consola de playout
 
 Playout de televisión 24/7 para Windows con interfaz inspirada en la distribución de **XPlayout** (Axel Technology),
 sin usar código ni recursos propietarios. Reproductor local **PyAV/libavcodec** + salida **RTMP/SRT/UDP** con **FFmpeg** + NDI nativo mediante el Runtime x64.
@@ -120,6 +120,11 @@ tests/                  pruebas estáticas y de continuidad del playout
 
 ## Registro de cambios
 
+### V24.0.2.6
+- Se corrigió la compatibilidad con NDI Runtime 6: algunas DLL exportan `NDIlib_send_send_video_async_v2` y no `NDIlib_send_send_video_v2_async`; TVPlayout acepta ambos nombres.
+- Se añadió la ruta `C:\Program Files\NDI\NDI 6 Tools\Runtime` a la detección de DLL.
+- El diagnóstico informa el símbolo de vídeo seleccionado y el sender ya puede crearse con el Runtime mostrado por Windows.
+
 ### V24.0.2.5
 - NDI nativo usa directamente `Processing.NDI.Lib.x64.dll` mediante ctypes, con un sender independiente por destino.
 - PyAV entrega frames BGRA/BGRX y PCM s16le; el puente convierte el audio a float32 planar para `NDIlib_audio_frame_v3_t` y sincroniza la destrucción de cada sender.
@@ -127,6 +132,7 @@ tests/                  pruebas estáticas y de continuidad del playout
 - El logo/CG configurado también se aplica al frame enviado por NDI.
 - Se añadieron detección del Runtime, diagnóstico real y pruebas mock multiplataforma.
 - Se corrigió la estructura del diálogo Logo / CG para conservar correctamente la configuración y la vista previa.
+
 
 ### V24.0.2.4
 - Se conserva la ruta heredada opcional de `ffmpeg-ndi.exe`, manteniendo el FFmpeg normal para RTMP/SRT.

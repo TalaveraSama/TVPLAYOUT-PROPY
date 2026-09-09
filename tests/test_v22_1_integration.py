@@ -530,12 +530,14 @@ def test_direct_ndi_bridge_declares_runtime_api_and_layouts():
     assert "Processing.NDI.Lib.x64.dll" in ndi
     assert "NDI_RUNTIME_DIR_V6" in ndi and "NDI_RUNTIME_DIR_V5" in ndi
     assert "ProgramFiles" in ndi and "ProgramW6432" in ndi
+    assert "NDI 6 Tools" in ndi and "Runtime" in ndi
     assert "NDIlib_initialize" in ndi and "NDIlib_send_create" in ndi
     assert "NDIlib_send_send_video_v2_async" in ndi
     assert "NDIlib_send_send_audio_v3" in ndi
     assert "FOURCC_BGRX" in ndi and "FOURCC_FLTP" in ndi
     assert "ctypes.c_float" in ndi and "sample_count * ctypes.sizeof(ctypes.c_float)" in ndi
-    assert "send_video_v2_async(sender, empty)" in ndi
+    assert "self._send_video_async(sender, empty)" in ndi
+    assert "NDIlib_send_send_video_async_v2" in ndi
 
 
 def test_ndi_is_not_advertised_from_dll_path_only():
@@ -546,6 +548,21 @@ def test_ndi_is_not_advertised_from_dll_path_only():
     assert "if not sender.start()" in ndi and "sender.stop()" in ndi
     assert "NDISender.probe()" in dialog
     assert "NDI DIRECTO (RUNTIME x64)" in dialog
+
+
+def test_ndi_video_api_accepts_sdk_symbol_order():
+    """NDI 6 Runtime puede exportar async_v2 en vez de v2_async."""
+    from app import ndi_sender
+
+    class OnlyLegacyOrder:
+        NDIlib_send_send_video_async_v2 = object()
+
+    fn, name = ndi_sender.NDISender._api_function(
+        OnlyLegacyOrder(),
+        "NDIlib_send_send_video_v2_async",
+        "NDIlib_send_send_video_async_v2",
+    )
+    assert fn is not None and name == "NDIlib_send_send_video_async_v2"
 
 
 def test_ndi_mock_probe_runs_initialize_create_destroy():
@@ -569,7 +586,8 @@ def test_ndi_mock_probe_runs_initialize_create_destroy():
             self.NDIlib_destroy = FakeFunction()
             self.NDIlib_send_create = FakeFunction(123)
             self.NDIlib_send_destroy = FakeFunction()
-            self.NDIlib_send_send_video_v2_async = FakeFunction()
+            # Es el nombre exportado por varios Runtime NDI 6.
+            self.NDIlib_send_send_video_async_v2 = FakeFunction()
             self.NDIlib_send_send_audio_v3 = FakeFunction()
 
     fake = FakeDLL()
@@ -585,7 +603,7 @@ def test_ndi_mock_probe_runs_initialize_create_destroy():
         assert ok and "listo" in detail and path.endswith("Processing.NDI.Lib.x64.dll")
         assert fake.NDIlib_initialize.calls == 1
         assert fake.NDIlib_send_create.calls == 1
-        assert fake.NDIlib_send_send_video_v2_async.calls == 1
+        assert fake.NDIlib_send_send_video_async_v2.calls == 1
         assert fake.NDIlib_send_destroy.calls == 1
         assert fake.NDIlib_destroy.calls == 1
     finally:

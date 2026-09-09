@@ -99,6 +99,10 @@ class NDISender:
         for base in (os.environ.get("ProgramFiles", "C:\\Program Files"),
                      os.environ.get("ProgramW6432", "C:\\Program Files")):
             root = Path(base)
+            out.extend([
+                root / "NDI" / "NDI 6 Tools" / "Runtime" / "Processing.NDI.Lib.x64.dll",
+                root / "NDI" / "NDI 5 Tools" / "Runtime" / "Processing.NDI.Lib.x64.dll",
+            ])
             for product in ("NDI", "NDI 6 Runtime", "NDI 5 Runtime", "NewTek\\NDI 5 Runtime", "NewTek\\NDI 4 Runtime"):
                 out.extend([root / product / "v6" / "Processing.NDI.Lib.x64.dll",
                             root / product / "v5" / "Processing.NDI.Lib.x64.dll",
@@ -182,6 +186,7 @@ class NDISender:
         self.frame_rate_N, self.frame_rate_D = self._fps_ratio(fps)
         self.lib = None
         self.sender = None
+        self._send_video_async = None
         self._name_bytes = self.name.encode("utf-8", "replace")
         self._last_video_buffer = None
         self._last_audio_buffer = None
@@ -206,6 +211,17 @@ class NDISender:
         except (TypeError, ValueError, ZeroDivisionError):
             return 25, 1
 
+    @staticmethod
+    def _api_function(lib, *names):
+        """Obtiene un símbolo tolerando el orden usado por SDK 5/6."""
+        for name in names:
+            try:
+                return getattr(lib, name), name
+            except AttributeError:
+                continue
+        joined = " o ".join(names)
+        raise RuntimeError(f"ningún símbolo NDI disponible: {joined}")
+
     def start(self):
         try:
             self.lib = self._load_runtime()
@@ -213,8 +229,14 @@ class NDISender:
             self.lib.NDIlib_send_create.restype = ctypes.c_void_p
             self.lib.NDIlib_send_destroy.argtypes = [ctypes.c_void_p]
             self.lib.NDIlib_send_destroy.restype = None
-            self.lib.NDIlib_send_send_video_v2_async.argtypes = [ctypes.c_void_p, ctypes.POINTER(_VideoFrame)]
-            self.lib.NDIlib_send_send_video_v2_async.restype = None
+            self._send_video_async, video_symbol = self._api_function(
+                self.lib,
+                "NDIlib_send_send_video_v2_async",
+                "NDIlib_send_send_video_async_v2",
+            )
+            self._send_video_async.argtypes = [ctypes.c_void_p, ctypes.POINTER(_VideoFrame)]
+            self._send_video_async.restype = None
+            log.debug("NDI vídeo API seleccionada: %s", video_symbol)
             self.lib.NDIlib_send_send_audio_v3.argtypes = [ctypes.c_void_p, ctypes.POINTER(_AudioFrameV3)]
             self.lib.NDIlib_send_send_audio_v3.restype = None
             opts = _SendCreate(self._name_bytes, None, False, True)
@@ -316,7 +338,7 @@ class NDISender:
             # El SDK conserva el buffer hasta la siguiente llamada async.
             old = self._last_video_buffer
             self._last_video_buffer = buf
-            self.lib.NDIlib_send_send_video_v2_async(self.sender, ctypes.byref(frame))
+            self._send_video_async(self.sender, ctypes.byref(frame))
             del old
             self.last_position = float(position or 0.0)
             self.last_duration = float(duration or 0.0)
@@ -377,7 +399,8 @@ class NDISender:
                 # Sincroniza el último frame async antes de liberar su buffer
                 # y destruir únicamente este sender.
                 empty = ctypes.POINTER(_VideoFrame)()
-                lib.NDIlib_send_send_video_v2_async(sender, empty)
+                if self._send_video_async is not None:
+                    self._send_video_async(sender, empty)
             except Exception:
                 pass
             try:
