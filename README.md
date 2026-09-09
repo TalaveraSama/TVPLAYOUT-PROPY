@@ -1,4 +1,4 @@
-# TVPlayout PRO V24.0.2.14 — Consola de playout
+# TVPlayout PRO V24.0.2.15 — Consola de playout
 
 Playout de televisión 24/7 para Windows con interfaz inspirada en la distribución de **XPlayout** (Axel Technology),
 sin usar código ni recursos propietarios. Reproductor local **PyAV/libavcodec** + salida **RTMP/SRT/UDP** con **FFmpeg** + NDI nativo mediante el Runtime x64.
@@ -132,6 +132,12 @@ tests/                  pruebas estáticas y de continuidad del playout
 ```
 
 ## Registro de cambios
+
+### V24.0.2.15
+- Se corrige la ruta Windows del filtro FFmpeg `subtitles=filename=...`.
+- PyAV registra la pista de subtítulos seleccionada y los primeros eventos decodificados para verificar por qué una pista no aparece.
+- Si un build de FFmpeg no soporta libass/subtitles, RTMP ya no cae: continúa con vídeo/audio y deja el error exacto en el log.
+- Se mantiene el monitor local con subtítulos de texto y el cambio exacto por índice.
 
 ### V24.0.2.14
 - Se corrige el cambio de pista desde Editar clip para guardar el índice exacto del stream (`#0`, `#1`, etc.), incluso cuando el archivo no tiene etiquetas `eng`/`es`.

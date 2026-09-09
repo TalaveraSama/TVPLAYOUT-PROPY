@@ -62,6 +62,7 @@ class _DecodeJob(QObject):
         self._paused = False
         self._seek_request = None
         self._subtitle_events = []
+        self._subtitle_event_count = 0
 
     def stop(self):
         self.stop_event.set()
@@ -133,8 +134,11 @@ class _DecodeJob(QObject):
         try:
             decoded = subtitle_stream.decode(packet)
         except Exception as exc:  # noqa: BLE001
-            log.debug("subtitle decode %s: %s", self.path, exc)
-            return
+            try:
+                decoded = packet.decode()
+            except Exception:
+                log.warning("PyAV no pudo decodificar subtítulo %s: %s", self.path, exc)
+                return
         for subtitle_set in decoded or []:
             rects = getattr(subtitle_set, "rects", []) or []
             text = "\n".join(filter(None, (self._subtitle_text(rect) for rect in rects))).strip()
@@ -158,6 +162,10 @@ class _DecodeJob(QObject):
             start = max(0.0, base + start_ms / 1000.0 - timeline_start)
             end = base + end_ms / 1000.0 - timeline_start if end_ms > 0 else start + 6.0
             self._subtitle_events.append((start, max(start, end), text))
+            self._subtitle_event_count += 1
+            if self._subtitle_event_count <= 3:
+                log.info("PyAV subtitle event #%d start=%.3f end=%.3f text=%s",
+                         self._subtitle_event_count, start, end, text[:80])
 
     @staticmethod
     def _paint_subtitle(image, text):
@@ -358,6 +366,8 @@ class _DecodeJob(QObject):
                         "mark_out": end_at if end_at < source_duration else 0.0,
                         "video": self._stream_info(video_stream),
                         "audio": self._stream_info(audio_stream),
+                        "subtitle": self._stream_info(subtitle_stream),
+                        "subtitle_id": self.subtitle_id,
                     }
                     opening_first = first_open
                     if opening_first:
@@ -367,6 +377,8 @@ class _DecodeJob(QObject):
                             "PyAV abierto gen=%d path=%s duration=%.3fs video=%s audio=%s",
                             self.generation, self.path, duration, info["video"], info["audio"],
                         )
+                        log.info("PyAV pistas seleccionadas gen=%d audio_id=%s subtitle_id=%s subtitle=%s",
+                                 self.generation, self.audio_id, self.subtitle_id, info["subtitle"])
 
                     streams = [s for s in (video_stream, audio_stream, subtitle_stream) if s is not None]
                     if not streams:

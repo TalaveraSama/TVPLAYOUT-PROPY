@@ -112,10 +112,21 @@ def test_context_menu_track_selection_uses_exact_stream_indices():
 
 def test_rtmp_drift_guard_does_not_restart_in_a_fast_loop():
     window = _read("app", "main_window.py")
+    output = _read("app", "output.py")
     assert 'self._rtmp_drift_threshold = 6.0' in window
     assert "_rtmp_drift_bad_count < 2" in window
     assert "_rtmp_drift_last_restart < 12.0" in window
     assert "_rtmp_drift_suspend_until = now + 8.0" in window
+    assert "_subtitle_filter_disabled = True" in output
+    assert "RTMP continúa sin subtítulos quemados" in output
+
+
+def test_subtitles_are_selected_and_logged_in_pyav():
+    player = _read("app", "pyav_player.py")
+    output = _read("app", "output.py")
+    assert '"subtitle_id": self.subtitle_id' in player
+    assert "PyAV subtitle event" in player
+    assert "subtitles=filename=" in output
 
 
 def test_live_track_change_restarts_local_and_remote_at_same_offset():
@@ -137,7 +148,7 @@ def test_live_track_change_is_exposed_from_settings_and_supports_burned_subtitle
     output = _read("app", "output.py")
     config = _read("app", "config.py")
     assert "guardar estos valores cambia la pista en vivo" in dialog
-    assert "subtitle_burn = self.subtitle_burn" in output
+    assert "not self._subtitle_filter_disabled" in output
     assert "pick_subtitle(tracks, subtitle_preference)" in output
     assert '"en"' in config and '"eng"' in config and '"English"' in config
 
