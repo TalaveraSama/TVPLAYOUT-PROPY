@@ -1,7 +1,7 @@
 @echo off
 setlocal
 cd /d "%~dp0"
-title TVPlayout PRO V24.0.2.4
+title TVPlayout PRO V24.0.2.5
 if not exist ".venv\Scripts\pythonw.exe" (
   echo No existe el entorno virtual.
   echo Ejecuta INSTALL.bat primero.
