@@ -34,7 +34,7 @@ from .playout import (PlayoutController, make_item, ST_ONAIR, ST_READY, ST_AIRED
                       ST_PENDING, DONE_STATES)
 from .widgets import StationClock, VUMeter, VideoSurface, LedLabel, ProgressBarThin, fmt_tc
 from .dialogs import (PlaylistManagerDialog, SourcesDialog, SchedulerDialog, LogsDialog, SettingsDialog, EditClipDialog)
-from .dialogs_tmdb import TMDBEditDialog
+from .dialogs_tmdb import TMDBEditDialog, TMDBCardDialog
 from .theme import QSS
 
 log = logger.get("ui")
@@ -56,6 +56,8 @@ DEFAULT_SETTINGS = {
     "midroll_enabled": False, "midroll_category": "Publicidad", "midroll_interval_minutes": 15,
     "identifiers_enabled": False, "identifier_in_path": "", "identifier_out_path": "",
     "tmdb_enabled": False, "tmdb_api_key": "", "tmdb_interval_minutes": 18, "tmdb_duration_seconds": 15,
+    "tmdb_card_position": "arriba", "tmdb_card_align": "izquierda", "tmdb_card_style": "banda",
+    "tmdb_card_opacity": 70, "tmdb_card_margin": 18,
     "monitor_mode": "pyav", "monitor_player": "VLC", "monitor_player_path": "", "monitor_feed_port": 39000,
     "restore_playlist": True, "autoplay": False, "probe_on_scan": True,
     "mode": "auto", "loop": True, "exact_time": True, "autofill": False, "tandas": False, "autoscroll": True,
@@ -200,6 +202,7 @@ class MainWindow(QMainWindow):
         self._tmdb_lib_fail = 0
         self._tmdb_request_id = 0
         self._tmdb_overlay_path = ""
+        self._tmdb_last_metadata = None
 
         self._build()
         self.player = PyAVPlayer(self.video, MPV_PATH, self)
@@ -643,7 +646,7 @@ class MainWindow(QMainWindow):
                  ("Programador", self.open_scheduler), ("Registros\nAs-Run", self.open_logs),
                  ("Fuentes /\nCategorías", self.open_sources), ("Ajustes del\nsistema", self.open_settings),
                  ("Salidas IP\nRTMP/SRT/NDI", self.open_outputs), ("Escanear\nbiblioteca", self.start_scan),
-                 ("Logo / CG\n(RTMP)", self.open_logo), ("Dispositivos", self.open_devices)]
+                 ("Logo / CG\n(RTMP)", self.open_logo), ("Tarjeta\nTMDB", self.open_tmdb_card), ("Dispositivos", self.open_devices)]
         self._fn_buttons = []
         for i, (text, slot) in enumerate(funcs):
             b = _btn(text, slot, "funcBtn")
@@ -2086,22 +2089,38 @@ class MainWindow(QMainWindow):
     def _tmdb_ready(self, request_id, index, item, metadata):
         if request_id != self._tmdb_request_id or self.ctrl.current is not item:
             return
+        if self._apply_movie_card(metadata):
+            self._status(f"TMDB • {metadata.get('title', item.get('title', 'Película'))}")
+
+    def _tmdb_card_config(self):
+        """Layout de la tarjeta TMDB (posición, alineación, estilo, opacidad, margen)."""
+        s = self.settings
+        return {"position": s.get("tmdb_card_position", "arriba"),
+                "align": s.get("tmdb_card_align", "izquierda"),
+                "style": s.get("tmdb_card_style", "banda"),
+                "opacity": int(s.get("tmdb_card_opacity", 70) or 70),
+                "margin": int(s.get("tmdb_card_margin", 18) or 18)}
+
+    def _apply_movie_card(self, metadata):
+        """Renderiza la tarjeta con el layout configurado y la activa en monitor y salidas IP."""
         interval = max(1, int(self.settings.get("tmdb_interval_minutes", 18))) * 60.0
         duration = max(1, int(self.settings.get("tmdb_duration_seconds", 15)))
         image_path = str(metadata.get("backdrop_file") or metadata.get("poster_file") or "")
         if not image_path or not os.path.isfile(image_path):
-            return
+            return False
         out = Path(image_path)
         overlay = out.with_name(out.stem + f"_overlay_{self.settings.get('resolution', '1920x1080').replace('x', '_')}.png")
-        if not build_movie_overlay(metadata, self.settings.get("resolution", "1920x1080"), overlay):
-            return
+        if not build_movie_overlay(metadata, self.settings.get("resolution", "1920x1080"), overlay,
+                                   layout=self._tmdb_card_config()):
+            return False
         self._tmdb_overlay_path = str(overlay)
+        self._tmdb_last_metadata = dict(metadata)
         self.player.set_program_overlay(str(overlay), interval, duration)
         if self.output and self.output.isRunning() and self.ctrl.is_on_air:
             self.output.set_program_overlay(str(overlay), interval, duration)
             self.output.sync_items(self.ctrl.export_items(), self.ctrl.onair, force_jump=True,
                                    start_offset=float(self.ctrl.elapsed or 0.0))
-        self._status(f"TMDB • {metadata.get('title', item.get('title', 'Película'))}")
+        return True
 
     def _rtmp_sync_structure(self):
         if self.output and self.output.isRunning():
@@ -2284,6 +2303,19 @@ class MainWindow(QMainWindow):
             if self.output and self.output.isRunning():
                 self.output.set_logo(self._logo_config())
                 self._status("Logo actualizado • se aplica desde el siguiente evento RTMP")
+
+    def open_tmdb_card(self):
+        """Posición y estilo de la tarjeta TMDB con vista previa, como el Logo/CG."""
+        d = TMDBCardDialog(self, self.settings, self.db)
+        if d.exec() != QDialog.Accepted:
+            return
+        for k, v in d.values().items():
+            if self.settings.get(k) != v:
+                self._save_setting(k, v)
+        if self._tmdb_last_metadata and self._apply_movie_card(self._tmdb_last_metadata):
+            self._status("Tarjeta TMDB actualizada • aplicada al aire")
+        else:
+            self._status("Tarjeta TMDB guardada • se aplicará en la próxima película")
 
     def open_devices(self):
         from .dialogs_extra import DevicesDialog

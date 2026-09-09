@@ -191,6 +191,24 @@ def test_tmdb_general_scan_skips_done_and_edit_dialog_searches_image_gallery():
     assert "Sin póster" in dialog and "Sin backdrop" in dialog
 
 
+def test_tmdb_card_position_and_style_are_editable_with_wysiwyg_preview():
+    """v24.0.2.25: la tarjeta TMDB al aire tiene posición/estilo configurables
+    y la vista previa usa el mismo render que la salida (WYSIWYG)."""
+    window = _read("app", "main_window.py")
+    tmdb = _read("app", "tmdb.py")
+    dialog = _read("app", "dialogs_tmdb.py")
+    assert "render_movie_overlay" in tmdb and "resolve_card_layout" in tmdb
+    assert "DEFAULT_CARD_LAYOUT" in tmdb
+    assert '"tmdb_card_position"' in window and '"tmdb_card_align"' in window
+    assert '"tmdb_card_style"' in window and '"tmdb_card_opacity"' in window and '"tmdb_card_margin"' in window
+    assert "_tmdb_card_config" in window and "TMDBCardDialog" in window
+    assert "open_tmdb_card" in window and "Tarjeta\\nTMDB" in window
+    assert "_apply_movie_card" in window and "_tmdb_last_metadata" in window
+    assert "class TMDBCardPreview" in dialog and "class TMDBCardDialog" in dialog
+    assert "render_movie_overlay" in dialog and "Tarjeta compacta" in dialog
+    assert "4:3 seguro" in dialog  # guías como el diálogo de Logo/CG
+
+
 def test_mpv_ipc_windows_pipe_is_byte_stream_not_message_mode():
     """v24.0.2.24: el named pipe de --input-ipc-server de mpv en Windows es un
     stream de bytes. Se abre con _winapi en modo síncrono y ReadFile/WriteFile

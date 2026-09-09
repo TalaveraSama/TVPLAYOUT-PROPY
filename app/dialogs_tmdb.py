@@ -7,13 +7,13 @@ de la película (no sólo la imagen principal que devuelve la búsqueda).
 """
 import os
 
-from PySide6.QtCore import Qt, QSize, QTimer
-from PySide6.QtGui import QIcon, QPixmap
-from PySide6.QtWidgets import (QApplication, QDialog, QHBoxLayout, QLabel, QLineEdit, QListWidget,
-                               QListWidgetItem, QMessageBox, QPushButton, QSplitter, QVBoxLayout, QWidget)
+from PySide6.QtCore import Qt, QRectF, QSize, QTimer
+from PySide6.QtGui import QColor, QFont, QIcon, QImage, QPainter, QPen, QPixmap
+from PySide6.QtWidgets import (QApplication, QComboBox, QDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget,
+                               QListWidgetItem, QMessageBox, QPushButton, QSpinBox, QSplitter, QVBoxLayout, QWidget)
 
 from .config import APP_VERSION
-from .tmdb import TMDBImagesWorker, TMDBSearchWorker
+from .tmdb import TMDBImagesWorker, TMDBSearchWorker, render_movie_overlay
 
 
 class TMDBEditDialog(QDialog):
@@ -308,3 +308,230 @@ class TMDBEditDialog(QDialog):
             if worker is not None and worker.isRunning():
                 worker.wait(4000)
         super().done(result)
+
+
+class TMDBCardPreview(QWidget):
+    """Vista previa de la tarjeta TMDB con guías 16:9 y área segura 4:3.
+
+    La tarjeta se renderiza con ``render_movie_overlay`` — exactamente el
+    mismo código que usa la salida al aire — a las proporciones del lienzo
+    visible, así que lo que se ve aquí es lo que sale por RTMP/SRT/NDI.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumSize(420, 250)
+        self.setStyleSheet("background:#050505;border:1px solid #333;")
+        self._metadata = {}
+        self._layout = {}
+
+    def set_sample(self, metadata, layout):
+        self._metadata = metadata or {}
+        self._layout = layout or {}
+        self.update()
+
+    def paintEvent(self, _event):
+        p = QPainter(self)
+        p.fillRect(self.rect(), QColor("#050505"))
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setRenderHint(QPainter.SmoothPixmapTransform)
+        frame_w = min(self.width() - 28, (self.height() - 46) * 16 / 9)
+        frame_h = frame_w * 9 / 16
+        frame = QRectF((self.width() - frame_w) / 2, 22, frame_w, frame_h)
+        p.fillRect(frame, QColor("#111820"))
+        # Tarjeta real, misma geometría del aire.
+        card = render_movie_overlay(self._metadata, (int(frame_w), int(frame_h)), self._layout)
+        if not card.isNull():
+            p.drawImage(frame, card, QRectF(card.rect()))
+        # Guías: marco 16:9 y área central 4:3 (12.5% — 87.5%).
+        p.setPen(QPen(QColor("#72c7ff"), 1.5))
+        p.drawRect(frame)
+        safe_left = frame.left() + frame.width() * 0.125
+        safe_right = frame.right() - frame.width() * 0.125
+        p.setPen(QPen(QColor(242, 201, 76, 170), 1, Qt.DashLine))
+        p.drawLine(safe_left, frame.top(), safe_left, frame.bottom())
+        p.drawLine(safe_right, frame.top(), safe_right, frame.bottom())
+        p.setPen(QColor("#f2c94c"))
+        guide_font = QFont("Segoe UI", 8)
+        p.setFont(guide_font)
+        p.drawText(int(safe_left + 4), int(frame.bottom() + 15), "4:3 seguro · 12.5%")
+        p.drawText(int(safe_right - 64), int(frame.bottom() + 15), "87.5%")
+        p.setPen(QColor("#72c7ff"))
+        p.drawText(int(frame.left()), 15, "16:9 · vista previa exacta de la tarjeta al aire")
+        p.end()
+
+
+class TMDBCardDialog(QDialog):
+    """Posición y estilo de la tarjeta TMDB con vista previa en vivo."""
+
+    def __init__(self, parent, settings, db=None):
+        super().__init__(parent)
+        self.setWindowTitle(f"Tarjeta TMDB al aire — TVPlayout PRO {APP_VERSION}")
+        screen = (parent.screen() if parent is not None else None) or QApplication.primaryScreen()
+        available = screen.availableGeometry() if screen is not None else None
+        width, height = 880, 600
+        if available is not None:
+            width = min(int(width), max(680, available.width() - 32))
+            height = min(int(height), max(460, available.height() - 56))
+        self.resize(max(680, int(width)), max(460, int(height)))
+        self.setMinimumSize(680, 460)
+        self.setSizeGripEnabled(True)
+        self.setWindowFlag(Qt.WindowMinMaxButtonsHint, True)
+
+        s = settings or {}
+        self._samples = []
+        self._sample_index = 0
+
+        root = QVBoxLayout(self)
+        self.preview = TMDBCardPreview()
+        self.preview.setMinimumHeight(260)
+        root.addWidget(self.preview, 1)
+
+        form = QFormLayout()
+        self.position = QComboBox()
+        self.position.addItem("Arriba", "arriba")
+        self.position.addItem("Abajo", "abajo")
+        self.position.setCurrentIndex(1 if s.get("tmdb_card_position") == "abajo" else 0)
+        self.align = QComboBox()
+        self.align.addItem("Izquierda", "izquierda")
+        self.align.addItem("Centro", "centro")
+        self.align.addItem("Derecha", "derecha")
+        saved_align = str(s.get("tmdb_card_align") or "izquierda")
+        self.align.setCurrentIndex(2 if "derech" in saved_align else (1 if "centro" in saved_align else 0))
+        self.style = QComboBox()
+        self.style.addItem("Banda completa", "banda")
+        self.style.addItem("Tarjeta compacta", "tarjeta")
+        self.style.setCurrentIndex(1 if "tarjeta" in str(s.get("tmdb_card_style") or "") else 0)
+        self.opacity = QSpinBox()
+        self.opacity.setRange(0, 100)
+        self.opacity.setSuffix(" %")
+        self.opacity.setToolTip("Oscurecido del fondo de la tarjeta para que el texto siempre se lea")
+        self.opacity.setValue(int(s.get("tmdb_card_opacity", 70) or 70))
+        self.margin = QSpinBox()
+        self.margin.setRange(0, 300)
+        self.margin.setSuffix(" px")
+        self.margin.setToolTip("Margen de referencia a 1080p; se escala solo a cualquier resolución")
+        self.margin.setValue(int(s.get("tmdb_card_margin", 18) or 18))
+        form.addRow("Posición", self.position)
+        form.addRow("Alineación", self.align)
+        form.addRow("Estilo", self.style)
+        form.addRow("Opacidad del fondo", self.opacity)
+        form.addRow("Margen", self.margin)
+        root.addLayout(form)
+
+        sample_row = QHBoxLayout()
+        self.sample_lbl = QLabel()
+        self.sample_lbl.setStyleSheet("color:#9a9a9a;")
+        sample_row.addWidget(self.sample_lbl, 1)
+        cycle_btn = QPushButton("↻ Otra muestra")
+        cycle_btn.setToolTip("Rota por las películas de la biblioteca que ya tienen imágenes TMDB")
+        cycle_btn.clicked.connect(self._cycle_sample)
+        sample_row.addWidget(cycle_btn)
+        root.addLayout(sample_row)
+
+        note = QLabel("La vista previa usa exactamente el mismo render que la salida al aire (RTMP/SRT/NDI y monitor). "
+                      "La tarjeta aparece periódicamente durante Películas y Música según el intervalo de Ajustes.")
+        note.setWordWrap(True)
+        note.setStyleSheet("color:#9a9a9a;")
+        root.addWidget(note)
+
+        buttons = QHBoxLayout()
+        buttons.addStretch()
+        cancel = QPushButton("Cancelar")
+        cancel.clicked.connect(self.reject)
+        save = QPushButton("💾 Guardar")
+        save.setObjectName("primary")
+        save.clicked.connect(self.accept)
+        buttons.addWidget(cancel)
+        buttons.addWidget(save)
+        root.addLayout(buttons)
+
+        for combo in (self.position, self.align, self.style):
+            combo.currentIndexChanged.connect(self._update_preview)
+        self.opacity.valueChanged.connect(self._update_preview)
+        self.margin.valueChanged.connect(self._update_preview)
+        self._load_samples(db)
+        self._update_preview()
+
+    # --------------------------------------------------------------- muestras
+    def _load_samples(self, db):
+        """Muestra real: las películas de la biblioteca con ficha TMDB."""
+        self._samples = []
+        if db is not None:
+            try:
+                for row in db.search_media("", "Todas", limit=5000):
+                    meta = {
+                        "title": row["tmdb_title"] or row["title"],
+                        "year": row["tmdb_year"] or "",
+                        "overview": row["tmdb_overview"] or "",
+                        "poster_file": row["tmdb_poster"] or "",
+                        "backdrop_file": row["tmdb_backdrop"] or "",
+                    }
+                    if meta["poster_file"] or meta["backdrop_file"]:
+                        self._samples.append(meta)
+            except Exception:  # noqa: BLE001
+                self._samples = []
+        if not self._samples:
+            self._samples = [self._synthetic_sample()]
+        self._sample_index = 0
+        self._refresh_sample_label()
+
+    @staticmethod
+    def _synthetic_sample():
+        """Muestra sintética (imágenes dibujadas) cuando no hay fichas en la biblioteca."""
+        poster = QImage(200, 300, QImage.Format.Format_RGB32)
+        poster.fill(QColor("#35507a"))
+        p = QPainter(poster)
+        p.setPen(QColor("#ffffff"))
+        f = QFont("Arial", 22)
+        f.setBold(True)
+        p.setFont(f)
+        p.drawText(poster.rect(), Qt.AlignCenter, "PÓSTER")
+        p.end()
+        backdrop = QImage(640, 360, QImage.Format.Format_RGB32)
+        backdrop.fill(QColor("#1c2a3f"))
+        p = QPainter(backdrop)
+        p.setPen(QColor("#9fb6d4"))
+        f = QFont("Arial", 28)
+        p.setFont(f)
+        p.drawText(backdrop.rect(), Qt.AlignCenter, "BACKDROP")
+        p.end()
+        return {"title": "Película de ejemplo", "year": "2026",
+                "overview": "Sinopsis de ejemplo para comprobar cómo se lee el texto de la tarjeta sobre el vídeo.",
+                "poster_file": poster, "backdrop_file": backdrop}
+
+    def _current_sample(self):
+        if not self._samples:
+            return {}
+        return self._samples[self._sample_index % len(self._samples)]
+
+    def _cycle_sample(self):
+        self._sample_index = (self._sample_index + 1) % max(1, len(self._samples))
+        self._refresh_sample_label()
+        self._update_preview()
+
+    def _refresh_sample_label(self):
+        meta = self._current_sample()
+        backdrop = meta.get("backdrop_file")
+        if backdrop and not isinstance(backdrop, QImage):
+            self.sample_lbl.setText(f"Muestra: {meta.get('title') or ''} {meta.get('year') or ''}".strip())
+        else:
+            self.sample_lbl.setText("Muestra: ejemplo sintético (la biblioteca aún no tiene fichas TMDB)")
+
+    # ---------------------------------------------------------------- preview
+    def _layout_values(self):
+        return {"position": self.position.currentData(),
+                "align": self.align.currentData(),
+                "style": self.style.currentData(),
+                "opacity": self.opacity.value(),
+                "margin": self.margin.value()}
+
+    def _update_preview(self):
+        self.preview.set_sample(self._current_sample(), self._layout_values())
+
+    def values(self):
+        return {"tmdb_card_position": self.position.currentData() or "arriba",
+                "tmdb_card_align": self.align.currentData() or "izquierda",
+                "tmdb_card_style": self.style.currentData() or "banda",
+                "tmdb_card_opacity": self.opacity.value(),
+                "tmdb_card_margin": self.margin.value()}

@@ -8,8 +8,8 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-from PySide6.QtCore import QThread, Signal, Qt, QRect
-from PySide6.QtGui import QImage, QPainter, QColor, QFont, QFontMetrics
+from PySide6.QtCore import QThread, Signal, Qt, QRect, QRectF
+from PySide6.QtGui import QImage, QPainter, QColor, QFont, QFontMetrics, QPen, QPainterPath
 
 from .config import CACHE_DIR
 
@@ -220,47 +220,171 @@ class TMDBImagesWorker(QThread):
                 "lang": str(img.get("iso_639_1") or ""), "votes": int(img.get("vote_count") or 0)}
 
 
-def build_movie_overlay(metadata, resolution, out_path):
-    """Crea una PNG RGBA de resolución completa con backdrop, póster y texto."""
+DEFAULT_CARD_LAYOUT = {
+    "position": "arriba",   # arriba | abajo
+    "align": "izquierda",   # izquierda | centro | derecha
+    "style": "banda",       # banda completa | tarjeta compacta
+    "opacity": 70,          # % de oscurecido del fondo
+    "margin": 18,           # px de referencia a 1080p
+}
+
+
+def resolve_card_layout(layout=None):
+    """Normaliza la configuración de la tarjeta (posición, alineación, estilo...)."""
+    cfg = dict(DEFAULT_CARD_LAYOUT)
+    for key in cfg:
+        value = (layout or {}).get(key)
+        if value is not None:
+            cfg[key] = value
+    position = str(cfg.get("position") or "").lower()
+    cfg["position"] = "abajo" if "abajo" in position else "arriba"
+    align = str(cfg.get("align") or "").lower()
+    cfg["align"] = "centro" if "centro" in align else ("derecha" if "derech" in align else "izquierda")
+    style = str(cfg.get("style") or "").lower()
+    cfg["style"] = "tarjeta" if "tarjeta" in style else "banda"
+    for key, top in (("opacity", 100), ("margin", 300)):
+        try:
+            cfg[key] = max(0, min(top, int(float(cfg.get(key) or 0))))
+        except (TypeError, ValueError):
+            cfg[key] = DEFAULT_CARD_LAYOUT[key]
+    return cfg
+
+
+def _overlay_image(value):
+    """Imagen de la ficha: ruta en disco o QImage directo (vista previa)."""
+    if isinstance(value, QImage):
+        return value
+    if value:
+        img = QImage(str(value))
+        if not img.isNull():
+            return img
+    return QImage()
+
+
+def render_movie_overlay(metadata, resolution, layout=None):
+    """Renderiza la tarjeta de película sobre un QImage RGBA transparente.
+
+    Toda la geometría es proporcional a la altura del lienzo, así que la
+    vista previa del diálogo «Tarjeta TMDB» se dibuja con exactamente la
+    misma composición que la salida al aire (WYSIWYG a cualquier tamaño).
+    """
+    cfg = resolve_card_layout(layout)
     try:
-        width, height = (int(x) for x in str(resolution).lower().split("x", 1))
-    except (TypeError, ValueError):
+        if isinstance(resolution, (tuple, list)):
+            width, height = int(resolution[0]), int(resolution[1])
+        else:
+            width, height = (int(x) for x in str(resolution).lower().split("x", 1))
+    except (TypeError, ValueError, IndexError):
         width, height = 1920, 1080
+    if width <= 0 or height <= 0:
+        return QImage()
+    metadata = metadata or {}
     canvas = QImage(width, height, QImage.Format.Format_ARGB32)
     canvas.fill(Qt.GlobalColor.transparent)
-    band_h = max(150, int(height * 0.225))
-    painter = QPainter(canvas)
-    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-    backdrop = QImage(metadata.get("backdrop_file", ""))
-    if not backdrop.isNull():
-        painter.drawImage(QRect(0, 0, width, band_h), backdrop)
-    painter.fillRect(QRect(0, 0, width, band_h), QColor(0, 0, 0, 178))
-    poster = QImage(metadata.get("poster_file", ""))
-    poster_h = max(100, band_h - 28)
-    poster_w = int(poster.width() * poster_h / max(1, poster.height())) if not poster.isNull() else 0
-    if not poster.isNull():
-        poster = poster.scaled(poster_w, poster_h, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
-        painter.drawImage(18, 14, poster)
-    text_x = 34 + poster_w
-    text_w = max(320, width - text_x - 36)
+    scale = height / 1080.0
+    band_h = max(40, int(height * 0.225))
+    band_y = 0 if cfg["position"] == "arriba" else height - band_h
+    margin = int(cfg["margin"] * scale)
+    gap = max(4, int(16 * scale))
+    dark = QColor(0, 0, 0, int(255 * cfg["opacity"] / 100.0))
     title = metadata.get("title") or "Película"
     year = metadata.get("year") or ""
-    painter.setPen(QColor(255, 255, 255, 255))
-    title_font = QFont("Arial", max(24, int(height * 0.036)))
-    title_font.setBold(True)
-    painter.setFont(title_font)
-    painter.drawText(QRect(text_x, 28, text_w, 58), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-                     f"{title}  {year}".strip())
-    label_font = QFont("Arial", max(14, int(height * 0.019)))
-    label_font.setBold(False)
-    painter.setFont(label_font)
-    painter.setPen(QColor(230, 230, 230, 235))
     overview = metadata.get("overview") or "Ahora en emisión"
     overview = overview if len(overview) <= 210 else overview[:207].rstrip() + "…"
-    metrics = QFontMetrics(label_font)
-    overview = metrics.elidedText(overview, Qt.TextElideMode.ElideRight, text_w)
-    painter.drawText(QRect(text_x, 90, text_w, 54), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop, overview)
+    title_font = QFont("Arial", max(9, int(height * 0.036)))
+    title_font.setBold(True)
+    label_font = QFont("Arial", max(7, int(height * 0.019)))
+    label_metrics = QFontMetrics(label_font)
+    title_font_metrics = QFontMetrics(title_font)
+    title_text = f"{title}  {year}".strip()
+    overview_text = overview
+
+    poster = _overlay_image(metadata.get("poster_file"))
+    poster_h = max(24, band_h - int(28 * scale))
+    poster_w = 0
+    if not poster.isNull():
+        poster_w = int(poster.width() * poster_h / max(1, poster.height()))
+        poster = poster.scaled(poster_w, poster_h, Qt.AspectRatioMode.KeepAspectRatio,
+                               Qt.TransformationMode.SmoothTransformation)
+        poster_w = poster.width()
+    poster_y = band_y + (band_h - poster_h) // 2
+    backdrop = _overlay_image(metadata.get("backdrop_file"))
+    max_text_w = max(120, int(width * 0.42))
+
+    painter = QPainter(canvas)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+
+    def draw_text(x, w, align_right=False):
+        flag = Qt.AlignmentFlag.AlignRight if align_right else Qt.AlignmentFlag.AlignLeft
+        painter.setPen(QColor(255, 255, 255, 255))
+        painter.setFont(title_font)
+        line = title_font_metrics.elidedText(title_text, Qt.TextElideMode.ElideRight, w)
+        painter.drawText(QRect(x, band_y + int(band_h * 0.12), w, int(band_h * 0.30)),
+                         flag | Qt.AlignmentFlag.AlignVCenter, line)
+        painter.setFont(label_font)
+        painter.setPen(QColor(230, 230, 230, 235))
+        body = label_metrics.elidedText(overview_text, Qt.TextElideMode.ElideRight, w)
+        painter.drawText(QRect(x, band_y + int(band_h * 0.48), w, int(band_h * 0.34)),
+                         flag | Qt.AlignmentFlag.AlignTop, body)
+
+    def draw_poster(x):
+        if poster_w:
+            painter.drawImage(x, poster_y, poster)
+
+    if cfg["style"] == "tarjeta":
+        text_w = min(max_text_w, width - 2 * margin - poster_w - gap if poster_w else width - 2 * margin)
+        text_w = max(120, text_w)
+        group_w = (poster_w + gap + text_w) if poster_w else text_w
+        if cfg["align"] == "izquierda":
+            x0 = margin
+        elif cfg["align"] == "derecha":
+            x0 = width - margin - group_w
+        else:
+            x0 = (width - group_w) // 2
+        pad = max(6, int(14 * scale))
+        card = QRect(x0 - pad, band_y + int(10 * scale), group_w + 2 * pad, band_h - int(20 * scale))
+        radius = max(4.0, 10.0 * scale)
+        path = QPainterPath()
+        path.addRoundedRect(QRectF(card), radius, radius)
+        painter.save()
+        painter.setClipPath(path)
+        if not backdrop.isNull():
+            painter.drawImage(card, backdrop)
+        painter.fillRect(card, dark)
+        painter.restore()
+        painter.setPen(QPen(QColor(255, 255, 255, 40), max(1.0, 1.5 * scale)))
+        painter.drawPath(path)
+        draw_poster(x0)
+        draw_text(x0 + (poster_w + gap if poster_w else 0), text_w)
+    else:
+        # Banda completa a lo ancho de la pantalla.
+        if not backdrop.isNull():
+            painter.drawImage(QRect(0, band_y, width, band_h), backdrop)
+        painter.fillRect(QRect(0, band_y, width, band_h), dark)
+        if cfg["align"] == "izquierda":
+            draw_poster(margin)
+            text_x = margin + (poster_w + gap if poster_w else 0)
+            draw_text(text_x, max(120, width - margin - text_x))
+        elif cfg["align"] == "derecha":
+            poster_x = width - margin - poster_w if poster_w else width - margin
+            draw_poster(poster_x)
+            text_w = (poster_x - gap - margin) if poster_w else (width - 2 * margin)
+            draw_text(margin, max(120, text_w), align_right=True)
+        else:
+            text_w = max_text_w
+            group_w = (poster_w + gap + text_w) if poster_w else text_w
+            x0 = (width - group_w) // 2
+            draw_poster(x0)
+            draw_text(x0 + (poster_w + gap if poster_w else 0), text_w)
     painter.end()
+    return canvas
+
+
+def build_movie_overlay(metadata, resolution, out_path, layout=None):
+    """Crea una PNG RGBA de resolución completa con la tarjeta de película."""
+    canvas = render_movie_overlay(metadata, resolution, layout)
+    if canvas.isNull():
+        return False
     out = Path(out_path)
     out.parent.mkdir(parents=True, exist_ok=True)
     return bool(canvas.save(str(out), "PNG"))

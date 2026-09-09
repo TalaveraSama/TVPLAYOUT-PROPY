@@ -937,7 +937,7 @@ class SettingsDialog(BaseDialog):
         f2.addRow("TMDB API key", self.tmdb_key)
         f2.addRow("TMDB: intervalo", self.tmdb_interval)
         f2.addRow("TMDB: duración visible", self.tmdb_duration)
-        f2.addRow("", _note("La tarjeta combina backdrop, póster, título y año en la franja superior; requiere una API key de TMDB."))
+        f2.addRow("", _note("La tarjeta combina backdrop, póster, título y año; su posición, alineación y estilo se ajustan con vista previa en Tarjeta TMDB (panel FUNCIONES). Requiere una API key de TMDB."))
         f2.addRow("", self.restore_pl)
         f2.addRow("", self.autoplay)
         f2.addRow("", self.probe_on_scan)
