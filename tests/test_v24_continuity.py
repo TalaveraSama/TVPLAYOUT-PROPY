@@ -106,7 +106,7 @@ def test_live_track_change_is_exposed_from_settings_and_supports_burned_subtitle
     output = _read("app", "output.py")
     config = _read("app", "config.py")
     assert "guardar estos valores cambia la pista en vivo" in dialog
-    assert "if self.subtitle_burn" in output
+    assert "subtitle_burn = self.subtitle_burn" in output
     assert "pick_subtitle(tracks, subtitle_preference)" in output
     assert '"en"' in config and '"eng"' in config and '"English"' in config
 

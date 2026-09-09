@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import math
 import os
+import re
 import threading
 import time
 from array import array
@@ -17,8 +18,8 @@ try:
 except ImportError:  # La aplicación puede arrancar y explicar la dependencia.
     av = None
 
-from PySide6.QtCore import QObject, QTimer, Signal
-from PySide6.QtGui import QImage
+from PySide6.QtCore import QObject, QTimer, Signal, QRectF, Qt
+from PySide6.QtGui import QImage, QPainter, QColor, QFont, QFontMetrics
 from PySide6.QtMultimedia import QAudioFormat, QAudioSink
 
 from . import logger
@@ -60,6 +61,7 @@ class _DecodeJob(QObject):
         self._condition = threading.Condition()
         self._paused = False
         self._seek_request = None
+        self._subtitle_events = []
 
     def stop(self):
         self.stop_event.set()
@@ -105,6 +107,88 @@ class _DecodeJob(QObject):
         # copy() desacopla la imagen de la memoria reutilizable de FFmpeg.
         return QImage(bytes(plane), rgb.width, rgb.height, plane.line_size,
                       QImage.Format.Format_RGB888).copy()
+
+    @staticmethod
+    def _subtitle_text(subtitle):
+        """Extrae texto ASS/SRT sin tags para el monitor PyAV."""
+        value = ""
+        for name in ("dialogue", "text"):
+            try:
+                value = getattr(subtitle, name, "") or ""
+                if callable(value):
+                    value = value()
+            except Exception:
+                value = ""
+            if value:
+                break
+        if not value:
+            return ""
+        value = re.sub(r"\\{[^}]*\\}", "", str(value))
+        value = value.replace("\\N", "\n").replace("\\n", "\n")
+        value = re.sub(r"<[^>]+>", "", value)
+        return value.strip()
+
+    def _remember_subtitle_packet(self, subtitle_stream, packet, timeline_start):
+        """Guarda subtítulos de texto como intervalos relativos al clip."""
+        try:
+            decoded = subtitle_stream.decode(packet)
+        except Exception as exc:  # noqa: BLE001
+            log.debug("subtitle decode %s: %s", self.path, exc)
+            return
+        for subtitle_set in decoded or []:
+            rects = getattr(subtitle_set, "rects", []) or []
+            text = "\n".join(filter(None, (self._subtitle_text(rect) for rect in rects))).strip()
+            if not text:
+                continue
+            base = None
+            pts = getattr(subtitle_set, "pts", None)
+            time_base = getattr(subtitle_stream, "time_base", None)
+            if pts is not None and time_base is not None:
+                try:
+                    base = float(pts * time_base)
+                except (TypeError, ValueError):
+                    base = None
+            if base is None:
+                try:
+                    base = float(packet.pts * packet.time_base) if packet.pts is not None else 0.0
+                except (TypeError, ValueError):
+                    base = 0.0
+            start_ms = float(getattr(subtitle_set, "start_display_time", 0) or 0)
+            end_ms = float(getattr(subtitle_set, "end_display_time", 0) or 0)
+            start = max(0.0, base + start_ms / 1000.0 - timeline_start)
+            end = base + end_ms / 1000.0 - timeline_start if end_ms > 0 else start + 6.0
+            self._subtitle_events.append((start, max(start, end), text))
+
+    @staticmethod
+    def _paint_subtitle(image, text):
+        if not text:
+            return image
+        try:
+            painter = QPainter(image)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            size = max(18, int(image.height() * 0.042))
+            font = QFont("Arial", size)
+            font.setBold(True)
+            painter.setFont(font)
+            flags = Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter | Qt.TextFlag.TextWordWrap
+            box = QRectF(image.width() * 0.06, image.height() * 0.76, image.width() * 0.88, image.height() * 0.19)
+            metrics = QFontMetrics(font)
+            bounds = metrics.boundingRect(box.toRect(), int(flags), text)
+            background = QRectF(box.left(), max(box.top(), box.top() + (box.height() - bounds.height()) / 2 - 10),
+                                box.width(), min(box.height(), bounds.height() + 20))
+            painter.setBrush(QColor(0, 0, 0, 185))
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawRoundedRect(background, 8, 8)
+            painter.setPen(QColor(255, 255, 255, 255))
+            painter.drawText(box, int(flags), text)
+            painter.end()
+        except Exception as exc:  # noqa: BLE001
+            log.debug("subtitle paint: %s", exc)
+        return image
+
+    def _subtitle_for_position(self, position):
+        active = [text for start, end, text in self._subtitle_events if start <= position <= end]
+        return "\n".join(active[-1:]) if active else ""
 
     @staticmethod
     def _duration(container, video_stream=None, audio_stream=None):
@@ -250,10 +334,15 @@ class _DecodeJob(QObject):
                     container = av.open(self.path)
                     videos = list(container.streams.video)
                     audios = list(container.streams.audio)
+                    subtitles = list(container.streams.subtitles)
                     video_stream = videos[0] if videos else None
                     audio_stream = audios[0] if audios else None
+                    subtitle_stream = None
                     if isinstance(self.audio_id, int) and 0 <= self.audio_id < len(audios):
                         audio_stream = audios[self.audio_id]
+                    if isinstance(self.subtitle_id, int) and self.subtitle_id >= 0 and self.subtitle_id < len(subtitles):
+                        subtitle_stream = subtitles[self.subtitle_id]
+                    self._subtitle_events = []
                     source_duration = self._duration(container, video_stream, audio_stream)
                     start_at = min(self.start_at, source_duration) if source_duration > 0 else self.start_at
                     end_at = self.end_at if self.end_at > 0 else source_duration
@@ -279,7 +368,7 @@ class _DecodeJob(QObject):
                             self.generation, self.path, duration, info["video"], info["audio"],
                         )
 
-                    streams = [s for s in (video_stream, audio_stream) if s is not None]
+                    streams = [s for s in (video_stream, audio_stream, subtitle_stream) if s is not None]
                     if not streams:
                         raise RuntimeError("el archivo no contiene pistas de vídeo ni audio")
                     resampler = None
@@ -343,6 +432,9 @@ class _DecodeJob(QObject):
                             audio_clock = [audio_skip_until]
                             clock_origin = time.monotonic() - audio_skip_until
                             continue
+                        if packet.stream == subtitle_stream and subtitle_stream is not None:
+                            self._remember_subtitle_packet(subtitle_stream, packet, start_at)
+                            continue
                         if packet.stream == audio_stream and resampler is not None:
                             self._decode_audio(
                                 packet, resampler, emit_from=audio_skip_until,
@@ -370,6 +462,7 @@ class _DecodeJob(QObject):
                             if self.stop_event.is_set():
                                 break
                             image = self._frame_image(frame)
+                            image = self._paint_subtitle(image, self._subtitle_for_position(position))
                             self.frame.emit(image, position, duration, self.generation)
                         if clip_finished:
                             break

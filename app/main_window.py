@@ -47,7 +47,7 @@ STATUS_LABEL = {ST_PENDING: "", ST_READY: "LISTO", ST_ONAIR: "AL AIRE", ST_AIRED
 
 DEFAULT_SETTINGS = {
     "rtmp_url": "", "outputs": [], "resolution": "1920x1080", "fps": "29.97", "encoder": "AUTO", "bitrate": 6000, "audio_bitrate": 192,
-    "subtitle_burn": False, "ffmpeg_extra": "", "rtmp_autostart": False, "rtmp_mode": "local",
+    "subtitle_burn": True, "ffmpeg_extra": "", "rtmp_autostart": False, "rtmp_mode": "local",
     "audio_pref": AUDIO_PREFS[0], "sub_pref": "OFF", "hwdec": "auto-safe", "audio_device": "",
     "autofill_category": "Todas", "autofill_count": 10, "tandas_category": "Publicidad", "tandas_count": 2,
     "midroll_enabled": False, "midroll_category": "Publicidad", "midroll_interval_minutes": 15,
@@ -1241,13 +1241,7 @@ class MainWindow(QMainWindow):
         it = self.ctrl.items[rows[0]]
         d = EditClipDialog(self, it, self.db.categories())
         if d.exec() == QDialog.Accepted:
-            values = d.values()
-            self.ctrl.update_item(rows[0], **values)
-            if rows[0] == self.ctrl.onair and ("audio_lang" in values or "subtitle_lang" in values):
-                self.ctrl.set_track_preferences(
-                    values.get("audio_lang") or self.ctrl.audio_pref,
-                    values.get("subtitle_lang") or self.ctrl.sub_pref,
-                )
+            self.ctrl.update_item(rows[0], **d.values())
 
     def set_fixed_time(self):
         if self._locked:
@@ -1642,7 +1636,9 @@ class MainWindow(QMainWindow):
         mpv_time = float(self.ctrl.elapsed or 0.0)
         self.output = MultiOutputManager(FFMPEG_PATH, profiles, self.ctrl.export_items(), s.get("resolution", "1920x1080"), s.get("fps", "29.97"),
                                           s.get("encoder", "AUTO"), int(s.get("bitrate", 6000)), s.get("audio_pref", AUDIO_PREFS[0]),
-                                          s.get("sub_pref", "OFF"), bool(s.get("subtitle_burn", False)), int(s.get("audio_bitrate", 192)),
+                                          s.get("sub_pref", "OFF"),
+                                          bool(s.get("subtitle_burn", True) or str(s.get("sub_pref", "OFF")).upper() != "OFF"),
+                                          int(s.get("audio_bitrate", 192)),
                                           loop=True, start_index=max(0, self.ctrl.onair), start_offset=mpv_time,
                                           extra_args=s.get("ffmpeg_extra", ""), logo=self._logo_config(),
                                           ndi_ffmpeg=FFMPEG_NDI_PATH, ndi_source=self.player, parent=self)

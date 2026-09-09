@@ -132,6 +132,11 @@ class OutputWorker(QThread):
         with self._lock:
             self.audio_preference = str(audio_preference or "AUTO / Español latino preferido")
             self.subtitle_preference = str(subtitle_preference or "OFF")
+            # Seleccionar una pista de subtítulos durante el aire implica que
+            # debe hacerse visible en RTMP/SRT, aunque la salida se hubiera
+            # iniciado con la casilla de quemado desactivada.
+            if self.subtitle_preference.upper() != "OFF":
+                self.subtitle_burn = True
 
     # ------------------------------------------------------------- helpers
     def _available_encoders(self):
@@ -251,11 +256,12 @@ class OutputWorker(QThread):
         if subtitle_preference is None:
             subtitle_preference = item.get("subtitle_lang") or self.subtitle_preference
         aid = pick_audio(tracks, audio_preference)
-        sid = pick_subtitle(tracks, subtitle_preference) if self.subtitle_burn else -1
+        subtitle_burn = self.subtitle_burn or str(subtitle_preference or "OFF").upper() != "OFF"
+        sid = pick_subtitle(tracks, subtitle_preference) if subtitle_burn else -1
 
         vf = [f"scale={w}:{h}:force_original_aspect_ratio=decrease", f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2",
               f"fps={self.fps}", "format=yuv420p"]
-        if self.subtitle_burn and sid is not None and sid >= 0:
+        if subtitle_burn and sid is not None and sid >= 0:
             vf.insert(0, f"subtitles='{_ffmpeg_filter_path(source)}':si={sid}")
         gop = int(round(float(self.fps) * 2))
         cmd = [self.ffmpeg, "-hide_banner", "-loglevel", "warning", "-nostdin", "-re"]
@@ -736,6 +742,8 @@ class MultiOutputManager(QObject):
         """
         self.common["audio_preference"] = str(audio_preference or "AUTO / Español latino preferido")
         self.common["subtitle_preference"] = str(subtitle_preference or "OFF")
+        if self.common["subtitle_preference"].upper() != "OFF":
+            self.common["subtitle_burn"] = True
         for worker in self.workers:
             worker.set_track_preferences(audio_preference, subtitle_preference)
 

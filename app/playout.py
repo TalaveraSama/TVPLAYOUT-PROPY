@@ -324,6 +324,7 @@ class PlayoutController(QObject):
     def update_item(self, index, **fields):
         if not (0 <= index < len(self.items)):
             return
+        track_changed = any(k in fields for k in ("audio_lang", "subtitle_lang"))
         if any(k in fields for k in ("mark_in", "mark_out", "source_duration")):
             preview = dict(self.items[index])
             preview.update(fields)
@@ -338,6 +339,11 @@ class PlayoutController(QObject):
         self.items[index].update(fields)
         self.item_changed.emit(index)
         self._mark_dirty()
+        if track_changed and index == self.onair:
+            self.set_track_preferences(
+                fields.get("audio_lang") or self.audio_pref,
+                fields.get("subtitle_lang") or self.sub_pref,
+            )
 
     def refresh_meta_from_db(self, path):
         row = self.db.media_by_path(path)
