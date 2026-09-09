@@ -627,10 +627,7 @@ class MainWindow(QMainWindow):
         self.rtmp_mode_group = QButtonGroup(self)
         self.rtmp_mode_local = QRadioButton("Solo monitor local")
         self.rtmp_mode_remote = QRadioButton("Salidas IP activas")
-        self.rtmp_mode_ndi = QRadioButton("NDI")
-        self.rtmp_mode_ndi.setEnabled(False)
-        self.rtmp_mode_ndi.setToolTip("Configura NDI en Salidas IP; el modo NDI directo requiere libndi_newtek")
-        for rb in (self.rtmp_mode_local, self.rtmp_mode_remote, self.rtmp_mode_ndi):
+        for rb in (self.rtmp_mode_local, self.rtmp_mode_remote):
             self.rtmp_mode_group.addButton(rb)
             r_modes.addWidget(rb)
         r_modes.addStretch()

@@ -224,7 +224,7 @@ def test_rtmp_mode_radios_in_ui():
     assert "QButtonGroup" in src, "main_window.py debe usar QButtonGroup para los radios"
     assert "self.rtmp_mode_local" in src, "debe existir self.rtmp_mode_local"
     assert "self.rtmp_mode_remote" in src, "debe existir self.rtmp_mode_remote"
-    assert "self.rtmp_mode_ndi" in src, "debe existir self.rtmp_mode_ndi (placeholder para futuro)"
+    assert "OutputProfilesDialog" in _read(os.path.join(REPO, "app", "dialogs_extra.py")), "la configuración IP debe incluir el diálogo de destinos"
     assert "def _rtmp_mode_changed" in src, "debe existir el handler _rtmp_mode_changed"
     assert "def _rtmp_start" in src, "debe existir el método _rtmp_start"
     assert "def _rtmp_stop" in src, "debe existir el método _rtmp_stop"
@@ -236,12 +236,6 @@ def test_rtmp_mode_persisted_in_settings():
     assert 'self._save_setting("rtmp_mode"' in src, "_rtmp_mode_changed debe persistir el modo en la BD"
     # _rtmp_state debe volver a modo local si hay error
     assert "self.rtmp_mode_local.setChecked(True)" in src, "fallo de RTMP debe volver a modo local"
-
-
-def test_ndi_radio_disabled_placeholder():
-    src = _read(WIN)
-    # El radio de NDI debe estar deshabilitado
-    assert "self.rtmp_mode_ndi.setEnabled(False)" in src, "RTMP Local (NDI) debe estar deshabilitado como placeholder"
 
 
 # --- v22.2.2 hotfix: bug del NameError en _build_right ---
