@@ -1,6 +1,6 @@
 @echo off
 REM ============================================================================
-REM TVPlayout PRO V24.0.2.7 - Empaquetado portable para Windows x64
+REM TVPlayout PRO V24.0.2.8 - Empaquetado portable para Windows x64
 REM
 REM Genera una distribución onedir profesional en:
 REM   dist\TVPlayoutPRO\
@@ -13,7 +13,7 @@ REM ============================================================================
 setlocal EnableExtensions EnableDelayedExpansion
 cd /d "%~dp0"
 
-set "APP_VERSION=V24.0.2.7"
+set "APP_VERSION=V24.0.2.8"
 set "VENV=.venv-build"
 set "PYEXE=%VENV%\Scripts\python.exe"
 set "OUT=%~dp0dist\TVPlayoutPRO"

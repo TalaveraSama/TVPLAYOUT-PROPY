@@ -626,6 +626,18 @@ def test_ndi_profiles_use_independent_direct_senders_and_pyav_signals():
     assert "ndi_source=self.player" in main
 
 
+def test_output_dialog_controls_activation_and_main_is_monitor_only():
+    """La activación queda en perfiles; la pantalla principal solo monitorea."""
+    dialog = _read(os.path.join(REPO, "app", "dialogs_extra.py"))
+    main = _read(WIN)
+    assert 'self.enabled = QCheckBox("Destino activo")' in dialog
+    assert 'self.rtmp_url.setVisible(False)' in main
+    assert 'self.rtmp_destinations = _lbl' in main
+    assert 'self._refresh_output_monitor()' in main
+    assert 'enabled = any(bool(p.get("enabled", True)) for p in profiles)' in main
+    assert 'QTimer.singleShot(250, self._rtmp_start)' in main
+
+
 def test_logo_is_hidden_for_publicidad_in_ffmpeg_and_ndi():
     """Publicidad no debe recibir logo en FFmpeg ni en el sender NDI."""
     output = _read(OUT)

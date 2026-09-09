@@ -1,4 +1,4 @@
-# Empaquetar TVPlayout PRO V24.0.2.7 para Windows
+# Empaquetar TVPlayout PRO V24.0.2.8 para Windows
 
 ## Camino recomendado
 

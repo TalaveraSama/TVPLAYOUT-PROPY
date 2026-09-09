@@ -612,49 +612,43 @@ class MainWindow(QMainWindow):
         ov.setContentsMargins(0, 0, 0, 6)
         ov.setSpacing(4)
         ov.addWidget(_section("SALIDAS IP · RTMP / SRT / NDI"))
-        r1 = QHBoxLayout()
-        r1.setContentsMargins(6, 0, 6, 0)
+        # La configuración de URLs/nombres y el activar/desactivar de cada
+        # destino viven en OutputProfilesDialog. En la pantalla principal
+        # dejamos únicamente un monitor de estado, para no editar destinos
+        # accidentalmente durante el aire.
         self.rtmp_url = QLineEdit(self.settings.get("rtmp_url", ""))
         self.rtmp_url.setPlaceholderText("rtmp://servidor/app/clave")
         self.rtmp_url.editingFinished.connect(lambda: self._save_setting("rtmp_url", self.rtmp_url.text().strip()))
-        r1.addWidget(self.rtmp_url, 1)
-        ov.addLayout(r1)
-        # v22.2.2: selector de modo (radio buttons). Reemplaza al botón
-        # "INICIAR RTMP" separado. El modo define si hay stream o no.
-        r_modes = QHBoxLayout()
-        r_modes.setContentsMargins(6, 0, 6, 0)
-        r_modes.setSpacing(10)
+        self.rtmp_url.setVisible(False)
+
+        # Se conservan como estado interno para compatibilidad y para que el
+        # modo remoto se pueda guardar, pero ya no se muestran en el monitor.
         self.rtmp_mode_group = QButtonGroup(self)
-        self.rtmp_mode_local = QRadioButton("Solo monitor local")
-        self.rtmp_mode_remote = QRadioButton("Salidas IP activas")
-        for rb in (self.rtmp_mode_local, self.rtmp_mode_remote):
-            self.rtmp_mode_group.addButton(rb)
-            r_modes.addWidget(rb)
-        r_modes.addStretch()
-        # Seleccionar el modo persistido (default: local)
-        # v22.2.2: usamos self.settings directamente porque s no está
-        # definido en este scope (sólo en apply_settings). Antes daba
-        # NameError al iniciar la app.
+        self.rtmp_mode_local = QRadioButton("Solo monitor local", self)
+        self.rtmp_mode_remote = QRadioButton("Salidas IP activas", self)
+        self.rtmp_mode_group.addButton(self.rtmp_mode_local)
+        self.rtmp_mode_group.addButton(self.rtmp_mode_remote)
         initial_mode = self.settings.get("rtmp_mode", "local")
-        if initial_mode == "remote":
-            self.rtmp_mode_remote.setChecked(True)
-        else:
-            self.rtmp_mode_local.setChecked(True)
+        (self.rtmp_mode_remote if initial_mode == "remote" else self.rtmp_mode_local).setChecked(True)
         self.rtmp_mode_group.buttonClicked.connect(self._rtmp_mode_changed)
-        ov.addLayout(r_modes)
+        self.rtmp_mode_local.setVisible(False)
+        self.rtmp_mode_remote.setVisible(False)
+
         r2 = QHBoxLayout()
         r2.setContentsMargins(6, 0, 6, 0)
-        # v22.2.2: chip de estado (ON/OFF) — el botón "INICIAR RTMP" se
-        # elimina: el modo se elige con los radios de arriba.
         self.rtmp_chip = LedLabel("OFF", object_name="rtmpChip")
         self.rtmp_chip.setMinimumWidth(120)
         self.rtmp_chip.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         r2.addWidget(self.rtmp_chip, 1)
-        # Mantenemos self.rtmp_btn como referencia por compatibilidad con
-        # otras partes del código que aún lo usan (lo ocultamos).
+        # Referencia heredada: el control de activación está en cada perfil.
         self.rtmp_btn = _btn("", lambda: None, None, "")
         self.rtmp_btn.setVisible(False)
         ov.addLayout(r2)
+
+        self.rtmp_destinations = _lbl("Abre Salidas IP para configurar destinos", "clipInfo")
+        self.rtmp_destinations.setContentsMargins(6, 0, 6, 0)
+        self.rtmp_destinations.setWordWrap(True)
+        ov.addWidget(self.rtmp_destinations)
         self.rtmp_info = _lbl("", "clipInfo")
         self.rtmp_info.setContentsMargins(6, 0, 6, 0)
         self.rtmp_info.setWordWrap(True)
@@ -740,6 +734,7 @@ class MainWindow(QMainWindow):
                 self.player.set_mute(muted)
             self._modes_changed()
         self.rtmp_url.setText(s.get("rtmp_url", ""))
+        self._refresh_output_monitor()
 
     def _modes_changed(self, *_a):
         self.ctrl.mode = self.mode_combo.currentData() or "auto"
@@ -1635,6 +1630,7 @@ class MainWindow(QMainWindow):
         self.output.start()
         self._set_rtmp_chip("CONECTANDO…")
         self.rtmp_chip.set_active(True)
+        self._refresh_output_monitor()
 
     def _rtmp_stop(self):
         """v22.2.2: detiene el RTMP si está corriendo."""
@@ -1650,7 +1646,40 @@ class MainWindow(QMainWindow):
                 "opacity": int(s.get("logo_opacity", 90)), "margin": int(s.get("logo_margin", 24)),
                 "hide_categories": sorted(hidden_categories)}
 
+    def _refresh_output_monitor(self):
+        """Actualiza el monitor principal sin convertirlo en editor de destinos."""
+        if not hasattr(self, "rtmp_destinations"):
+            return
+        profiles = []
+        for profile in self.settings.get("outputs") or []:
+            if not isinstance(profile, dict):
+                continue
+            target = str(profile.get("target") or profile.get("url") or "").strip()
+            if target:
+                profiles.append(profile)
+        if not profiles:
+            legacy = str(self.settings.get("rtmp_url", "") or self.rtmp_url.text()).strip()
+            if legacy:
+                profiles = [{"enabled": True, "protocol": "SRT" if legacy.lower().startswith("srt://") else "RTMP",
+                             "name": "Destino principal", "target": legacy}]
+        enabled = [p for p in profiles if p.get("enabled", True)]
+        if not profiles:
+            self.rtmp_destinations.setText("Sin destinos configurados • usa Salidas IP / RTMP / SRT / NDI")
+            return
+        labels = []
+        for profile in profiles:
+            protocol = str(profile.get("protocol", "RTMP")).upper()
+            name = str(profile.get("name") or protocol)
+            state = "ACTIVO" if profile.get("enabled", True) else "INACTIVO"
+            labels.append(f"{name} [{protocol}] · {state}")
+        running = bool(self.output and self.output.isRunning())
+        self.rtmp_destinations.setText(
+            f"Monitor de salidas · {len(enabled)}/{len(profiles)} activos · "
+            f"{'EMITIENDO' if running else 'DETENIDO'}\n" + "  •  ".join(labels)
+        )
+
     def _rtmp_state(self, ok, msg):
+        self._refresh_output_monitor()
         self._status(msg)
         self.rtmp_chip.set_active(ok)
         self._set_rtmp_chip(msg.replace("RTMP ON AIR • ", "ON AIR • ") if ok else ("ERROR" if "ERROR" in msg else "OFF"))
@@ -1680,6 +1709,7 @@ class MainWindow(QMainWindow):
         self.output = None
         self.rtmp_chip.set_active(False)
         self._set_rtmp_chip("OFF")
+        self._refresh_output_monitor()
         # v22.2.2: si el modo sigue siendo "remote" pero el FFmpeg terminó
         # (por error o stop externo), no forzar cambio de radio — el usuario
         # puede reintentar. Pero si terminó por stop nuestro, dejamos el
@@ -1804,14 +1834,39 @@ class MainWindow(QMainWindow):
     def open_outputs(self):
         from .dialogs_extra import OutputProfilesDialog
         d = OutputProfilesDialog(self, self.settings)
-        if d.exec() == QDialog.Accepted:
-            profiles = d.values()
-            self._save_setting("outputs", profiles)
-            # Mantener compatibilidad con la URL única de versiones anteriores.
-            if profiles:
-                self.rtmp_url.setText(str(profiles[0].get("target", "")))
-                self._save_setting("rtmp_url", profiles[0].get("target", ""))
-            self._status(f"Destinos guardados: {len(profiles)} (RTMP/SRT/NDI)")
+        if d.exec() != QDialog.Accepted:
+            return
+        profiles = d.values()
+        self._save_setting("outputs", profiles)
+        # Mantener compatibilidad con la URL única de versiones anteriores.
+        if profiles:
+            self.rtmp_url.setText(str(profiles[0].get("target", "")))
+            self._save_setting("rtmp_url", profiles[0].get("target", ""))
+        self._refresh_output_monitor()
+        enabled = any(bool(p.get("enabled", True)) for p in profiles)
+        was_running = bool(self.output and self.output.isRunning())
+        if was_running:
+            self.output.stop()
+            self.output.wait(4000)
+            self.output = None
+            self.rtmp_chip.set_active(False)
+            self._set_rtmp_chip("OFF")
+        if enabled:
+            # La casilla Activo del diálogo es ahora la única decisión del
+            # operador: al guardar, los perfiles activos pasan al aire.
+            self.rtmp_mode_group.blockSignals(True)
+            self.rtmp_mode_remote.setChecked(True)
+            self.rtmp_mode_group.blockSignals(False)
+            self._save_setting("rtmp_mode", "remote")
+            QTimer.singleShot(250, self._rtmp_start)
+        else:
+            self.rtmp_mode_group.blockSignals(True)
+            self.rtmp_mode_local.setChecked(True)
+            self.rtmp_mode_group.blockSignals(False)
+            self._save_setting("rtmp_mode", "local")
+            self.rtmp_info.setText("Salidas detenidas • ningún destino está activo")
+        self._refresh_output_monitor()
+        self._status(f"Destinos guardados: {len(profiles)} • {'activando' if enabled else 'todos desactivados'}")
 
     def open_logo(self):
         from .dialogs_extra import LogoDialog

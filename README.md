@@ -1,4 +1,4 @@
-# TVPlayout PRO V24.0.2.7 — Consola de playout
+# TVPlayout PRO V24.0.2.8 — Consola de playout
 
 Playout de televisión 24/7 para Windows con interfaz inspirada en la distribución de **XPlayout** (Axel Technology),
 sin usar código ni recursos propietarios. Reproductor local **PyAV/libavcodec** + salida **RTMP/SRT/UDP** con **FFmpeg** + NDI nativo mediante el Runtime x64.
@@ -119,6 +119,11 @@ tests/                  pruebas estáticas y de continuidad del playout
 ```
 
 ## Registro de cambios
+
+### V24.0.2.8
+- La casilla `Destino activo` del diálogo de Salidas IP es la única opción para activar o desactivar cada perfil.
+- La pantalla principal ahora funciona como monitor de salidas: muestra destinos, protocolo, estado activo/inactivo y estado de emisión sin editar URLs ni nombres.
+- Al guardar perfiles activos se inicia la salida; al guardar todos los perfiles desactivados se detienen las salidas.
 
 ### V24.0.2.7
 - El logo/CG se oculta automáticamente durante los eventos cuya categoría sea `Publicidad`, tanto en RTMP/SRT/FFmpeg como en NDI directo.
