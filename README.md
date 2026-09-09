@@ -1,4 +1,4 @@
-# TVPlayout PRO V24.0.2.12 — Consola de playout
+# TVPlayout PRO V24.0.2.13 — Consola de playout
 
 Playout de televisión 24/7 para Windows con interfaz inspirada en la distribución de **XPlayout** (Axel Technology),
 sin usar código ni recursos propietarios. Reproductor local **PyAV/libavcodec** + salida **RTMP/SRT/UDP** con **FFmpeg** + NDI nativo mediante el Runtime x64.
@@ -37,6 +37,17 @@ Se pueden **arrastrar archivos o carpetas** desde el Explorador a la grid.
 - **Emergencia**: emite de inmediato el clip de emergencia configurado (se pide la primera vez).
 - La playlist actual se guarda sola y se restaura al abrir; opción de **poner al aire automáticamente** e **iniciar RTMP** al arrancar.
 - **As-Run log**: todo lo emitido queda registrado (inicio, fin, estado EMITIDO/CORTADO/ERROR) y se exporta a CSV.
+
+## Tarjeta de película TMDB
+
+En **Ajustes → Reproducción / Automatización** se puede activar la tarjeta TMDB,
+introducir la API key y configurar el intervalo/duración. Por defecto se busca
+la película actual cada **18 minutos** y se muestra durante **15 segundos**.
+La tarjeta combina backdrop, póster, título y año en la franja superior y se
+compone en el monitor PyAV, RTMP/SRT y NDI directo. Se requiere una API key de
+TMDB y conexión a Internet para la primera consulta; las imágenes quedan en
+`cache/tmdb` para reutilizarse. Este producto utiliza la API de TMDB, pero no
+está respaldado ni certificado por TMDB.
 
 ## Salida RTMP
 
@@ -121,6 +132,11 @@ tests/                  pruebas estáticas y de continuidad del playout
 ```
 
 ## Registro de cambios
+
+### V24.0.2.13
+- Se añade integración opcional con TMDB para buscar la película actual y crear una tarjeta con backdrop, póster, título y año.
+- La tarjeta aparece cada 18 minutos por defecto durante 15 segundos en el monitor, RTMP/SRT y NDI directo mediante el frame PyAV.
+- El intervalo, duración y API key son configurables desde Ajustes.
 
 ### V24.0.2.12
 - Se muestran subtítulos de texto en el monitor PyAV cuando se selecciona una pista.

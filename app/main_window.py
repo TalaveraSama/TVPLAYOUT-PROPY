@@ -27,6 +27,7 @@ from .scanner import Scanner
 from .prober import ProbeWorker
 from .pyav_player import PyAVPlayer
 from .output import MultiOutputManager
+from .tmdb import TMDBLookupWorker, build_movie_overlay
 from .scheduler import SchedulerService
 from .playout import (PlayoutController, make_item, ST_ONAIR, ST_READY, ST_AIRED, ST_CUT, ST_ERROR, ST_SKIPPED,
                       ST_PENDING, DONE_STATES)
@@ -52,6 +53,7 @@ DEFAULT_SETTINGS = {
     "autofill_category": "Todas", "autofill_count": 10, "tandas_category": "Publicidad", "tandas_count": 2,
     "midroll_enabled": False, "midroll_category": "Publicidad", "midroll_interval_minutes": 15,
     "identifiers_enabled": False, "identifier_in_path": "", "identifier_out_path": "",
+    "tmdb_enabled": False, "tmdb_api_key": "", "tmdb_interval_minutes": 18, "tmdb_duration_seconds": 15,
     "restore_playlist": True, "autoplay": False, "probe_on_scan": True,
     "mode": "auto", "loop": True, "exact_time": True, "autofill": False, "tandas": False, "autoscroll": True,
     "volume": 100, "muted": False, "emergency_clip": "", "splitter": [1120, 430],
@@ -171,6 +173,9 @@ class MainWindow(QMainWindow):
         self._building = False
         self._current_thumb = ""
         self._dialogs = {}
+        self._tmdb_worker = None
+        self._tmdb_request_id = 0
+        self._tmdb_overlay_path = ""
 
         self._build()
         self.player = PyAVPlayer(self.video, MPV_PATH, self)
@@ -185,6 +190,7 @@ class MainWindow(QMainWindow):
         self.ctrl.message.connect(self._status)
         self.ctrl.playlist_end.connect(self._playlist_end)
         self.ctrl.on_start_callbacks.append(self._rtmp_follow)
+        self.ctrl.on_start_callbacks.append(self._tmdb_follow)
         self.ctrl.items_changed.connect(self._rtmp_sync_structure)
         # v22.1: sincronizar pausa y seek del playout con el RTMP.
         self.ctrl.paused_changed = getattr(self.ctrl, "paused_changed", None)
@@ -1641,6 +1647,9 @@ class MainWindow(QMainWindow):
                                           int(s.get("audio_bitrate", 192)),
                                           loop=True, start_index=max(0, self.ctrl.onair), start_offset=mpv_time,
                                           extra_args=s.get("ffmpeg_extra", ""), logo=self._logo_config(),
+                                          program_overlay=self._tmdb_overlay_path,
+                                          program_interval=max(1, int(s.get("tmdb_interval_minutes", 18))) * 60.0,
+                                          program_duration=max(1, int(s.get("tmdb_duration_seconds", 15))),
                                           ndi_ffmpeg=FFMPEG_NDI_PATH, ndi_source=self.player, parent=self)
         log.info("Salidas IP arrancadas (%d destinos) en offset %.2fs", len(profiles), mpv_time)
         self.output.state.connect(self._rtmp_state)
@@ -1740,12 +1749,58 @@ class MainWindow(QMainWindow):
         comparte con RTMP/SRT/NDI cuando una película vuelve de una tanda."""
         start_offset = max(0.0, float((_item or {}).get("_start_offset", 0.0) or 0.0))
         if self.output and self.output.isRunning():
+            # No reutilizar la tarjeta de la película anterior mientras TMDB
+            # resuelve la nueva; la respuesta llega de forma asíncrona.
+            self.output.set_program_overlay("")
             self.output.sync_items(self.ctrl.export_items(), index, force_jump=True, start_offset=start_offset)
             # v22.2.1: al cambiar de clip el offset se resetea a 0 en el RTMP,
             # no tiene sentido que el watcher intente realinear durante 3s.
             self._rtmp_drift_suspend_until = time.time() + 3.0
         elif self.settings.get("rtmp_mode") == "remote" and self._output_profiles():
             QTimer.singleShot(0, self._rtmp_start)
+
+    def _tmdb_follow(self, index, item):
+        """Busca la tarjeta sin bloquear la emisión y limpia la anterior."""
+        self._tmdb_request_id += 1
+        request_id = self._tmdb_request_id
+        self._tmdb_overlay_path = ""
+        self.player.set_program_overlay("")
+        if self.output and self.output.isRunning():
+            self.output.set_program_overlay("")
+        settings = self.settings
+        if (not settings.get("tmdb_enabled") or not settings.get("tmdb_api_key") or
+                item.get("category") not in {"Películas", "Música"}):
+            return
+        worker = TMDBLookupWorker(settings.get("tmdb_api_key"), item.get("title", ""), parent=self)
+        self._tmdb_worker = worker
+        worker.result.connect(lambda title, data, rid=request_id, idx=index, it=item: self._tmdb_ready(rid, idx, it, data))
+        worker.failed.connect(lambda title, error, rid=request_id: self._tmdb_failed(rid, error))
+        worker.finished.connect(lambda w=worker: w.deleteLater())
+        worker.start()
+
+    def _tmdb_failed(self, request_id, error):
+        if request_id == self._tmdb_request_id:
+            log.info("TMDB tarjeta no disponible: %s", error)
+
+    def _tmdb_ready(self, request_id, index, item, metadata):
+        if request_id != self._tmdb_request_id or self.ctrl.current is not item:
+            return
+        interval = max(1, int(self.settings.get("tmdb_interval_minutes", 18))) * 60.0
+        duration = max(1, int(self.settings.get("tmdb_duration_seconds", 15)))
+        image_path = str(metadata.get("backdrop_file") or metadata.get("poster_file") or "")
+        if not image_path or not os.path.isfile(image_path):
+            return
+        out = Path(image_path)
+        overlay = out.with_name(out.stem + f"_overlay_{self.settings.get('resolution', '1920x1080').replace('x', '_')}.png")
+        if not build_movie_overlay(metadata, self.settings.get("resolution", "1920x1080"), overlay):
+            return
+        self._tmdb_overlay_path = str(overlay)
+        self.player.set_program_overlay(str(overlay), interval, duration)
+        if self.output and self.output.isRunning() and self.ctrl.is_on_air:
+            self.output.set_program_overlay(str(overlay), interval, duration)
+            self.output.sync_items(self.ctrl.export_items(), self.ctrl.onair, force_jump=True,
+                                   start_offset=float(self.ctrl.elapsed or 0.0))
+        self._status(f"TMDB • {metadata.get('title', item.get('title', 'Película'))}")
 
     def _rtmp_sync_structure(self):
         if self.output and self.output.isRunning():

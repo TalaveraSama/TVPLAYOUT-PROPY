@@ -519,6 +519,9 @@ class PyAVPlayer(QObject):
         self._loop = False
         self._trim_start = 0.0
         self._trim_end = 0.0
+        self._program_overlay = QImage()
+        self._program_overlay_interval = 1080.0
+        self._program_overlay_duration = 15.0
         self._generation = 0
         self._job = None
         self._thread = None
@@ -744,12 +747,37 @@ class PyAVPlayer(QObject):
         log.info("PyAV monitor audio ready gen=%d buffer=%.1fs", generation, AUDIO_PREBUFFER_SECONDS)
         self._start_audio()
 
+    def set_program_overlay(self, path="", interval_seconds=1080.0, duration_seconds=15.0):
+        """Configura la tarjeta TMDB periódica sobre monitor y NDI."""
+        self._program_overlay = QImage(str(path)) if path else QImage()
+        self._program_overlay_interval = max(1.0, float(interval_seconds or 1080.0))
+        self._program_overlay_duration = max(0.0, float(duration_seconds or 15.0))
+
+    def _paint_program_overlay(self, image, position):
+        overlay = self._program_overlay
+        if overlay.isNull() or self._program_overlay_duration <= 0:
+            return image
+        phase = float(position or 0.0) % self._program_overlay_interval
+        if phase > self._program_overlay_duration:
+            return image
+        if overlay.size() != image.size():
+            overlay = overlay.scaled(image.size(), Qt.AspectRatioMode.IgnoreAspectRatio,
+                                     Qt.TransformationMode.SmoothTransformation)
+        try:
+            painter = QPainter(image)
+            painter.drawImage(0, 0, overlay)
+            painter.end()
+        except Exception as exc:  # noqa: BLE001
+            log.debug("program overlay paint: %s", exc)
+        return image
+
     def _on_frame(self, image, position, duration, generation):
         if generation != self._generation:
             return
         self._time = max(0.0, float(position))
         if duration > 0:
             self._duration = float(duration)
+        image = self._paint_program_overlay(image, self._time)
         self.widget.set_frame(image)
         self.ndi_frame.emit(image, self._time, self._duration)
         self.position.emit(self._time, self._duration)

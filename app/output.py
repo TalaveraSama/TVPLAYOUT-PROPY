@@ -73,7 +73,8 @@ class OutputWorker(QThread):
 
     def __init__(self, ffmpeg, items, url, resolution, fps, encoder, bitrate,
                  audio_preference="AUTO", subtitle_preference="OFF", subtitle_burn=False,
-                 audio_bitrate=192, loop=True, start_index=0, start_offset=0.0, extra_args="", logo=None, protocol=""):
+                 audio_bitrate=192, loop=True, start_index=0, start_offset=0.0, extra_args="", logo=None,
+                 program_overlay=None, program_interval=1080.0, program_duration=15.0, protocol=""):
         super().__init__()
         self.ffmpeg = ffmpeg
         self.items = self._norm_items(items)
@@ -92,6 +93,9 @@ class OutputWorker(QThread):
         self.extra_args = extra_args or ""
         self.protocol = (protocol or self._infer_protocol(url)).upper()
         self.logo = logo
+        self.program_overlay = program_overlay or ""
+        self.program_interval = max(1.0, float(program_interval or 1080.0))
+        self.program_duration = max(0.0, float(program_duration or 15.0))
         self.proc = None
         self.stop_requested = False
         self._lock = threading.RLock()
@@ -212,6 +216,36 @@ class OutputWorker(QThread):
                 tracks = []
         return tracks
 
+    def _program_enable_expression(self, offset, duration):
+        """Ventanas FFmpeg relativas al reinicio actual del evento."""
+        if not self.program_overlay or not os.path.isfile(self.program_overlay):
+            return ""
+        interval = max(1.0, self.program_interval)
+        visible = max(0.0, min(self.program_duration, interval - 0.1))
+        if visible <= 0:
+            return ""
+        try:
+            origin = max(0.0, float(offset or 0.0))
+            total = float(duration or 0.0)
+        except (TypeError, ValueError):
+            origin, total = 0.0, 0.0
+        if origin <= 0.01:
+            first = 0.0
+        else:
+            first = interval - (origin % interval)
+            if first >= interval - 0.01:
+                first = 0.0
+        windows = []
+        point = first
+        # Un máximo amplio evita generar una expresión enorme en películas
+        # largas; la ventana se vuelve a calcular en el siguiente salto.
+        for _ in range(96):
+            if total > 0 and point > total:
+                break
+            windows.append(f"between(t,{point:.3f},{point + visible:.3f})")
+            point += interval
+        return "+".join(windows)
+
     def _build_command(self, item, offset=0.0):
         source = item["path"]
         if not self.ffmpeg or not os.path.isfile(self.ffmpeg):
@@ -272,16 +306,34 @@ class OutputWorker(QThread):
         cmd += ["-i", source]
         logo = (self.logo if (self.logo and os.path.isfile(self.logo.get("path", ""))
                  and not logo_suppressed_for_category(item.get("category", ""), self.logo)) else None)
+        program = (self.program_overlay if (self.program_overlay and os.path.isfile(self.program_overlay)
+                   and item.get("category") in {"Películas", "Música"}) else None)
+        program_expr = self._program_enable_expression(local_offset, trim_duration) if program else ""
+        if not program_expr:
+            program = None
         amap = f"0:a:{aid}?" if isinstance(aid, int) and aid >= 0 else "0:a:0?"
         if logo:
             cmd += ["-loop", "1", "-framerate", "1", "-i", logo["path"]]
-            lw = max(16, int(w * int(logo.get("scale", 10)) / 100))
-            op = max(0.05, min(1.0, int(logo.get("opacity", 90)) / 100))
-            m = int(logo.get("margin", 48))
-            xe, ye = logo_overlay_position(logo.get("position", "arriba-derecha"), w, h, m)
-            fc = (f"[0:v]{','.join(vf)}[base];"
-                  f"[1:v]scale={lw}:-1,format=rgba,colorchannelmixer=aa={op:.2f}[logo];"
-                  f"[base][logo]overlay={xe.format(m=m)}:{ye.format(m=m)}:shortest=1:format=auto,format=yuv420p[out]")
+        if program:
+            cmd += ["-loop", "1", "-framerate", "1", "-i", program]
+        if logo or program:
+            filters = [f"[0:v]{','.join(vf)}[base]"]
+            stage = "base"
+            if logo:
+                lw = max(16, int(w * int(logo.get("scale", 10)) / 100))
+                op = max(0.05, min(1.0, int(logo.get("opacity", 90)) / 100))
+                m = int(logo.get("margin", 48))
+                xe, ye = logo_overlay_position(logo.get("position", "arriba-derecha"), w, h, m)
+                filters.append(f"[1:v]scale={lw}:-1,format=rgba,colorchannelmixer=aa={op:.2f}[logo]")
+                filters.append(f"[{stage}][logo]overlay={xe.format(m=m)}:{ye.format(m=m)}:shortest=1:format=auto[withlogo]")
+                stage = "withlogo"
+            if program:
+                program_index = 2 if logo else 1
+                filters.append(f"[{program_index}:v]format=rgba[program]")
+                filters.append(f"[{stage}][program]overlay=0:0:enable='{program_expr}':eof_action=repeat[withprogram]")
+                stage = "withprogram"
+            filters.append(f"[{stage}]format=yuv420p[out]")
+            fc = ";".join(filters)
             cmd += ["-filter_complex", fc, "-map", "[out]", "-map", amap]
         else:
             cmd += ["-map", "0:v:0", "-map", amap, "-vf", ",".join(vf)]
@@ -389,6 +441,12 @@ class OutputWorker(QThread):
     def set_logo(self, logo):
         with self._lock:
             self.logo = logo
+
+    def set_program_overlay(self, path, interval_seconds=1080.0, duration_seconds=15.0):
+        with self._lock:
+            self.program_overlay = str(path or "")
+            self.program_interval = max(1.0, float(interval_seconds or 1080.0))
+            self.program_duration = max(0.0, float(duration_seconds or 15.0))
 
     @staticmethod
     def _terminate(proc):
@@ -605,7 +663,8 @@ class MultiOutputManager(QObject):
     def __init__(self, ffmpeg, profiles, items, resolution, fps, encoder, bitrate,
                  audio_preference="AUTO", subtitle_preference="OFF", subtitle_burn=False,
                  audio_bitrate=192, loop=True, start_index=0, start_offset=0.0,
-                 extra_args="", logo=None, ndi_ffmpeg=None, ndi_source=None, parent=None):
+                 extra_args="", logo=None, program_overlay=None, program_interval=1080.0,
+                 program_duration=15.0, ndi_ffmpeg=None, ndi_source=None, parent=None):
         super().__init__(parent)
         self.ffmpeg = ffmpeg
         self.ndi_ffmpeg = ndi_ffmpeg or ffmpeg
@@ -617,7 +676,9 @@ class MultiOutputManager(QObject):
         self.common = dict(resolution=resolution, fps=fps, encoder=encoder, bitrate=bitrate,
                            audio_preference=audio_preference, subtitle_preference=subtitle_preference,
                            subtitle_burn=subtitle_burn, audio_bitrate=audio_bitrate, loop=loop,
-                           start_index=start_index, start_offset=start_offset, extra_args=extra_args, logo=logo)
+                           start_index=start_index, start_offset=start_offset, extra_args=extra_args, logo=logo,
+                           program_overlay=program_overlay, program_interval=program_interval,
+                           program_duration=program_duration)
         self.workers = []
         self._ended_workers = set()
         self.ndi_senders = []
@@ -770,6 +831,13 @@ class MultiOutputManager(QObject):
             worker.set_logo(logo)
         for sender in self.ndi_senders:
             sender.set_logo(logo)
+
+    def set_program_overlay(self, path, interval_seconds=1080.0, duration_seconds=15.0):
+        for worker in self.workers:
+            worker.set_program_overlay(path, interval_seconds, duration_seconds)
+        self.common["program_overlay"] = str(path or "")
+        self.common["program_interval"] = float(interval_seconds or 1080.0)
+        self.common["program_duration"] = float(duration_seconds or 15.0)
 
     @property
     def current_position(self):

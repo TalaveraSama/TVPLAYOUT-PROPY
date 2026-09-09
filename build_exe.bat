@@ -1,6 +1,6 @@
 @echo off
 REM ============================================================================
-REM TVPlayout PRO V24.0.2.12 - Empaquetado portable para Windows x64
+REM TVPlayout PRO V24.0.2.13 - Empaquetado portable para Windows x64
 REM
 REM Genera una distribución onedir profesional en:
 REM   dist\TVPlayoutPRO\

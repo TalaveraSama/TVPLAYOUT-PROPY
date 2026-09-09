@@ -87,6 +87,20 @@ def test_automatic_end_tanda_remains_in_the_controller():
     assert "self.tandas_category" in playout
 
 
+def test_tmdb_card_is_periodic_and_shared_by_monitor_and_ip_outputs():
+    window = _read("app", "main_window.py")
+    player = _read("app", "pyav_player.py")
+    output = _read("app", "output.py")
+    tmdb = _read("app", "tmdb.py")
+    dialog = _read("app", "dialogs.py")
+    assert "tmdb_interval_minutes" in window and "tmdb_duration_seconds" in window
+    assert "TMDBLookupWorker" in window and "build_movie_overlay" in window
+    assert "set_program_overlay" in player and "_program_overlay_interval" in player
+    assert "_program_enable_expression" in output and "program_overlay" in output
+    assert "TMDB_API}/search/movie" in tmdb and "TMDB_IMAGES" in tmdb
+    assert "Mostrar tarjeta TMDB periódica" in dialog
+
+
 def test_live_track_change_restarts_local_and_remote_at_same_offset():
     playout = _read("app", "playout.py")
     player = _read("app", "pyav_player.py")

@@ -848,6 +848,19 @@ class SettingsDialog(BaseDialog):
         out_row = QHBoxLayout()
         out_row.addWidget(self.identifier_out, 1)
         out_row.addWidget(self.identifier_out_browse)
+        self.tmdb_enabled = QCheckBox("Mostrar tarjeta TMDB periódica para Películas")
+        self.tmdb_enabled.setChecked(bool(self.settings.get("tmdb_enabled", False)))
+        self.tmdb_key = QLineEdit(self.settings.get("tmdb_api_key", ""))
+        self.tmdb_key.setEchoMode(QLineEdit.EchoMode.Password)
+        self.tmdb_key.setPlaceholderText("API key de TMDB")
+        self.tmdb_interval = QSpinBox()
+        self.tmdb_interval.setRange(1, 240)
+        self.tmdb_interval.setSuffix(" min")
+        self.tmdb_interval.setValue(max(1, int(self.settings.get("tmdb_interval_minutes", 18))))
+        self.tmdb_duration = QSpinBox()
+        self.tmdb_duration.setRange(1, 60)
+        self.tmdb_duration.setSuffix(" s")
+        self.tmdb_duration.setValue(max(1, int(self.settings.get("tmdb_duration_seconds", 15))))
         self.restore_pl = QCheckBox("Restaurar la última playlist al abrir")
         self.restore_pl.setChecked(bool(self.settings.get("restore_playlist", True)))
         self.autoplay = QCheckBox("Poner AL AIRE automáticamente al abrir (continuidad 24/7)")
@@ -870,6 +883,11 @@ class SettingsDialog(BaseDialog):
         f2.addRow("Identificador de entrada", in_row)
         f2.addRow("Identificador de salida", out_row)
         f2.addRow("", QLabel("Los identificadores se usan sólo en Películas y Música; no se insertan en Publicidad, filler ni slate."))
+        f2.addRow("", self.tmdb_enabled)
+        f2.addRow("TMDB API key", self.tmdb_key)
+        f2.addRow("TMDB: intervalo", self.tmdb_interval)
+        f2.addRow("TMDB: duración visible", self.tmdb_duration)
+        f2.addRow("", QLabel("La tarjeta combina backdrop, póster, título y año en la franja superior; requiere una API key de TMDB."))
         f2.addRow("", self.restore_pl)
         f2.addRow("", self.autoplay)
         f2.addRow("", self.probe_on_scan)
@@ -934,6 +952,10 @@ class SettingsDialog(BaseDialog):
             "identifiers_enabled": self.identifiers_enabled.isChecked(),
             "identifier_in_path": self.identifier_in.text().strip(),
             "identifier_out_path": self.identifier_out.text().strip(),
+            "tmdb_enabled": self.tmdb_enabled.isChecked(),
+            "tmdb_api_key": self.tmdb_key.text().strip(),
+            "tmdb_interval_minutes": self.tmdb_interval.value(),
+            "tmdb_duration_seconds": self.tmdb_duration.value(),
             "restore_playlist": self.restore_pl.isChecked(),
             "autoplay": self.autoplay.isChecked(),
             "probe_on_scan": self.probe_on_scan.isChecked(),
