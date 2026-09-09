@@ -157,8 +157,20 @@ class MainWindow(QMainWindow):
         if APP_ICON_PATH:
             self.setWindowIcon(QIcon(str(APP_ICON_PATH)))
         self.setWindowTitle(f"{APP_NAME} {APP_VERSION} — Broadcast Playout")
-        self.resize(1600, 920)
-        self.setMinimumSize(1280, 720)
+        screen = QApplication.primaryScreen()
+        available = screen.availableGeometry() if screen is not None else None
+        if available is not None:
+            initial_w = min(1600, max(720, available.width() - 24))
+            initial_h = min(920, max(480, available.height() - 32))
+            min_w = min(960, max(720, available.width() - 24))
+            min_h = min(560, max(480, available.height() - 48))
+        else:
+            initial_w, initial_h, min_w, min_h = 1600, 920, 960, 560
+        self.resize(initial_w, initial_h)
+        # No bloquear la ventana en 1280x720: Windows puede entregar menos
+        # píxeles lógicos cuando el TV usa escalado DPI 125/150%.
+        self.setMinimumSize(min_w, min_h)
+        self.setSizeGripEnabled(True)
         self.db = DB(DB_PATH)
         self.db.close_open_air_logs()
         self.settings = dict(DEFAULT_SETTINGS)
@@ -260,9 +272,15 @@ class MainWindow(QMainWindow):
         self.splitter.setStretchFactor(1, 0)
         sizes = self.settings.get("splitter") or [1120, 430]
         try:
-            self.splitter.setSizes([int(x) for x in sizes])
-        except (TypeError, ValueError):
-            self.splitter.setSizes([1120, 430])
+            saved_left, saved_right = (int(sizes[0]), int(sizes[1]))
+        except (TypeError, ValueError, IndexError):
+            saved_left, saved_right = 1120, 430
+        total_width = max(720, self.width() - 24)
+        # El panel derecho conserva proporción útil en un TV pequeño y no
+        # roba la anchura necesaria a la playlist.
+        right_size = min(saved_right, max(260, int(total_width * 0.32)))
+        right_size = max(260, right_size)
+        self.splitter.setSizes([max(440, total_width - right_size), right_size])
         self.statusBar().showMessage("Listo")
         # v22.2.6: indicador permanente de errores/warnings recientes.
         # Se actualiza en _tick_ui. Click para abrir el dialog de logs.

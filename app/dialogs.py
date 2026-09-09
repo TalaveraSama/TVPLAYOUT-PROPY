@@ -5,10 +5,10 @@ from datetime import datetime
 
 from PySide6.QtCore import Qt, QTime, QDate, Signal
 from PySide6.QtGui import QColor, QBrush
-from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QGridLayout, QFormLayout, QLabel, QPushButton,
+from PySide6.QtWidgets import (QApplication, QDialog, QVBoxLayout, QHBoxLayout, QGridLayout, QFormLayout, QLabel, QPushButton,
                                QTableWidget, QTableWidgetItem, QAbstractItemView, QHeaderView, QLineEdit, QComboBox,
                                QSpinBox, QDoubleSpinBox, QCheckBox, QTimeEdit, QDateEdit, QMessageBox, QFileDialog, QInputDialog,
-                               QPlainTextEdit, QTabWidget, QWidget, QListWidget, QListWidgetItem, QGroupBox)
+                               QPlainTextEdit, QTabWidget, QWidget, QListWidget, QListWidgetItem, QGroupBox, QScrollArea, QFrame)
 
 from . import logger
 from .config import (MPV_PATH, FFMPEG_PATH, FFPROBE_PATH, ROOT, RESOLUTIONS, FPS_LIST, ENCODERS, AUDIO_PREFS, SUB_PREFS,
@@ -28,13 +28,41 @@ def _btn(text, slot=None, name=None, tip=None):
     return b
 
 
+def _note(text):
+    label = QLabel(text)
+    label.setWordWrap(True)
+    label.setMinimumWidth(0)
+    return label
+
+
 class BaseDialog(QDialog):
     def __init__(self, parent, title, w=900, h=600):
         super().__init__(parent)
         self.setWindowTitle(f"{title} — TVPlayout PRO {APP_VERSION}")
-        self.resize(w, h)
+        screen = (parent.screen() if parent is not None else None) or QApplication.primaryScreen()
+        available = screen.availableGeometry() if screen is not None else None
+        if available is not None:
+            # Respeta la resolución lógica de Windows/TV y nunca nace más
+            # grande que el área visible detrás de la barra de tareas.
+            w = min(int(w), max(480, available.width() - 32))
+            h = min(int(h), max(360, available.height() - 56))
+        self.resize(max(480, int(w)), max(360, int(h)))
+        self.setMinimumSize(480, 360)
+        self.setSizeGripEnabled(True)
         self.setModal(False)
         self.setWindowFlag(Qt.WindowMinMaxButtonsHint, True)
+        self.setWindowFlag(Qt.WindowCloseButtonHint, True)
+
+    @staticmethod
+    def scroll_page(widget):
+        """Envuelve páginas altas para que funcionen en TV/escala DPI grande."""
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll.setWidget(widget)
+        return scroll
 
 
 # ============================================================ PLAYLIST MANAGER
@@ -794,7 +822,7 @@ class SettingsDialog(BaseDialog):
         f.addRow("", self.burn)
         f.addRow("FFmpeg extra", self.extra)
         f.addRow("", self.autostart_rtmp)
-        tabs.addTab(w, "SALIDA RTMP")
+        tabs.addTab(self.scroll_page(w), "SALIDA RTMP")
 
         # --- audio / subs / automatización
         w2 = QWidget()
@@ -869,7 +897,7 @@ class SettingsDialog(BaseDialog):
         self.probe_on_scan.setChecked(bool(self.settings.get("probe_on_scan", True)))
         f2.addRow("Audio preferido", self.audio)
         f2.addRow("Subtítulos preferidos", self.sub)
-        f2.addRow("", QLabel("Si hay un evento al aire, guardar estos valores cambia la pista en vivo; puede haber un corte IP breve."))
+        f2.addRow("", _note("Si hay un evento al aire, guardar estos valores cambia la pista en vivo; puede haber un corte IP breve."))
         f2.addRow("Decodificación HW (mpv)", self.hwdec)
         f2.addRow("Dispositivo de audio (mpv)", self.audio_device)
         f2.addRow("Autofill: categoría", self.autofill_cat)
@@ -882,16 +910,16 @@ class SettingsDialog(BaseDialog):
         f2.addRow("", self.identifiers_enabled)
         f2.addRow("Identificador de entrada", in_row)
         f2.addRow("Identificador de salida", out_row)
-        f2.addRow("", QLabel("Los identificadores se usan sólo en Películas y Música; no se insertan en Publicidad, filler ni slate."))
+        f2.addRow("", _note("Los identificadores se usan sólo en Películas y Música; no se insertan en Publicidad, filler ni slate."))
         f2.addRow("", self.tmdb_enabled)
         f2.addRow("TMDB API key", self.tmdb_key)
         f2.addRow("TMDB: intervalo", self.tmdb_interval)
         f2.addRow("TMDB: duración visible", self.tmdb_duration)
-        f2.addRow("", QLabel("La tarjeta combina backdrop, póster, título y año en la franja superior; requiere una API key de TMDB."))
+        f2.addRow("", _note("La tarjeta combina backdrop, póster, título y año en la franja superior; requiere una API key de TMDB."))
         f2.addRow("", self.restore_pl)
         f2.addRow("", self.autoplay)
         f2.addRow("", self.probe_on_scan)
-        tabs.addTab(w2, "REPRODUCCIÓN / AUTOMATIZACIÓN")
+        tabs.addTab(self.scroll_page(w2), "REPRODUCCIÓN / AUTOMATIZACIÓN")
 
         # --- sistema
         w3 = QWidget()
@@ -910,7 +938,7 @@ class SettingsDialog(BaseDialog):
                       "También puedes definir MPV_PATH / FFMPEG_PATH en un archivo .env. Reinicia tras cambiar rutas.")
         note.setWordWrap(True)
         f3.addRow(note)
-        tabs.addTab(w3, "SISTEMA")
+        tabs.addTab(self.scroll_page(w3), "SISTEMA")
 
         bottom = QHBoxLayout()
         bottom.addStretch()
@@ -967,7 +995,16 @@ class EditClipDialog(QDialog):
     def __init__(self, parent, item, categories):
         super().__init__(parent)
         self.setWindowTitle("Editar evento")
-        self.resize(560, 430)
+        screen = (parent.screen() if parent is not None else None) or QApplication.primaryScreen()
+        available = screen.availableGeometry() if screen is not None else None
+        width, height = 560, 430
+        if available is not None:
+            width = min(width, max(480, available.width() - 32))
+            height = min(height, max(340, available.height() - 56))
+        self.resize(width, height)
+        self.setMinimumSize(480, 340)
+        self.setSizeGripEnabled(True)
+        self.setWindowFlag(Qt.WindowMinMaxButtonsHint, True)
         self.item = item
         self.source_duration = max(0.0, float(item.get("source_duration") or item.get("duration") or 0))
         f = QFormLayout(self)

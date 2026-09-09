@@ -6,7 +6,7 @@ import subprocess
 
 from PySide6.QtCore import Qt, QRectF
 from PySide6.QtGui import QPixmap, QPainter, QColor, QPen, QFont
-from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QLabel, QPushButton, QLineEdit, QComboBox,
+from PySide6.QtWidgets import (QApplication, QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QLabel, QPushButton, QLineEdit, QComboBox,
                                QSpinBox, QCheckBox, QFileDialog, QPlainTextEdit, QMessageBox, QWidget,
                                QTableWidget, QTableWidgetItem, QAbstractItemView, QHeaderView)
 
@@ -14,6 +14,19 @@ from .config import MPV_PATH, FFMPEG_PATH, FFMPEG_NDI_PATH, FFPROBE_PATH, ROOT, 
 from .ndi_sender import NDISender
 
 CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
+def _prepare_resizable_dialog(dialog, width, height, min_width=480, min_height=340):
+    screen = (dialog.parent().screen() if dialog.parent() is not None else None) or QApplication.primaryScreen()
+    available = screen.availableGeometry() if screen is not None else None
+    if available is not None:
+        width = min(int(width), max(min_width, available.width() - 32))
+        height = min(int(height), max(min_height, available.height() - 56))
+    dialog.resize(max(min_width, int(width)), max(min_height, int(height)))
+    dialog.setMinimumSize(min_width, min_height)
+    dialog.setSizeGripEnabled(True)
+    dialog.setWindowFlag(Qt.WindowMinMaxButtonsHint, True)
+    dialog.setWindowFlag(Qt.WindowCloseButtonHint, True)
 
 
 class LogoSafeAreaPreview(QWidget):
@@ -98,7 +111,7 @@ class LogoDialog(QDialog):
     def __init__(self, parent, settings):
         super().__init__(parent)
         self.setWindowTitle("Logo / CG en salida RTMP")
-        self.resize(520, 380)
+        _prepare_resizable_dialog(self, 520, 380, 480, 340)
         s = settings
         f = QFormLayout(self)
         self.enabled = QCheckBox("Superponer logo en la salida RTMP")
@@ -183,7 +196,7 @@ class OutputProfilesDialog(QDialog):
     def __init__(self, parent, settings):
         super().__init__(parent)
         self.setWindowTitle("Salidas IP — RTMP / SRT / NDI")
-        self.resize(820, 560)
+        _prepare_resizable_dialog(self, 820, 560, 560, 380)
         self._profiles = [dict(p) for p in (settings.get("outputs") or [])]
         legacy = str(settings.get("rtmp_url", "") or "").strip()
         if not self._profiles and legacy:
@@ -321,7 +334,7 @@ class DevicesDialog(QDialog):
     def __init__(self, parent):
         super().__init__(parent)
         self.setWindowTitle(f"Dispositivos y motores — TVPlayout PRO {APP_VERSION}")
-        self.resize(760, 520)
+        _prepare_resizable_dialog(self, 760, 520, 560, 380)
         v = QVBoxLayout(self)
         self.text = QPlainTextEdit()
         self.text.setReadOnly(True)

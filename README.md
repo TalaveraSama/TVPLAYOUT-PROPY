@@ -1,4 +1,4 @@
-# TVPlayout PRO V24.0.2.18 — Consola de playout
+# TVPlayout PRO V24.0.2.19 — Consola de playout
 
 Playout de televisión 24/7 para Windows con interfaz inspirada en la distribución de **XPlayout** (Axel Technology),
 sin usar código ni recursos propietarios. Reproductor local **PyAV/libavcodec** + salida **RTMP/SRT/UDP** con **FFmpeg** + NDI nativo mediante el Runtime x64.
@@ -141,6 +141,10 @@ tests/                  pruebas estáticas y de continuidad del playout
 ```
 
 ## Registro de cambios
+
+### V24.0.2.19
+- Ventana principal y diálogos adaptan su tamaño a la resolución lógica disponible del monitor/TV.
+- Ajustes y diálogos largos ahora tienen scroll vertical, botones de maximizar y control de redimensionado.
 
 ### V24.0.2.18
 - Biblioteca con escaneo manual de metadatos y botón/menú de escaneo TMDB.

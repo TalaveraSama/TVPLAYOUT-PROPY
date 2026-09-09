@@ -165,6 +165,17 @@ def test_library_can_probe_selection_and_store_tmdb_images():
     assert "paths=None" in prober and "paths=self.paths" in prober
 
 
+def test_windows_fit_tv_logical_resolution_and_dialogs_can_scroll():
+    main = _read("app", "main_window.py")
+    dialogs = _read("app", "dialogs.py")
+    extra = _read("app", "dialogs_extra.py")
+    assert "availableGeometry()" in main
+    assert "self.setSizeGripEnabled(True)" in main
+    assert "self.setMinimumSize(min_w, min_h)" in main
+    assert "QScrollArea" in dialogs and "def scroll_page" in dialogs
+    assert "setSizeGripEnabled(True)" in dialogs and "setSizeGripEnabled(True)" in extra
+
+
 if __name__ == "__main__":
     tests = [(name, fn) for name, fn in globals().items() if name.startswith("test_") and callable(fn)]
     failed = 0
