@@ -1,9 +1,9 @@
 @echo off
 REM ============================================================================
-REM TVPlayout PRO V24.0.2.41 - Instalador completo para Windows
+REM TVPlayout PRO V24.0.2.42 - Instalador completo para Windows
 REM
 REM Genera UN SOLO ejecutable de instalacion:
-REM   dist\Setup_TVPlayoutPRO_V24.0.2.41.exe
+REM   dist\Setup_TVPlayoutPRO_V24.0.2.42.exe
 REM
 REM El instalador lleva empaquetados la aplicacion, ffmpeg.exe, ffprobe.exe
 REM y mpv.exe en la raiz del programa, y opcionalmente los instaladores de
@@ -13,11 +13,17 @@ REM Requisitos en el equipo de build:
 REM   - Windows 10/11 x64 con Python 3.10+ y curl (incluido en Windows 10+)
 REM   - Inno Setup 6 (https://jrsoftware.org/isdl.php)
 REM Ejecutar desde la raiz del proyecto o desde installer\ (da igual).
+REM
+REM Uso opcional con mpv LOCAL (evita la descarga de SourceForge):
+REM   BUILD_INSTALLER.bat "C:\Descargas\mpv-x86_64-installer.exe"
+REM   (tambien acepta la ruta de un mpv.exe portable con sus DLL)
+REM   ...o sin argumento: coloca el instalador en vendor\mpv-setup.exe
+REM   y se usara automaticamente.
 REM ============================================================================
 setlocal EnableExtensions EnableDelayedExpansion
 cd /d "%~dp0.."
 
-set "APP_VERSION=V24.0.2.41"
+set "APP_VERSION=V24.0.2.42"
 set "VENDOR=vendor"
 set "DIST_APP=dist\TVPlayoutPRO"
 set "SETUP_NAME=Setup_TVPlayoutPRO_%APP_VERSION%"
@@ -41,7 +47,17 @@ if exist "%VENDOR%\ffmpeg.exe" if exist "%VENDOR%\ffprobe.exe" (
 ) else (
     echo [..] Descargando FFmpeg esencial ^(~90 MB^) ...
     curl -L --fail --retry 3 -o "%VENDOR%\ffmpeg.zip" "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
-    if errorlevel 1 goto :ffmpeg_error
+    if errorlevel 1 goto :mpv_extract
+"%VENDOR%\mpv-setup.exe" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /DIR="%CD%\%VENDOR%\mpv-extract"
+if exist "%VENDOR%\mpv-extract\mpv.exe" (
+    copy /Y "%VENDOR%\mpv-extract\*.exe" "%VENDOR%\" >nul
+    copy /Y "%VENDOR%\mpv-extract\*.dll" "%VENDOR%\" >nul
+)
+rmdir /s /q "%VENDOR%\mpv-extract" >nul 2>&1
+del /q "%VENDOR%\mpv-setup.exe" >nul 2>&1
+goto :eof
+
+:ffmpeg_error
     echo [..] Extrayendo ...
     tar -xf "%VENDOR%\ffmpeg.zip" -C "%VENDOR%"
     for /r "%VENDOR%" %%F in (ffmpeg.exe)  do if not exist "%VENDOR%\ffmpeg.exe"  copy /Y "%%~fF" "%VENDOR%\ffmpeg.exe"  >nul
@@ -54,26 +70,51 @@ if not exist "%VENDOR%\ffprobe.exe" goto :ffmpeg_error
 echo [OK] ffmpeg listo.
 
 REM ---------------------------------------------------------------------------
-REM 3) mpv (vistas previas) si falta: instalador oficial silencioso y extraccion
+REM 3) mpv (vistas previas): primero LO LOCAL; la descarga es el ultimo recurso
+REM    Orden: 1) vendor\mpv.exe ya extraido  2) instalador/mpv.exe pasado como
+REM    argumento  3) vendor\mpv-setup.exe o vendor\mpv*-installer.exe existentes
+REM    4) descarga de SourceForge
 REM ---------------------------------------------------------------------------
 if exist "%VENDOR%\mpv.exe" (
     echo [OK] mpv.exe ya esta en vendor\
+    goto :mpv_ready
+)
+
+set "MPV_LOCAL=%~1"
+if defined MPV_LOCAL if not exist "%MPV_LOCAL%" (
+    echo [AVISO] No se encontro "%MPV_LOCAL%"; se ignora el argumento.
+    set "MPV_LOCAL="
+)
+if not defined MPV_LOCAL if exist "%VENDOR%\mpv-setup.exe" set "MPV_LOCAL=%VENDOR%\mpv-setup.exe"
+if not defined MPV_LOCAL (
+    for %%F in ("%VENDOR%\mpv*-installer.exe") do if not defined MPV_LOCAL set "MPV_LOCAL=%%~fF"
+)
+
+if defined MPV_LOCAL (
+    echo [..] mpv LOCAL: %MPV_LOCAL%
+    set "MPV_NAME="
+    for %%F in ("!MPV_LOCAL!") do set "MPV_NAME=%%~nxF"
+    if /i "!MPV_NAME!"=="mpv.exe" (
+        echo [..] Copiando mpv.exe portable local ...
+        for %%F in ("!MPV_LOCAL!") do (
+            copy /Y "%%~fF" "%VENDOR%\mpv.exe" >nul
+            copy /Y "%%~dpF*.dll" "%VENDOR%\" >nul 2>&1
+        )
+    ) else (
+        echo [..] Extrayendo mpv.exe del instalador local ...
+        copy /Y "!MPV_LOCAL!" "%VENDOR%\mpv-setup.exe" >nul
+        call :mpv_extract
+    )
 ) else (
     echo [..] Descargando mpv ^(instalador oficial^) ...
     curl -L --fail --retry 3 -o "%VENDOR%\mpv-setup.exe" "https://sourceforge.net/projects/mpv-player-windows/files/latest/download"
     if errorlevel 1 (
-        echo [AVISO] No se pudo descargar mpv; coloca mpv.exe en vendor\ para empaquetarlo.
+        echo [AVISO] No se pudo descargar mpv; coloca mpv.exe en vendor\ o pasa el instalador como argumento.
     ) else (
-        echo [..] Extrayendo mpv.exe ...
-        "%VENDOR%\mpv-setup.exe" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /DIR="%CD%\%VENDOR%\mpv-extract"
-        if exist "%VENDOR%\mpv-extract\mpv.exe" (
-            copy /Y "%VENDOR%\mpv-extract\*.exe" "%VENDOR%\" >nul
-            copy /Y "%VENDOR%\mpv-extract\*.dll" "%VENDOR%\" >nul
-        )
-        rmdir /s /q "%VENDOR%\mpv-extract" >nul 2>&1
-        del /q "%VENDOR%\mpv-setup.exe" >nul 2>&1
+        call :mpv_extract
     )
 )
+:mpv_ready
 if exist "%VENDOR%\mpv.exe" (echo [OK] mpv listo.) else (echo [AVISO] mpv.exe no disponible; las vistas previas usaran VLC.)
 
 REM ---------------------------------------------------------------------------

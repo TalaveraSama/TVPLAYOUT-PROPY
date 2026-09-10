@@ -1222,6 +1222,33 @@ def test_tmdb_queries_are_cleaned_before_searching():
     assert "result = _search(False)" in tmdb_src
 
 
+def test_installer_uses_local_mpv_before_downloading():
+    """v24.0.2.42: el instalador prefiere un mpv LOCAL (argumento o vendor)
+    antes de descargarlo de SourceForge (descarga que se quedaba colgada)."""
+    bat = _read("installer", "BUILD_INSTALLER.bat")
+    lines = bat.splitlines()
+
+    def first_line(predicate, what):
+        for n, line in enumerate(lines):
+            if predicate(line):
+                return n
+        raise AssertionError("no se encontro en el .bat: " + what)
+
+    # Orden de prioridad: extraido -> argumento -> vendor -> descarga.
+    i_ready = first_line(lambda l: "goto :mpv_ready" in l, "mpv ya extraido")
+    i_arg = first_line(lambda l: "MPV_LOCAL=%~1" in l, "argumento local")
+    i_reuse = first_line(lambda l: "mpv*-installer.exe" in l and "for %%F" in l, "reuse de vendor")
+    i_download = first_line(lambda l: "Descargando mpv" in l and "echo" in l, "descarga")
+    assert i_ready < i_arg < i_reuse < i_download, \
+        "orden: extraido -> argumento -> vendor -> descarga"
+    # Acepta el instalador oficial o un mpv.exe portable (con sus DLL).
+    assert 'if /i "!MPV_NAME!"=="mpv.exe"' in bat
+    assert "copy /Y" in bat and "/VERYSILENT" in bat and ":mpv_extract" in bat
+    # Sin mpv no aborta el build (solo aviso) y la cabecera documenta el uso.
+    assert "coloca mpv.exe en vendor" in bat
+    assert "mpv-x86_64-installer.exe" in bat
+
+
 if __name__ == "__main__":
     tests = [(name, fn) for name, fn in globals().items() if name.startswith("test_") and callable(fn)]
     failed = 0
