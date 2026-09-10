@@ -1174,7 +1174,12 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Auto-recorte", "No se encontró ffmpeg.exe; colócalo en la raíz del proyecto.")
             return
         self.tabs.setCurrentIndex(2)
-        self._autotrim_worker = AutoTrimWorker(self.db, FFMPEG_PATH, rows, force=force, parent=self)
+        # v24.0.2.44: si hay emisión al aire, el auto-recorte hace pausas
+        # mayores entre archivos para no competir por la red con la salida.
+        self._autotrim_worker = AutoTrimWorker(
+            self.db, FFMPEG_PATH, rows, force=force, parent=self,
+            on_air_check=lambda: bool(self.output and self.output.isRunning()
+                                      and self.ctrl.is_on_air))
         self._autotrim_worker.progress.connect(
             lambda done, total, title: self.lib_status.setText(f"Auto-recorte • {done}/{total} • {title[:40]}"))
         self._autotrim_worker.item_done.connect(

@@ -1340,6 +1340,83 @@ def test_playlist_resumes_by_clock_after_restart():
         _sh.rmtree(tmp, ignore_errors=True)
 
 
+def test_autotrim_is_gentle_with_the_live_stream_and_subs_retry():
+    """v24.0.2.44: el auto-recorte no compite con la emisión al aire y los
+    subtítulos se reintentan ante fallos transitorios (log 13:12 / 12:43)."""
+    # --- Estructural
+    autotrim = _read("app", "autotrim.py")
+    output = _read("app", "output.py")
+    window = _read("app", "main_window.py")
+    assert "INTER_FILE_DELAY_ON_AIR = 5.0" in autotrim and "INTER_FILE_DELAY = 1.5" in autotrim
+    assert "on_air_check=None" in autotrim and "INTER_FILE_DELAY_ON_AIR if on_air else INTER_FILE_DELAY" in autotrim
+    assert "BELOW_NORMAL_PRIORITY" in autotrim and "BELOW_NORMAL_PRIORITY" in output
+    assert "on_air_check=lambda:" in window
+    # Subtítulos: 2 intentos, reinicio del contador al triunfar.
+    assert "SUBS_MAX_ATTEMPTS = 2" in output and "self._subs_failed = {}" in output
+    assert "self._subs_failed.pop(key, None)" in output
+    assert "intento %d/%d" in output or "intento {0}/{1}" in output
+    # «Resumed reading» ya no inunda el log de la interfaz.
+    assert '"Resumed reading" in line' in output and 'log.debug("ffmpeg: %s", line)' in output
+
+    # --- Runtime: pausa dinámica del auto-recorte
+    if _qt_app() is None:
+        return
+    import os as _os, tempfile as _tf, shutil as _sh
+    import app.autotrim as AT
+    from app.autotrim import AutoTrimWorker
+    from app.db import DB as Database
+
+    tmp = _tf.mkdtemp(prefix="gentle44_")
+    fake = _os.path.join(tmp, "ffmpeg_fake.sh")
+    with open(fake, "w") as handle:
+        handle.write("#!/bin/bash\n"
+                     "echo '[blackdetect @ 0x1] black_start:0 black_end:4.5 black_duration:4.5' >&2\n"
+                     "exit 0\n")
+    _os.chmod(fake, 0o755)
+    database = Database(_os.path.join(tmp, "t.db"))
+    for name in ("A", "B"):
+        p = _os.path.join(tmp, f"{name}.mkv")
+        with open(p, "wb") as handle:
+            handle.write(b"x")
+        database.upsert_media(p, name, "Películas")
+        database.update_media_meta(p, duration=3600.0)
+    rows = database.search_media("", "Películas", limit=10)
+
+    real_sleep = AT.time.sleep
+    try:
+        delays = []
+        AT.time.sleep = lambda s: delays.append(s)
+        # Con emisión al aire: pausa larga entre archivos.
+        AutoTrimWorker(database, fake, rows, force=False,
+                       on_air_check=lambda: True).run()
+        assert delays == [AT.INTER_FILE_DELAY_ON_AIR], delays
+        # Sin emisión: pausa corta (más rápido).
+        database.reset_probe_paths([r["path"] for r in rows]) if False else None
+        for r in rows:
+            database.update_media_meta(r["path"], mark_in=0, mark_out=0, autotrim_done=0)
+        delays.clear()
+        AutoTrimWorker(database, fake, rows, force=False,
+                       on_air_check=lambda: False).run()
+        assert delays == [AT.INTER_FILE_DELAY], delays
+    finally:
+        AT.time.sleep = real_sleep
+        _sh.rmtree(tmp, ignore_errors=True)
+
+    # --- Runtime: reintento de subtítulos tras un fallo transitorio
+    from app.output import OutputWorker
+    worker = OutputWorker("ffmpeg", [], "rtmp://x/live", "1920x1080", "29.97", "AUTO", 6000)
+    key = worker._subs_key("/tmp/una pelicula.mkv", 0)
+    # 1 intento fallido: se permite reintentar (la extracción se encola).
+    worker._subs_failed = {key: 1}
+    assert worker._subtitle_base("/tmp/una pelicula.mkv", 0, key, "/tmp/base.srt") == ""
+    assert key in worker._subs_extracting
+    worker._subs_extracting.clear()
+    # 2 intentos fallidos: no se vuelve a intentar esta sesión.
+    worker._subs_failed = {key: 2}
+    assert worker._subtitle_base("/tmp/una pelicula.mkv", 0, key, "/tmp/base.srt") == ""
+    assert key not in worker._subs_extracting
+
+
 if __name__ == "__main__":
     tests = [(name, fn) for name, fn in globals().items() if name.startswith("test_") and callable(fn)]
     failed = 0

@@ -26,7 +26,11 @@ from PySide6.QtCore import QThread, Signal
 
 # v24.0.2.39: pausa entre archivos del auto-recorte para no saturar la unidad
 # de red (o el disco) mientras la emisión está al aire.
+# v24.0.2.44: con la emisión AL AIRE la pausa es mayor (las lecturas de
+# biblioteca compiten con el FFmpeg de la salida: log 13:12, «Resumed reading
+# after a lag» cada pocos minutos con 1500 películas en cola).
 INTER_FILE_DELAY = 1.5
+INTER_FILE_DELAY_ON_AIR = 5.0
 
 # Ventanas de análisis y umbrales del recorte automático.
 HEAD_WINDOW = 90.0     # segundos analizados al inicio
@@ -38,6 +42,9 @@ MIN_CUT_OUT = 1.0      # no cortar finales menores a esto
 MIN_KEEP = 60.0        # conservar al menos un minuto de película
 
 CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+# v24.0.2.44: prioridad baja en Windows para las detecciones (no robar CPU a
+# la emisión; en otros sistemas el flag es 0 y no afecta).
+BELOW_NORMAL_PRIORITY = getattr(subprocess, "BELOW_NORMAL_PRIORITY_CLASS", 0)
 
 _BLACK_RE = re.compile(
     r"black_start:\s*(\d+(?:\.\d+)?)\s+black_end:\s*(\d+(?:\.\d+)?)\s+black_duration:\s*(\d+(?:\.\d+)?)"
@@ -105,12 +112,15 @@ class AutoTrimWorker(QThread):
     item_done = Signal(str, float, float, bool)  # path, mark_in, mark_out, cambió
     finished_all = Signal(int, int)           # procesadas, recortadas
 
-    def __init__(self, db, ffmpeg_path, rows, force=False, parent=None):
+    def __init__(self, db, ffmpeg_path, rows, force=False, parent=None, on_air_check=None):
         super().__init__(parent)
         self.db = db
         self.ffmpeg_path = str(ffmpeg_path or "")
         self.rows = list(rows or [])
         self.force = bool(force)
+        # v24.0.2.44: callable que dice si hay emisión al aire → pausa mayor
+        # entre archivos (la biblioteca de red se comparte con la salida).
+        self.on_air_check = on_air_check
         self._stop = False
 
     def stop(self):
@@ -127,7 +137,8 @@ class AutoTrimWorker(QThread):
         try:
             proc = subprocess.run(cmd, capture_output=True, text=True,
                                   encoding="utf-8", errors="replace",
-                                  timeout=180, creationflags=CREATE_NO_WINDOW)
+                                  timeout=180,
+                                  creationflags=CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY)
         except (OSError, subprocess.TimeoutExpired):
             return []
         return parse_blackdetect(proc.stderr or "")
@@ -169,5 +180,9 @@ class AutoTrimWorker(QThread):
             self.item_done.emit(path, mark_in, mark_out, changed)
             self.progress.emit(processed, total, str(row["title"] or path))
             if processed < total and not self._stop:
-                time.sleep(INTER_FILE_DELAY)
+                try:
+                    on_air = bool(self.on_air_check and self.on_air_check())
+                except Exception:  # noqa: BLE001
+                    on_air = False
+                time.sleep(INTER_FILE_DELAY_ON_AIR if on_air else INTER_FILE_DELAY)
         self.finished_all.emit(processed, trimmed)

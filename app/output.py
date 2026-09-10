@@ -22,6 +22,9 @@ from .ndi_sender import NDISender, logo_suppressed_for_category
 
 log = logger.get("rtmp")
 CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+# v24.0.2.44: la extracción de subtítulos corre junto a la emisión; prioridad
+# baja en Windows para no robar recursos (en otros sistemas el flag es 0).
+BELOW_NORMAL_PRIORITY = getattr(subprocess, "BELOW_NORMAL_PRIORITY_CLASS", 0)
 
 # v24.0.2.35: línea de progreso de FFmpeg (-stats): "time=HH:MM:SS.ms".
 _PROGRESS_RE = re.compile(r"time=(\d+):(\d+):(\d+(?:\.\d+)?)")
@@ -186,7 +189,10 @@ class OutputWorker(QThread):
         self._cmd_has_subs = False
         self._subs_dropped = False
         self._subs_extracting = set()
-        self._subs_failed = set()
+        # v24.0.2.44: clave → intentos fallidos. Un fallo transitorio (p. ej.
+        # el MKV por red con 3 lectores: log 12:43, código 4294967274) ya no
+        # descarta los subtítulos para toda la sesión: se reintenta.
+        self._subs_failed = {}
 
     @staticmethod
     def _norm_items(items):
@@ -593,6 +599,8 @@ class OutputWorker(QThread):
     # v24.0.2.38: si con subtítulos FFmpeg no emitió nada en este tiempo, se
     # retiran y se reinicia: la señal va antes que los subtítulos.
     STARTUP_WATCHDOG = 25.0
+    # v24.0.2.44: intentos de extracción de subtítulos por archivo y pista.
+    SUBS_MAX_ATTEMPTS = 2
 
     def _subs_key(self, source, sid):
         try:
@@ -656,7 +664,7 @@ class OutputWorker(QThread):
                     return base
             except OSError:
                 pass
-        if key in self._subs_failed or key in self._subs_extracting:
+        if self._subs_failed.get(key, 0) >= self.SUBS_MAX_ATTEMPTS or key in self._subs_extracting:
             return ""
         self._start_subtitle_extraction(source, sid, key, base)
         return ""
@@ -677,19 +685,25 @@ class OutputWorker(QThread):
                 cmd = [self.ffmpeg, "-hide_banner", "-nostdin", "-loglevel", "error",
                        "-y", "-i", source, "-map", f"0:s:{sid}", "-c:s", "srt", tmp]
                 proc = subprocess.run(cmd, capture_output=True, timeout=1800,
-                                      creationflags=CREATE_NO_WINDOW)
+                                      creationflags=CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY)
                 if proc.returncode == 0 and os.path.isfile(tmp) and os.path.getsize(tmp) > 0:
                     os.replace(tmp, base)
+                    self._subs_failed.pop(key, None)
                     self.log.emit("Subtítulos extraídos • reinicio breve para activarlos en la emisión")
                     log.info("Subtítulos extraídos a %s", base)
                     self._restart_current()
                 else:
-                    self._subs_failed.add(key)
-                    self.log.emit("Subtítulos no disponibles en este archivo • la señal continúa sin ellos")
-                    log.warning("extracción de subtítulos vacía o con error (código %s)", proc.returncode)
+                    attempts = self._subs_failed.get(key, 0) + 1
+                    self._subs_failed[key] = attempts
+                    if attempts >= self.SUBS_MAX_ATTEMPTS:
+                        self.log.emit("Subtítulos no disponibles en este archivo • la señal continúa sin ellos")
+                    log.warning("extracción de subtítulos vacía o con error (código %s, intento %d/%d)",
+                                proc.returncode, attempts, self.SUBS_MAX_ATTEMPTS)
             except Exception as exc:  # noqa: BLE001
-                self._subs_failed.add(key)
-                log.warning("extracción de subtítulos falló: %s", exc)
+                attempts = self._subs_failed.get(key, 0) + 1
+                self._subs_failed[key] = attempts
+                log.warning("extracción de subtítulos falló (intento %d/%d): %s",
+                            attempts, self.SUBS_MAX_ATTEMPTS, exc)
             finally:
                 self._subs_extracting.discard(key)
 
@@ -744,6 +758,12 @@ class OutputWorker(QThread):
                         self._out_time_at = time.time()
                     except (ValueError, IndexError):
                         pass
+                    continue
+                if "Resumed reading" in line:
+                    # v24.0.2.44: el hilo de entrada se retrasó un instante
+                    # (red compartida) y se recuperó solo («rate 1.050»):
+                    # benigno — no inundar el log de la interfaz.
+                    log.debug("ffmpeg: %s", line)
                     continue
                 if any(n in line for n in self.NOISE):     # ruido normal al cortar FFmpeg para saltar de evento
                     continue

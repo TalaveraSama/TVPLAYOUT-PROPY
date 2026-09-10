@@ -1,9 +1,9 @@
 @echo off
 REM ============================================================================
-REM TVPlayout PRO V24.0.2.43 - Instalador completo para Windows
+REM TVPlayout PRO V24.0.2.44 - Instalador completo para Windows
 REM
 REM Genera UN SOLO ejecutable de instalacion:
-REM   dist\Setup_TVPlayoutPRO_V24.0.2.43.exe
+REM   dist\Setup_TVPlayoutPRO_V24.0.2.44.exe
 REM
 REM El instalador lleva empaquetados la aplicacion, ffmpeg.exe, ffprobe.exe
 REM y mpv.exe en la raiz del programa, y opcionalmente los instaladores de
@@ -23,7 +23,7 @@ REM ============================================================================
 setlocal EnableExtensions EnableDelayedExpansion
 cd /d "%~dp0.."
 
-set "APP_VERSION=V24.0.2.43"
+set "APP_VERSION=V24.0.2.44"
 set "VENDOR=vendor"
 set "DIST_APP=dist\TVPlayoutPRO"
 set "SETUP_NAME=Setup_TVPlayoutPRO_%APP_VERSION%"
