@@ -143,6 +143,10 @@ class DB:
             ("tmdb_backdrop", "TEXT DEFAULT ''"),
             ("mark_in", "REAL DEFAULT 0"),
             ("mark_out", "REAL DEFAULT 0"),
+            # v24.0.2.36: 1 = ya analizado por el auto-recorte (aunque no haya
+            # nada que cortar). Evita re-analizar en cada escaneo películas
+            # que legítimamente no tienen intro/final envueltos en negro.
+            ("autotrim_done", "INTEGER DEFAULT 0"),
         ]:
             if name not in m:
                 self.conn.execute(f"ALTER TABLE media ADD COLUMN {name} {ddl}")
@@ -308,7 +312,7 @@ class DB:
     def update_media_meta(self, path, **fields):
         allowed = {"duration", "width", "height", "fps", "video_codec", "audio_codec", "tracks",
                    "thumb", "metadata_ok", "probe_error", "title", "category",
-                   "mark_in", "mark_out"}
+                   "mark_in", "mark_out", "autotrim_done"}
         cols = [(k, v) for k, v in fields.items() if k in allowed]
         if not cols:
             return

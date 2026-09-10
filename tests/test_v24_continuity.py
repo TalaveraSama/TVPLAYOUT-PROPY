@@ -345,6 +345,75 @@ def test_autotrim_detects_netflix_style_intro_and_outro():
     assert compute_marks(duration, head_blacks=[(0, 100)]) == (0.0, 0.0)
 
 
+def test_autotrim_worker_marks_done_and_runs_automatically_after_scan():
+    """v24.0.2.36: el worker marca autotrim_done (no re-analiza) y el pase
+    automático post-escaneo sólo toma películas sin analizar."""
+    import os as _os, tempfile as _tf, shutil as _sh
+    if _qt_app() is None:
+        return
+    from app.autotrim import AutoTrimWorker
+    from app.db import DB as Database
+
+    tmp = _tf.mkdtemp(prefix="autotrim36_")
+    try:
+        fake = _os.path.join(tmp, "ffmpeg_fake.sh")
+        counter = _os.path.join(tmp, "count")
+        with open(fake, "w") as f:
+            f.write("#!/bin/bash\n"
+                    "echo x >> " + counter + "\n"
+                    "echo '[blackdetect @ 0x1] black_start:0 black_end:4.5 black_duration:4.5' >&2\n"
+                    "exit 0\n")
+        _os.chmod(fake, 0o755)
+
+        database = Database(_os.path.join(tmp, "t.db"))
+        nueva = _os.path.join(tmp, "peli_nueva.mkv")
+        vista = _os.path.join(tmp, "peli_vista.mkv")
+        database.upsert_media(nueva, "Peli Nueva", "Películas")
+        database.update_media_meta(nueva, duration=3600.0)
+        database.upsert_media(vista, "Peli Vista", "Películas")
+        database.update_media_meta(vista, duration=3600.0, autotrim_done=1)
+
+        rows = database.search_media("", "Películas", limit=100)
+        assert len(rows) == 2, [r["title"] for r in rows]
+        AutoTrimWorker(database, fake, rows, force=False).run()  # síncrono
+
+        by_title = {r["title"]: r for r in database.search_media("", "Películas", limit=100)}
+        # La nueva quedó recortada (intro saltada, final cortado) y marcada.
+        assert abs(by_title["Peli Nueva"]["mark_in"] - 4.75) < 0.01
+        assert abs(by_title["Peli Nueva"]["mark_out"] - 3479.75) < 0.01
+        assert by_title["Peli Nueva"]["autotrim_done"] == 1
+        # La ya analizada no se tocó y el ffmpeg falso se invocó SOLO para la
+        # nueva (2 pasadas: cabecera y cola).
+        assert by_title["Peli Vista"]["mark_in"] == 0
+        with open(counter) as f:
+            assert len(f.read().split()) == 2, "debió analizar sólo la película nueva"
+
+        # Segundo pase (p. ej. siguiente escaneo): nada pendiente, 0 invocaciones.
+        AutoTrimWorker(database, fake, database.search_media("", "Películas", limit=100),
+                       force=False).run()
+        with open(counter) as f:
+            assert len(f.read().split()) == 2, "no debe re-analizar lo ya procesado"
+
+        # Forzado (menú contextual): re-analiza aunque esté marcada.
+        AutoTrimWorker(database, fake, database.search_media("", "Películas", limit=100),
+                       force=True).run()
+        with open(counter) as f:
+            assert len(f.read().split()) == 6, "forzado re-analiza las dos (2+2+2)"
+    finally:
+        _sh.rmtree(tmp, ignore_errors=True)
+
+    # Cableado del pase automático post-escaneo.
+    window = _read("app", "main_window.py")
+    dialogs = _read("app", "dialogs.py")
+    autotrim = _read("app", "autotrim.py")
+    assert "autotrim_on_scan" in window and '"autotrim_on_scan": True' in window
+    assert "finished_all.connect(self._probe_done)" in window
+    assert "def _probe_done(self, n):" in window and "_autotrim_new_movies()" in window
+    assert "def _autotrim_new_movies(self):" in window
+    assert "autotrim_done" in autotrim and autotrim.count("update_media_meta") >= 2
+    assert '"autotrim_on_scan": self.autotrim_on_scan.isChecked(),' in dialogs
+
+
 def _qt_app():
     """QApplication compartida para las pruebas de runtime (o None sin PySide6)."""
     try:

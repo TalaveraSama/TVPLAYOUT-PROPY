@@ -63,7 +63,7 @@ DEFAULT_SETTINGS = {
     "tmdb_card_poster_size": 100, "tmdb_card_poster_shape": "cuadrado", "tmdb_card_text_scale": 100,
     "tmdb_card_backdrop_fill": False,
     "monitor_mode": "pyav", "monitor_player": "VLC", "monitor_player_path": "", "monitor_feed_port": 39000,
-    "restore_playlist": True, "autoplay": False, "probe_on_scan": True,
+    "restore_playlist": True, "autoplay": False, "probe_on_scan": True, "autotrim_on_scan": True,
     "mode": "auto", "loop": True, "exact_time": True, "autofill": False, "tandas": False, "autoscroll": True,
     "volume": 100, "muted": False, "emergency_clip": "", "splitter": [1120, 430],
     "logo_enabled": False, "logo_path": "", "logo_position": "arriba-derecha", "logo_scale": 10, "logo_opacity": 90,
@@ -591,7 +591,7 @@ class MainWindow(QMainWindow):
                 ("🧪 Analizar metadatos", self.start_probe, "Duración, resolución, pistas y miniaturas con ffprobe"),
                 ("🎬 Escanear TMDB biblioteca", self.scan_tmdb_library, "Escaneo general: completa la ficha TMDB de todos los medios que aún no la tienen"),
                 ("✎ Editar ficha TMDB…", self.edit_tmdb_selected, "Busca el título en TMDB y elige póster y backdrop de su galería"),
-                ("✂ Auto-recortar biblioteca", self.start_autotrim, "Detecta y recorta solo la intro y el final de todas las películas (salta lo que ya está recortado)"),
+                ("✂ Auto-recortar biblioteca", self.start_autotrim, "Detecta y recorta solo la intro y el final de todas las películas (salta lo ya analizado; tras cada escaneo se hace solo)"),
                 ("🏷 Cambiar categoría", self.change_library_category, None),
                 ("🎲 Añadir aleatorios…", self.add_random, "Añade N medios al azar de la categoría filtrada"),
                 ("📁 Fuentes / Categorías", self.open_sources, None),
@@ -1053,7 +1053,9 @@ class MainWindow(QMainWindow):
         self.prober = ProbeWorker(self.db, make_thumbs=bool(FFMPEG_PATH), paths=selected_paths or None)
         self.prober.progress.connect(lambda done, left: self.lib_status.setText(f"Analizando metadatos • {done} listos • {left} pendientes"))
         self.prober.updated.connect(self.ctrl.refresh_meta_from_db)
-        self.prober.finished_all.connect(lambda n: (self.refresh_library(), self._status(f"Análisis finalizado • {n} medios"), self.rebuild_grid()))
+        # v24.0.2.36: al terminar el análisis se lanza el auto-recorte de las
+        # películas nuevas (silencioso si no hay nada pendiente).
+        self.prober.finished_all.connect(self._probe_done)
         self.prober.start()
         scope = f" de {len(selected_paths)} selección" if selected_paths else " de la biblioteca"
         self._status(f"Analizando metadatos{scope} en segundo plano…")
@@ -1090,8 +1092,33 @@ class MainWindow(QMainWindow):
                 n += 1
         self._status(f"Biblioteca actualizada • {vals['title']}" + (f" • {n} evento(s) en playlist sincronizado(s)" if n else ""))
 
+    def _probe_done(self, n):
+        """v24.0.2.36: fin del análisis de metadatos → refresca y auto-recorta."""
+        self.refresh_library()
+        self._status(f"Análisis finalizado • {n} medios")
+        self.rebuild_grid()
+        self._autotrim_new_movies()
+
+    def _autotrim_new_movies(self):
+        """v24.0.2.36: auto-recorta en segundo plano las películas aún no
+        analizadas por el detector de intro/final (saltando silenciosamente
+        si no hay nada pendiente o el ajuste está desactivado)."""
+        if not self.settings.get("autotrim_on_scan", True):
+            return
+        if self._autotrim_worker and self._autotrim_worker.isRunning():
+            return
+        if not FFMPEG_PATH:
+            return
+        rows = [r for r in self.db.search_media("", "Películas", limit=100000)
+                if (r["duration"] or 0) > 0
+                and not (r["mark_in"] or 0) and not (r["mark_out"] or 0)
+                and not (r["autotrim_done"] if "autotrim_done" in r.keys() else 0)]
+        if not rows:
+            return  # biblioteca al día: no molestar al usuario
+        self._launch_autotrim(rows, force=False, label=f"{len(rows)} película(s) nueva(s)")
+
     def start_autotrim(self):
-        """Auto-recorta toda la biblioteca de Películas (salta lo ya recortado)."""
+        """Auto-recorta toda la biblioteca de Películas (salta lo ya analizado)."""
         if self._autotrim_worker and self._autotrim_worker.isRunning():
             self._autotrim_worker.stop()
             self._status("Deteniendo auto-recorte…")

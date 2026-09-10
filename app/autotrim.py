@@ -11,6 +11,12 @@ archivo con el filtro ``blackdetect`` de FFmpeg y se recorta…
 Las marcas se guardan en la biblioteca (media.mark_in / media.mark_out) y se
 aplican solas cuando el medio se añade a la playlist. El archivo original
 nunca se modifica.
+
+Desde v24.0.2.36 el recorte corre solo tras cada escaneo (análisis de
+metadatos) sobre las películas todavía no analizadas: ``media.autotrim_done``
+marca lo ya procesado para no re-analizar en cada escaneo, incluso cuando no
+había nada que cortar. El botón «✂ Auto-recortar biblioteca» y el menú
+contextual «Auto-recortar selección…» (forzado) siguen disponibles.
 """
 import re
 import subprocess
@@ -137,8 +143,9 @@ class AutoTrimWorker(QThread):
                 continue
             existing_in = float(row["mark_in"] or 0) if "mark_in" in row.keys() else 0.0
             existing_out = float(row["mark_out"] or 0) if "mark_out" in row.keys() else 0.0
-            if not self.force and (existing_in > 0 or existing_out > 0):
-                processed += 1  # ya tiene recortes: no se re-analiza
+            done = bool(row["autotrim_done"]) if "autotrim_done" in row.keys() else False
+            if not self.force and (existing_in > 0 or existing_out > 0 or done):
+                processed += 1  # ya analizado (o ya recortado): no se re-analiza
                 self.progress.emit(processed, total, str(row["title"] or path))
                 continue
             head_blacks = self._detect(path, 0.0, HEAD_WINDOW)
@@ -147,8 +154,12 @@ class AutoTrimWorker(QThread):
             mark_in, mark_out = compute_marks(duration, head_blacks, tail_blacks)
             changed = (abs(mark_in - existing_in) > 0.001) or (abs(mark_out - existing_out) > 0.001)
             if changed:
-                self.db.update_media_meta(path, mark_in=mark_in, mark_out=mark_out)
+                # v24.0.2.36: autotrim_done también con los recortes, para que
+                # el pase automático post-escaneo no repita este archivo.
+                self.db.update_media_meta(path, mark_in=mark_in, mark_out=mark_out, autotrim_done=1)
                 trimmed += 1
+            else:
+                self.db.update_media_meta(path, autotrim_done=1)
             processed += 1
             self.item_done.emit(path, mark_in, mark_out, changed)
             self.progress.emit(processed, total, str(row["title"] or path))

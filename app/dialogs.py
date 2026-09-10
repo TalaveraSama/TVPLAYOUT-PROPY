@@ -912,6 +912,8 @@ class SettingsDialog(BaseDialog):
         self.autoplay.setChecked(bool(self.settings.get("autoplay", False)))
         self.probe_on_scan = QCheckBox("Analizar metadatos/miniaturas tras escanear (requiere ffprobe)")
         self.probe_on_scan.setChecked(bool(self.settings.get("probe_on_scan", True)))
+        self.autotrim_on_scan = QCheckBox("Recortar intro/final de películas automáticamente tras escanear (saltar logos de Netflix/HBO/Amazon)")
+        self.autotrim_on_scan.setChecked(bool(self.settings.get("autotrim_on_scan", True)))
         f2.addRow("Audio preferido", self.audio)
         f2.addRow("Subtítulos preferidos", self.sub)
         f2.addRow("", _note("Si hay un evento al aire, guardar estos valores cambia la pista en vivo; puede haber un corte IP breve."))
@@ -941,6 +943,7 @@ class SettingsDialog(BaseDialog):
         f2.addRow("", self.restore_pl)
         f2.addRow("", self.autoplay)
         f2.addRow("", self.probe_on_scan)
+        f2.addRow("", self.autotrim_on_scan)
         tabs.addTab(self.scroll_page(w2), "REPRODUCCIÓN / AUTOMATIZACIÓN")
 
         # --- sistema
@@ -1023,6 +1026,7 @@ class SettingsDialog(BaseDialog):
             "restore_playlist": self.restore_pl.isChecked(),
             "autoplay": self.autoplay.isChecked(),
             "probe_on_scan": self.probe_on_scan.isChecked(),
+            "autotrim_on_scan": self.autotrim_on_scan.isChecked(),
         }
 
 
