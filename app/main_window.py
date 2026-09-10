@@ -257,6 +257,13 @@ class MainWindow(QMainWindow):
         # v24.0.2.37: aviso único cuando el monitor local va más lento que la
         # señal (CPU insuficiente): la salida está sana y no se toca.
         self._rtmp_drift_local_lag_warned = False
+        # v24.0.2.39: gap de arranque máximo aceptable como línea base (una
+        # salida que tardó MINUTOS en emitir su primer frame no es latencia
+        # normal: hay que realinear, no bendecir el desfase) y avisos de
+        # salida en otro evento que el playout.
+        self._rtmp_drift_max_gap = 45.0
+        self._rtmp_drift_ahead_warned = False
+        self._rtmp_drift_cap_realigned = 0
         self._rtmp_drift_timer = QTimer(self)
         self._rtmp_drift_timer.setInterval(2000)
         self._rtmp_drift_timer.timeout.connect(self._rtmp_check_drift)
@@ -2365,17 +2372,52 @@ class MainWindow(QMainWindow):
             self._rtmp_drift_baseline = None
             self._rtmp_drift_bad_count = 0
             self._rtmp_drift_local_lag_warned = False
+            self._rtmp_drift_ahead_warned = False
+            self._rtmp_drift_cap_realigned = 0
         elif self._rtmp_drift_had_unknown:
             # El proceso se reinició dentro del mismo clip (salto/realineo):
             # la medición anterior ya no aplica.
             self._rtmp_drift_baseline = None
             self._rtmp_drift_bad_count = 0
         self._rtmp_drift_had_unknown = False
+        now = time.time()
+        # v24.0.2.39 A: la salida está en OTRO evento que el playout. Con la
+        # señal viva eso es desincronización de CONTENIDO (log 00:18: un error
+        # de conexión hacía avanzar de película a la salida).
+        onair = self.ctrl.onair
+        if onair is not None and onair >= 0 and 0 <= clip != onair:
+            if clip < onair:
+                # La salida quedó ATRÁS (el playout ya cambió de evento):
+                # realinear de inmediato al evento y posición del playout.
+                if now - self._rtmp_drift_last_restart >= 12.0:
+                    log.info("RTMP en evento %d pero el playout está en %d — realineando",
+                             clip, onair)
+                    self._realign_rtmp(mpv_time, now)
+                return
+            if not self._rtmp_drift_ahead_warned:
+                self._rtmp_drift_ahead_warned = True
+                log.warning(
+                    "La salida terminó el evento antes que el playout y adelantó contenido "
+                    "(salida en %d, playout en %d). Para emisiones de larga duración usa el "
+                    "modo Reloj del sistema (Ajustes → Monitor de programa).", clip, onair)
+            # No se reinicia: al final de cada evento un reinicio en bucle
+            # cortaría la señal.
         if self._rtmp_drift_baseline is None:
             # Primer frame medido del clip: el gap frente al monitor local
             # (latencia de arranque) es CONSTANTE y saludable; se descuenta
             # de las mediciones siguientes. Sólo un gap que CRECE es drift
             # real (encoder lento o entrada que no da abasto).
+            gap = mpv_time - ffmpeg_pos
+            if abs(gap) > self._rtmp_drift_max_gap and self._rtmp_drift_cap_realigned < 3:
+                # v24.0.2.39 B: gap de arranque PATOLÓGICO (la salida tardó
+                # minutos en emitir su primer frame: log 00:14, gap 175 s).
+                # No es latencia normal: se realinea al punto del playout.
+                # Tras 3 intentos se acepta para no cortar la señal en bucle.
+                self._rtmp_drift_cap_realigned += 1
+                log.warning("Gap de arranque %.1fs fuera de lo normal — realineando al playout "
+                            "(intento %d/3)", gap, self._rtmp_drift_cap_realigned)
+                self._realign_rtmp(mpv_time, now)
+                return
             self._rtmp_drift_baseline = mpv_time - ffmpeg_pos
             self._rtmp_drift_bad_count = 0
             log.info("RTMP en vivo • mpv=%.2fs, ffmpeg=%.2fs, gap de arranque %.2fs",
@@ -2385,7 +2427,6 @@ class MainWindow(QMainWindow):
         # 1–3 segundos no debe convertirse en un bucle que mate RTMP.
         signed = (mpv_time - ffmpeg_pos) - self._rtmp_drift_baseline
         drift = abs(signed)
-        now = time.time()
         if drift >= self._rtmp_drift_threshold:
             self._rtmp_drift_bad_count += 1
         else:
@@ -2412,6 +2453,11 @@ class MainWindow(QMainWindow):
             return
         log.info("RTMP drift %.2fs (mpv=%.2fs, ffmpeg=%.2fs, base=%.2fs) — realineando",
                  drift, mpv_time, ffmpeg_pos, self._rtmp_drift_baseline)
+        self._realign_rtmp(mpv_time, now)
+
+    def _realign_rtmp(self, mpv_time, now):
+        """v24.0.2.39: realineación única de la salida al evento/posición del
+        playout (drift real, evento distinto o gap de arranque patológico)."""
         self.output.seek_to(self.ctrl.onair, mpv_time)
         self._rtmp_drift_bad_count = 0
         self._rtmp_drift_last_restart = now

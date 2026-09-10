@@ -20,8 +20,13 @@ contextual «Auto-recortar selección…» (forzado) siguen disponibles.
 """
 import re
 import subprocess
+import time
 
 from PySide6.QtCore import QThread, Signal
+
+# v24.0.2.39: pausa entre archivos del auto-recorte para no saturar la unidad
+# de red (o el disco) mientras la emisión está al aire.
+INTER_FILE_DELAY = 1.5
 
 # Ventanas de análisis y umbrales del recorte automático.
 HEAD_WINDOW = 90.0     # segundos analizados al inicio
@@ -163,4 +168,6 @@ class AutoTrimWorker(QThread):
             processed += 1
             self.item_done.emit(path, mark_in, mark_out, changed)
             self.progress.emit(processed, total, str(row["title"] or path))
+            if processed < total and not self._stop:
+                time.sleep(INTER_FILE_DELAY)
         self.finished_all.emit(processed, trimmed)

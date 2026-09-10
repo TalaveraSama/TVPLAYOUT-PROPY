@@ -867,7 +867,31 @@ class OutputWorker(QThread):
                             raise RuntimeError("FFmpeg falla repetidamente: " + (last_lines[-1] if last_lines else f"código {code}"))
                         time.sleep(1.0)
                     else:
-                        consecutive_errors = 0
+                        # v24.0.2.39: error tras un rato emitiendo (p. ej. la
+                        # conexión RTMP se cortó: "Error number -10053").
+                        # Reintentar el MISMO evento en la última posición
+                        # emitida — antes se hacía index += 1 y la señal pasaba
+                        # a OTRA película que la del playout (log 00:18:28).
+                        if elapsed >= 60:
+                            consecutive_errors = 0  # corrió bien un buen tramo
+                        consecutive_errors += 1
+                        if consecutive_errors >= 3:
+                            consecutive_errors = 0
+                            self.log.emit("Reintentos agotados • pasa al siguiente evento")
+                            log.warning("%s: 3 reintentos del evento fallaron; avanza al siguiente",
+                                        self.protocol)
+                        else:
+                            with self._lock:
+                                base_off = float(getattr(self, "_current_offset", 0.0) or 0.0)
+                                emitted = float(getattr(self, "_out_time", -1.0))
+                            retry_offset = base_off + emitted if emitted >= 0 else base_off
+                            retry_offset = max(0.0, retry_offset - 1.0)
+                            offset = retry_offset
+                            self.log.emit(f"Reconectando el mismo evento en {retry_offset:.1f}s")
+                            log.warning("%s terminó con código %s tras %.0fs; reintenta el evento en %.1fs",
+                                        self.protocol, code, elapsed, retry_offset)
+                            time.sleep(0.5)
+                            continue
                 else:
                     consecutive_errors = 0
                 # Periodo de gracia: el master (mpv) suele ordenar el salto al mismo evento en este momento.

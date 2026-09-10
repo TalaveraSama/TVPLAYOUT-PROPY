@@ -755,6 +755,7 @@ def test_drift_watcher_tolerates_startup_gap_and_catches_real_stall():
             self.seeks = []
             self._position = -1.0
             self.index = 0
+            self.current_index = 0
         @property
         def current_position(self):
             return self._position
@@ -778,6 +779,9 @@ def test_drift_watcher_tolerates_startup_gap_and_catches_real_stall():
     mw._rtmp_drift_had_unknown = False
     mw._rtmp_drift_suspend_until = 0.0
     mw._rtmp_drift_local_lag_warned = False
+    mw._rtmp_drift_ahead_warned = False
+    mw._rtmp_drift_cap_realigned = 0
+    mw._rtmp_drift_max_gap = 45.0
     mw._status = lambda *a, **k: None      # el aviso de monitor lento no toca la UI real
 
     # A) Calentando (VPS abriendo el archivo por red): no compara ni realinea.
@@ -830,6 +834,41 @@ def test_drift_watcher_tolerates_startup_gap_and_catches_real_stall():
         mw._rtmp_check_drift()
     assert mw.output.seeks == [], "la salida adelantada (monitor lento) no se reinicia"
     assert mw._rtmp_drift_local_lag_warned is True, "debió avisar una vez del monitor lento"
+
+    # F) v24.0.2.39: gap de arranque PATOLÓGICO (salida que tardó minutos en
+    #    emitir): NO se bendice como línea base; se realinea al playout.
+    mw.output.seeks.clear()
+    mw._rtmp_drift_clip = None
+    mw._rtmp_drift_suspend_until = 0.0
+    mw._rtmp_drift_last_restart = 0.0
+    mw.ctrl.elapsed = 180.0
+    mw.output.current_position = 1.7     # primer frame 178 s tarde (log 00:14)
+    mw._rtmp_check_drift()
+    assert len(mw.output.seeks) == 1, "un gap de 178 s se realinea, no se acepta"
+    assert mw._rtmp_drift_cap_realigned == 1
+
+    # G) v24.0.2.39: la salida está en OTRO evento que el playout.
+    #    G1: salida ATRÁS (el playout cambió de evento) → realinear ya.
+    mw.output.seeks.clear()
+    mw._rtmp_drift_clip = None
+    mw._rtmp_drift_suspend_until = 0.0
+    mw._rtmp_drift_last_restart = 0.0
+    mw.ctrl.onair = 2
+    mw.output.current_index = 1          # la salida quedó en el evento anterior
+    mw.ctrl.elapsed = 30.0
+    mw.output.current_position = 25.0
+    mw._rtmp_check_drift()
+    assert len(mw.output.seeks) == 1, "salida en otro evento (atrás) se realinea"
+    #    G2: salida ADELANTE (terminó antes el evento) → aviso, sin reinicio.
+    mw.output.seeks.clear()
+    mw._rtmp_drift_suspend_until = 0.0
+    mw._rtmp_drift_clip = None
+    mw.ctrl.onair = 1
+    mw.output.current_index = 2
+    for _ in range(5):
+        mw._rtmp_check_drift()
+    assert mw.output.seeks == [], "salida adelantada no se reinicia (evita bucle al final)"
+    assert mw._rtmp_drift_ahead_warned is True
 
 
 def test_clock_mode_advances_without_local_decode_and_ndi_is_disabled():
@@ -1006,6 +1045,70 @@ def test_startup_watchdog_drops_subtitles_to_save_the_stream():
     worker._startup_watchdog(_FakeProc())
     assert worker._subs_dropped is False and restarts == [True]
 
+
+def test_connection_error_retries_same_movie_instead_of_advancing():
+    """v24.0.2.39: un corte de conexión RTMP reconecta la MISMA película en la
+    última posición emitida; antes avanzaba a la siguiente (log 00:18:28)."""
+    import os as _os, tempfile as _tf, shutil as _sh
+    if _qt_app() is None:
+        return
+    from app.output import OutputWorker
+
+    tmp = _tf.mkdtemp(prefix="retry39_")
+    fake = _os.path.join(tmp, "ffmpeg_fake.sh")
+    args_log = _os.path.join(tmp, "args.log")
+    script = """#!/bin/bash
+echo "$*" >> ARGSLOG
+for a in "$@"; do
+  if [ "$a" = "-encoders" ]; then echo " V....D libx264"; exit 0; fi
+done
+n=$(grep -c pelicula ARGSLOG)
+echo "frame=125 fps=25 q=28.0 size=1kB time=00:00:05.00 speed=1x" >&2
+echo "frame=200 fps=25 q=28.0 size=1kB time=00:00:08.00 speed=1x" >&2
+if [ "$n" -ge 4 ]; then exit 0; fi
+sleep 5.5
+exit 1
+""".replace("ARGSLOG", args_log)
+    with open(fake, "w") as handle:
+        handle.write(script)
+    _os.chmod(fake, 0o755)
+
+    path_a = _os.path.join(tmp, "pelicula_a.mkv")
+    path_b = _os.path.join(tmp, "pelicula_b.mkv")
+    for p in (path_a, path_b):
+        with open(p, "wb") as handle:
+            handle.write(b"dummy")       # el worker exige que el archivo exista
+    items = [{"path": path_a, "title": "A", "duration": 3600.0,
+              "source_duration": 3600.0, "category": "Películas"},
+             {"path": path_b, "title": "B", "duration": 3600.0,
+              "source_duration": 3600.0, "category": "Películas"}]
+    worker = OutputWorker(fake, items, "rtmp://x/live", "1920x1080", "29.97", "CPU/x264", 3000,
+                          loop=False)
+    try:
+        worker.run()   # síncrono: A falla 3 veces (reintenta), luego pasa a B
+        args = open(args_log).read().splitlines()
+        plays = [l for l in args if " -re " in l]
+        assert len(plays) == 4, plays
+        # Los 3 primeros intentos son TODOS la película A, reconectando en la
+        # última posición emitida (5 y 8 s emitidos → retoma en 7 y 14 s).
+        for line in plays[:3]:
+            assert "pelicula_a.mkv" in line, line
+        assert "-ss 7.000" in plays[1], plays[1]
+        assert "-ss 14.000" in plays[2], plays[2]
+        # Sólo tras agotar los 3 reintentos pasa a la B (cierre limpio → fin).
+        assert "pelicula_b.mkv" in plays[3], plays[3]
+    finally:
+        _sh.rmtree(tmp, ignore_errors=True)
+
+    # Estructural: el watcher conoce el evento de la salida y acota el gap.
+    window = _read("app", "main_window.py")
+    output = _read("app", "output.py")
+    assert "_rtmp_drift_max_gap = 45.0" in window
+    assert "RTMP en evento %d pero el playout está en %d — realineando" in window
+    assert "Gap de arranque %.1fs fuera de lo normal" in window
+    assert "def _realign_rtmp(self, mpv_time, now):" in window
+    assert "Reconectando el mismo evento en" in output
+    assert "Reintentos agotados" in output
 
 if __name__ == "__main__":
     tests = [(name, fn) for name, fn in globals().items() if name.startswith("test_") and callable(fn)]
