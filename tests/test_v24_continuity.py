@@ -126,7 +126,10 @@ def test_subtitles_are_selected_and_logged_in_pyav():
     output = _read("app", "output.py")
     assert '"subtitle_id": self.subtitle_id' in player
     assert "PyAV subtitle event" in player
-    assert 'subtitles=\'{_ffmpeg_filter_path(source)}\':si=' in output
+    # v24.0.2.38: el filtro de subtítulos apunta a un SRT LOCAL alineado al
+    # offset (el archivo de vídeo original por red detenía la señal).
+    assert "subtitles='{_ffmpeg_filter_path(local_srt)}'" in output
+    assert 'subtitles=\'{_ffmpeg_filter_path(source)}\'' not in output
 
 
 def test_live_track_change_restarts_local_and_remote_at_same_offset():
@@ -907,6 +910,101 @@ def test_output_profiles_skip_ndi_when_disabled():
     mw.settings["ndi_disabled"] = False
     profiles = mw._output_profiles()
     assert [p["protocol"] for p in profiles] == ["RTMP", "NDI", "SRT"], profiles
+
+
+def test_local_subtitles_instead_of_network_stall():
+    """v24.0.2.38: subtítulos quemados desde SRT local, alineados al offset."""
+    import os as _os, tempfile as _tf, shutil as _sh
+    # --- Estructural: ya no se pasa el vídeo original al filtro subtitles.
+    output = _read("app", "output.py")
+    assert "def _srt_shift(" in output and "SUBS_DIR" in output
+    assert "def _local_subtitles(self, source, sid, offset):" in output
+    assert "def _startup_watchdog(self, proc):" in output and "STARTUP_WATCHDOG = 25.0" in output
+    assert '-map", f"0:s:{sid}", "-c:s", "srt"' in output
+    # El filtro ahora apunta al SRT local, no al archivo de vídeo (red).
+    assert "subtitles='{_ffmpeg_filter_path(local_srt)}'" in output
+    assert "subtitles='{_ffmpeg_filter_path(source)}'" not in output
+
+    # --- Puro: corrimiento de tiempos del SRT.
+    from app.output import _srt_shift
+    srt = ("1\n00:01:30,000 --> 00:01:35,000\n[hola]\n\n"
+           "2\n00:01:40,500 --> 00:01:44,000\n[mundo]\n\n"
+           "3\n00:00:10,000 --> 00:00:12,000\n[antes del corte]\n\n")
+    shifted = _srt_shift(srt, 90.0)
+    assert "00:00:00,000 --> 00:00:05,000" in shifted
+    assert "00:00:10,500 --> 00:00:14,000" in shifted
+    assert "antes del corte" not in shifted, "los bloques que quedan antes del corte se descartan"
+    assert _srt_shift("", 100) == ""
+
+    # --- Runtime: caché local → SRT alineado al offset de la emisión.
+    if _qt_app() is None:
+        return
+    import app.output as OUT
+    from app.output import OutputWorker
+
+    tmp = _tf.mkdtemp(prefix="subs38_")
+    old_dir = OUT.SUBS_DIR
+    OUT.SUBS_DIR = _os.path.join(tmp, "cache")
+    try:
+        worker = OutputWorker("ffmpeg", [], "rtmp://x/live", "1920x1080", "29.97", "AUTO", 6000)
+        source = _os.path.join(tmp, "peli red.mkv")   # no existe: sin stat
+        key = worker._subs_key(source, 0)
+        base = _os.path.join(OUT.SUBS_DIR, f"{key}.srt")
+        _os.makedirs(OUT.SUBS_DIR, exist_ok=True)
+        with open(base, "w", encoding="utf-8") as handle:
+            handle.write(srt)
+        # offset 0 → usa la caché tal cual.
+        assert worker._local_subtitles(source, 0, 0.0) == base
+        # offset 90 → SRT desplazado (bloque temprano eliminado).
+        shifted_path = worker._local_subtitles(source, 0, 90.0)
+        assert shifted_path.endswith(".off.srt"), shifted_path
+        with open(shifted_path, encoding="utf-8") as handle:
+            content = handle.read()
+        assert "00:00:00,000 --> 00:00:05,000" in content and "antes del corte" not in content
+        # Sin caché ni sidecar → "" y extracción en cola (la señal sigue sin subs).
+        worker2 = OutputWorker("ffmpeg", [], "rtmp://x/live", "1920x1080", "29.97", "AUTO", 6000)
+        assert worker2._local_subtitles(source + "2", 0, 0.0) == ""
+        assert len(worker2._subs_extracting) == 1, "debió lanzar la extracción en segundo plano"
+    finally:
+        OUT.SUBS_DIR = old_dir
+        _sh.rmtree(tmp, ignore_errors=True)
+
+
+def test_startup_watchdog_drops_subtitles_to_save_the_stream():
+    """v24.0.2.38: sin frames con subtítulos → se retiran y se reinicia."""
+    if _qt_app() is None:
+        return
+    from app.output import OutputWorker
+
+    class _FakeProc:
+        def poll(self):
+            return None
+
+    worker = OutputWorker("ffmpeg", [], "rtmp://x/live", "1920x1080", "29.97", "AUTO", 6000)
+    worker.STARTUP_WATCHDOG = 0.05
+    restarts = []
+    worker._restart_current = lambda: restarts.append(True)
+
+    # A) Con subtítulos y sin frames: se retiran y se reinicia.
+    worker._cmd_has_subs = True
+    worker._subs_dropped = False
+    worker._out_time = -1.0
+    worker._startup_watchdog(_FakeProc())
+    assert worker._subs_dropped is True and restarts == [True]
+
+    # B) Ya emitiendo (arranque normal): no hace nada.
+    worker._cmd_has_subs = True
+    worker._subs_dropped = False
+    worker._out_time = 3.0
+    worker._startup_watchdog(_FakeProc())
+    assert worker._subs_dropped is False and restarts == [True]
+
+    # C) Sin subtítulos en el comando: no toca la señal (comportamiento previo).
+    worker._cmd_has_subs = False
+    worker._subs_dropped = False
+    worker._out_time = -1.0
+    worker._startup_watchdog(_FakeProc())
+    assert worker._subs_dropped is False and restarts == [True]
 
 
 if __name__ == "__main__":

@@ -4,10 +4,13 @@ Emite la playlist clip a clip. Cada destino puede tener su propio proceso
 FFmpeg y el playout local PyAV es el master: cuando empieza un evento, todas
 las salidas saltan al mismo evento (`sync_items(..., force_jump=True)`).
 """
+import glob
+import hashlib
 import json
 import os
 import re
 import subprocess
+import tempfile
 import threading
 import time
 
@@ -59,6 +62,50 @@ def _ffmpeg_filter_path(path):
     p = str(path).replace("\\", "/")
     p = p.replace(":", "\\:").replace("'", "\\'").replace(",", "\\,").replace("[", "\\[").replace("]", "\\]")
     return p
+
+
+# v24.0.2.38: caché local de subtítulos. El filtro ``subtitles=<vídeo>`` obligaba
+# a FFmpeg a abrir el archivo de vídeo una SEGUNDA vez por su cuenta; en una
+# biblioteca de red (Z:) eso detenía la señal en silencio: FFmpeg corría sin
+# error pero sin emitir un solo frame (log 2026-09-10 00:05). Ahora el subtítulo
+# se sirve desde un SRT local alineado al offset de la emisión.
+SUBS_DIR = os.path.join(tempfile.gettempdir(), "TVPlayoutPRO_subs")
+
+_SRT_TS_RE = re.compile(r"\s*(\d+):(\d+):(\d+)[,.](\d+)\s*-->\s*(\d+):(\d+):(\d+)[,.](\d+)")
+
+
+def _ts_ms(h, m, s, ms):
+    return (int(h) * 3600 + int(m) * 60 + int(s)) * 1000 + int(ms)
+
+
+def _ms_ts(v):
+    v = max(0, int(v))
+    return f"{v // 3600000:02d}:{(v % 3600000) // 60000:02d}:{(v % 60000) // 1000:02d},{v % 1000:03d}"
+
+
+def _srt_shift(text, offset):
+    """Resta ``offset`` segundos a los tiempos de un SRT.
+
+    Con ``-ss`` antes del input, los frames de la emisión arrancan en 0; los
+    subtítulos extraídos llevan tiempos absolutos de la película. Sin este
+    corrimiento los subtítulos quemados quedarían desplazados.
+    """
+    shift_ms = int(round(max(0.0, float(offset or 0.0)) * 1000.0))
+    out = []
+    for block in re.split(r"\n\s*\n", (text or "").strip()):
+        lines = block.splitlines()
+        if len(lines) < 2:
+            continue
+        m = _SRT_TS_RE.match(lines[1])
+        if not m:
+            continue
+        start = _ts_ms(m.group(1), m.group(2), m.group(3), m.group(4)) - shift_ms
+        end = _ts_ms(m.group(5), m.group(6), m.group(7), m.group(8)) - shift_ms
+        if end <= 0:
+            continue                      # el bloque queda antes del corte
+        lines[1] = f"{_ms_ts(start)} --> {_ms_ts(end)}"
+        out.append("\n".join(lines))
+    return ("\n".join(out) + "\n") if out else ""
 
 
 class OutputWorker(QThread):
@@ -135,6 +182,11 @@ class OutputWorker(QThread):
         # emitido, y el watcher de drift reiniciaba FFmpeg en bucle.
         self._out_time = -1.0
         self._out_time_at = 0.0
+        # v24.0.2.38: subtítulos locales (ver _local_subtitles).
+        self._cmd_has_subs = False
+        self._subs_dropped = False
+        self._subs_extracting = set()
+        self._subs_failed = set()
 
     @staticmethod
     def _norm_items(items):
@@ -310,8 +362,14 @@ class OutputWorker(QThread):
 
         vf = [f"scale={w}:{h}:force_original_aspect_ratio=decrease", f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2",
               f"fps={self.fps}", "format=yuv420p"]
-        if subtitle_burn and sid is not None and sid >= 0:
-            vf.insert(0, f"subtitles='{_ffmpeg_filter_path(source)}':si={sid}")
+        # v24.0.2.38: subtítulos quemados desde un SRT LOCAL. El filtro con el
+        # archivo de vídeo original (red) detenía la señal sin error alguno.
+        self._cmd_has_subs = False
+        if subtitle_burn and sid is not None and sid >= 0 and not self._subs_dropped:
+            local_srt = self._local_subtitles(source, sid, source_offset)
+            if local_srt:
+                vf.insert(0, f"subtitles='{_ffmpeg_filter_path(local_srt)}'")
+                self._cmd_has_subs = True
         gop = int(round(float(self.fps) * 2))
         # v24.0.2.35: -stats hace que FFmpeg reporte su posición real
         # ("time=") aunque el loglevel sea warning; el watcher de drift la
@@ -532,6 +590,141 @@ class OutputWorker(QThread):
             return -1.0  # calentando: sin medición real todavía
         return offset + max(0.0, out_time)
 
+    # v24.0.2.38: si con subtítulos FFmpeg no emitió nada en este tiempo, se
+    # retiran y se reinicia: la señal va antes que los subtítulos.
+    STARTUP_WATCHDOG = 25.0
+
+    def _subs_key(self, source, sid):
+        try:
+            st = os.stat(source)
+            seed = f"{source}|{st.st_mtime}|{sid}"
+        except OSError:
+            seed = f"{source}|{sid}"
+        return hashlib.md5(seed.encode("utf-8", "replace")).hexdigest()
+
+    def _local_subtitles(self, source, sid, offset):
+        """SRT local para quemar subtítulos sin reabrir el vídeo por red.
+
+        Orden de resolución: caché local → sidecar .srt junto al vídeo (pesa
+        KBs, leerlo de red es barato) → extracción en segundo plano (se activa
+        con un reinicio breve al terminar). Devuelve la ruta del SRT alineado
+        al offset actual, o "" si todavía no hay uno disponible (la emisión
+        continúa sin subtítulos mientras tanto).
+        """
+        try:
+            key = self._subs_key(source, sid)
+            base = os.path.join(SUBS_DIR, f"{key}.srt")
+            if not self._subtitle_base(source, sid, key, base):
+                return ""
+            off = max(0.0, float(offset or 0.0))
+            if off < 0.5:
+                return base
+            os.makedirs(SUBS_DIR, exist_ok=True)
+            shifted = os.path.join(SUBS_DIR, f"{key}.{int(off * 1000)}.off.srt")
+            for old in glob.glob(os.path.join(SUBS_DIR, f"{key}.*.off.srt")):
+                try:
+                    os.remove(old)
+                except OSError:
+                    pass
+            with open(base, encoding="utf-8-sig", errors="replace") as handle:
+                text = handle.read()
+            with open(shifted + ".tmp", "w", encoding="utf-8") as handle:
+                handle.write(_srt_shift(text, off))
+            os.replace(shifted + ".tmp", shifted)
+            return shifted
+        except Exception as exc:  # noqa: BLE001
+            log.warning("subtítulos locales no disponibles (%s): %s", source, exc)
+            return ""
+
+    def _subtitle_base(self, source, sid, key, base):
+        """SRT completo (caché o sidecar); si no existe, lanza la extracción."""
+        if os.path.isfile(base) and os.path.getsize(base) > 0:
+            return base
+        sidecar = os.path.splitext(source)[0] + ".srt"
+        if os.path.isfile(sidecar):
+            try:
+                size = os.path.getsize(sidecar)
+                if 0 < size <= 4 * 1024 * 1024:
+                    with open(sidecar, "rb") as handle:
+                        data = handle.read()
+                    os.makedirs(SUBS_DIR, exist_ok=True)
+                    text = data.decode("utf-8-sig", errors="replace")
+                    with open(base + ".tmp", "w", encoding="utf-8") as handle:
+                        handle.write(text)
+                    os.replace(base + ".tmp", base)
+                    self.log.emit("Subtítulos: usando el .srt junto al vídeo")
+                    return base
+            except OSError:
+                pass
+        if key in self._subs_failed or key in self._subs_extracting:
+            return ""
+        self._start_subtitle_extraction(source, sid, key, base)
+        return ""
+
+    def _start_subtitle_extraction(self, source, sid, key, base):
+        """Extrae la pista de subtítulos a un SRT local EN SEGUNDO PLANO.
+
+        La extracción lee el archivo completo (los subtítulos van intercalados
+        con el vídeo), por eso nunca se hace en el hilo de la emisión: la señal
+        arranca sin subtítulos y los adquiere con un único reinicio breve.
+        """
+        self._subs_extracting.add(key)
+
+        def _extract():
+            try:
+                os.makedirs(SUBS_DIR, exist_ok=True)
+                tmp = f"{base}.{os.getpid()}.tmp"
+                cmd = [self.ffmpeg, "-hide_banner", "-nostdin", "-loglevel", "error",
+                       "-y", "-i", source, "-map", f"0:s:{sid}", "-c:s", "srt", tmp]
+                proc = subprocess.run(cmd, capture_output=True, timeout=1800,
+                                      creationflags=CREATE_NO_WINDOW)
+                if proc.returncode == 0 and os.path.isfile(tmp) and os.path.getsize(tmp) > 0:
+                    os.replace(tmp, base)
+                    self.log.emit("Subtítulos extraídos • reinicio breve para activarlos en la emisión")
+                    log.info("Subtítulos extraídos a %s", base)
+                    self._restart_current()
+                else:
+                    self._subs_failed.add(key)
+                    self.log.emit("Subtítulos no disponibles en este archivo • la señal continúa sin ellos")
+                    log.warning("extracción de subtítulos vacía o con error (código %s)", proc.returncode)
+            except Exception as exc:  # noqa: BLE001
+                self._subs_failed.add(key)
+                log.warning("extracción de subtítulos falló: %s", exc)
+            finally:
+                self._subs_extracting.discard(key)
+
+        threading.Thread(target=_extract, daemon=True, name="subs-extract").start()
+
+    def _restart_current(self):
+        """Reinicio breve del clip actual conservando índice y offset."""
+        with self._lock:
+            proc = self.proc
+            if proc is None or proc.poll() is not None:
+                return
+            self._jump_index = self._current_index
+            self._jump_offset = max(0.0, float(getattr(self, "_current_offset", 0.0) or 0.0))
+            self._jump.set()
+        self._terminate(proc)
+
+    def _startup_watchdog(self, proc):
+        """v24.0.2.38: si los subtítulos dejan la señal sin frames, se retiran."""
+        try:
+            time.sleep(self.STARTUP_WATCHDOG)
+            if self.stop_requested or proc.poll() is not None:
+                return
+            with self._lock:
+                out_time = float(getattr(self, "_out_time", -1.0))
+            if out_time >= 0:
+                return          # arranque normal: ya está emitiendo
+            if getattr(self, "_cmd_has_subs", False) and not self._subs_dropped:
+                self._subs_dropped = True
+                self.log.emit("Subtítulos bloqueaban el arranque • se retiran para no perder la señal")
+                log.warning("FFmpeg sin frames tras %.0fs con subtítulos: se retiran y se reinicia",
+                            self.STARTUP_WATCHDOG)
+                self._restart_current()
+        except Exception:  # noqa: BLE001
+            pass
+
     NOISE = ("Immediate exit requested", "Last message repeated", "Error muxing a packet", "Error writing trailer",
              "Error closing file", "Terminating thread", "Error submitting a packet")
 
@@ -629,6 +822,8 @@ class OutputWorker(QThread):
                 started = time.time()
                 last_lines = []
                 threading.Thread(target=self._drain_stderr, args=(proc, last_lines), name="ffmpeg-stderr", daemon=True).start()
+                # v24.0.2.38: vigilante de arranque (subtítulos que no dejan emitir).
+                threading.Thread(target=self._startup_watchdog, args=(proc,), name="ffmpeg-watchdog", daemon=True).start()
                 # Espera activa: reacciona a STOP o a un salto aunque FFmpeg no escriba nada en stderr.
                 while proc.poll() is None:
                     if self.stop_requested or self._jump.is_set():
