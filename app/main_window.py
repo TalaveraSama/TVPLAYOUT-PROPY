@@ -2408,17 +2408,29 @@ class MainWindow(QMainWindow):
             # de las mediciones siguientes. Sólo un gap que CRECE es drift
             # real (encoder lento o entrada que no da abasto).
             gap = mpv_time - ffmpeg_pos
-            if abs(gap) > self._rtmp_drift_max_gap and self._rtmp_drift_cap_realigned < 3:
-                # v24.0.2.39 B: gap de arranque PATOLÓGICO (la salida tardó
-                # minutos en emitir su primer frame: log 00:14, gap 175 s).
-                # No es latencia normal: se realinea al punto del playout.
-                # Tras 3 intentos se acepta para no cortar la señal en bucle.
+            if gap > self._rtmp_drift_max_gap and self._rtmp_drift_cap_realigned < 3:
+                # v24.0.2.39 B: la salida tardó MINUTOS en emitir su primer
+                # frame y quedó muy ATRÁS del playout (log 00:14, gap 175 s).
+                # Se realinea HACIA ADELANTE al punto en vivo (nunca repite
+                # contenido). Tras 3 intentos se acepta para no cortar en
+                # bucle.
                 self._rtmp_drift_cap_realigned += 1
                 log.warning("Gap de arranque %.1fs fuera de lo normal — realineando al playout "
                             "(intento %d/3)", gap, self._rtmp_drift_cap_realigned)
                 self._realign_rtmp(mpv_time, now)
                 return
-            self._rtmp_drift_baseline = mpv_time - ffmpeg_pos
+            if gap < -self._rtmp_drift_max_gap and not self._rtmp_drift_ahead_warned:
+                # v24.0.2.40: la salida empieza el clip MUY POR DELANTE del
+                # playout (el reloj local avanza a menos de 1x: decodificación
+                # al 66% en el VPS). Realinearla ATRÁS repetiría contenido ya
+                # emitido. La señal está sana a 1x: se avisa una vez con la
+                # magnitud y se acepta el desfase como línea base estable.
+                self._rtmp_drift_ahead_warned = True
+                log.warning("La salida va %.1f minutos por delante del playout (el reloj local "
+                            "no avanza a tiempo real). La señal continúa SIN CORTES y sin repetir "
+                            "contenido; para eliminar el desfase usa el modo Reloj del sistema "
+                            "(Ajustes → Monitor de programa).", -gap / 60.0)
+            self._rtmp_drift_baseline = gap
             self._rtmp_drift_bad_count = 0
             log.info("RTMP en vivo • mpv=%.2fs, ffmpeg=%.2fs, gap de arranque %.2fs",
                      mpv_time, ffmpeg_pos, self._rtmp_drift_baseline)

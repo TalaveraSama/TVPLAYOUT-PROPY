@@ -697,7 +697,7 @@ def test_rtmp_drift_uses_real_ffmpeg_position_not_wall_clock():
     assert "return -1.0 if self.workers else 0.0" in output
     # El watcher no compara a ciegas durante el arranque y descuenta el gap.
     assert "if ffmpeg_pos < 0:" in main
-    assert "self._rtmp_drift_baseline = mpv_time - ffmpeg_pos" in main
+    assert "self._rtmp_drift_baseline = gap" in main
     # v24.0.2.37: drift con SIGNO — la salida adelantada (monitor local lento)
     # jamás se reinicia; sólo se corrige la salida que va detrás.
     assert "signed = (mpv_time - ffmpeg_pos) - self._rtmp_drift_baseline" in main
@@ -869,6 +869,32 @@ def test_drift_watcher_tolerates_startup_gap_and_catches_real_stall():
         mw._rtmp_check_drift()
     assert mw.output.seeks == [], "salida adelantada no se reinicia (evita bucle al final)"
     assert mw._rtmp_drift_ahead_warned is True
+
+    # H) v24.0.2.40: la salida empieza el clip MUY POR DELANTE (reloj local al
+    #    66%: el output ya lleva 46 min del clip cuando el playout empieza).
+    #    NO se realinea (repetiría 46 min de contenido ya emitido): avisa una
+    #    vez con la magnitud en minutos y fija ese desfase como línea base.
+    mw.output.seeks.clear()
+    mw._rtmp_drift_clip = None
+    mw._rtmp_drift_suspend_until = 0.0
+    mw._rtmp_drift_last_restart = 0.0
+    mw._rtmp_drift_ahead_warned = False
+    mw._rtmp_drift_cap_realigned = 0
+    mw.ctrl.onair = 0
+    mw.output.current_index = 0
+    mw.ctrl.elapsed = 2.0
+    mw.output.current_position = 2762.0     # 46 min por delante
+    mw._rtmp_check_drift()
+    assert mw.output.seeks == [], "no debe repetir contenido ya emitido"
+    assert mw._rtmp_drift_baseline == -2760.0, mw._rtmp_drift_baseline
+    assert mw._rtmp_drift_ahead_warned is True, "debió avisar con la magnitud"
+    # El gap se mantiene: sigue estable, sin reinicios ni realineos.
+    for t in (4, 6, 8):
+        mw.ctrl.elapsed = float(t)
+        mw.output.current_position = 2760.0 + t   # salida a 1x
+        mw._rtmp_check_drift()
+    assert mw.output.seeks == [] and mw._rtmp_drift_local_lag_warned is False, \
+        "gap constante: ni reinicio ni aviso adicional"
 
 
 def test_clock_mode_advances_without_local_decode_and_ndi_is_disabled():
@@ -1106,6 +1132,11 @@ exit 1
     assert "_rtmp_drift_max_gap = 45.0" in window
     assert "RTMP en evento %d pero el playout está en %d — realineando" in window
     assert "Gap de arranque %.1fs fuera de lo normal" in window
+    # v24.0.2.40: el realineo del gap patológico sólo aplica con la salida
+    # ATRÁS (gap positivo); muy adelantada avisa, no repite contenido.
+    assert "if gap > self._rtmp_drift_max_gap" in window
+    assert "minutos por delante del playout" in window
+    assert "if abs(gap) > self._rtmp_drift_max_gap" not in window
     assert "def _realign_rtmp(self, mpv_time, now):" in window
     assert "Reconectando el mismo evento en" in output
     assert "Reintentos agotados" in output
