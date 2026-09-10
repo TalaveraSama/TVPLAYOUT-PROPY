@@ -204,7 +204,12 @@ class OutputProfilesDialog(QDialog):
         self._edit_row = -1
 
         root = QVBoxLayout(self)
-        ndi_ok, ndi_detail, ndi_path = NDISender.probe()
+        # v24.0.2.37: con NDI deshabilitado no se prueba la DLL (evita el
+        # reintento ruidoso en equipos sin el Runtime instalado).
+        if bool(settings.get("ndi_disabled", True)):
+            ndi_ok, ndi_detail, ndi_path = False, "deshabilitado temporalmente en Ajustes", ""
+        else:
+            ndi_ok, ndi_detail, ndi_path = NDISender.probe()
         ndi_state = (f"NDI directo: DISPONIBLE ({ndi_path})" if ndi_ok
                      else f"NDI directo: NO DISPONIBLE ({ndi_detail})")
         note = QLabel(
@@ -379,7 +384,10 @@ class DevicesDialog(QDialog):
                            ("ffprobe", FFPROBE_PATH), ("mpv (preview)", MPV_PATH),
                            ("vlc (preview alternativo)", VLC_PATH)):
             lines.append(f"{name:18s} {path or 'NO ENCONTRADO'}")
-        ndi_ok, ndi_detail, ndi_path = NDISender.probe()
+        if bool(getattr(parent, "settings", {}).get("ndi_disabled", True)):
+            ndi_ok, ndi_detail, ndi_path = False, "deshabilitado temporalmente en Ajustes", ""
+        else:
+            ndi_ok, ndi_detail, ndi_path = NDISender.probe()
         lines.append("")
         lines.append("=== NDI DIRECTO (RUNTIME x64) ===")
         lines.append(f"[{'OK' if ndi_ok else '--'}] {ndi_detail}")

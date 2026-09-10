@@ -841,6 +841,9 @@ class SettingsDialog(BaseDialog):
         self.monitor_mode = QComboBox()
         self.monitor_mode.addItem("PyAV/libav (predeterminado)", "pyav")
         self.monitor_mode.addItem("Programa FFmpeg → reproductor externo", "program_feed")
+        # v24.0.2.37: para VPS sin monitor ni CPU de sobra: el playout avanza
+        # con el reloj de pared y sólo FFmpeg decodifica (las salidas IP).
+        self.monitor_mode.addItem("Reloj del sistema (sin decodificar — ideal VPS)", "clock")
         self.monitor_mode.setCurrentIndex(max(0, self.monitor_mode.findData(self.settings.get("monitor_mode", "pyav"))))
         self.monitor_player = QComboBox()
         self.monitor_player.addItems(["VLC", "mpv", "ffplay"])
@@ -914,6 +917,8 @@ class SettingsDialog(BaseDialog):
         self.probe_on_scan.setChecked(bool(self.settings.get("probe_on_scan", True)))
         self.autotrim_on_scan = QCheckBox("Recortar intro/final de películas automáticamente tras escanear (saltar logos de Netflix/HBO/Amazon)")
         self.autotrim_on_scan.setChecked(bool(self.settings.get("autotrim_on_scan", True)))
+        self.ndi_disabled = QCheckBox("Deshabilitar salidas NDI temporalmente (dejar solo RTMP y SRT)")
+        self.ndi_disabled.setChecked(bool(self.settings.get("ndi_disabled", True)))
         f2.addRow("Audio preferido", self.audio)
         f2.addRow("Subtítulos preferidos", self.sub)
         f2.addRow("", _note("Si hay un evento al aire, guardar estos valores cambia la pista en vivo; puede haber un corte IP breve."))
@@ -944,6 +949,7 @@ class SettingsDialog(BaseDialog):
         f2.addRow("", self.autoplay)
         f2.addRow("", self.probe_on_scan)
         f2.addRow("", self.autotrim_on_scan)
+        f2.addRow("", self.ndi_disabled)
         tabs.addTab(self.scroll_page(w2), "REPRODUCCIÓN / AUTOMATIZACIÓN")
 
         # --- sistema
@@ -1027,6 +1033,7 @@ class SettingsDialog(BaseDialog):
             "autoplay": self.autoplay.isChecked(),
             "probe_on_scan": self.probe_on_scan.isChecked(),
             "autotrim_on_scan": self.autotrim_on_scan.isChecked(),
+            "ndi_disabled": self.ndi_disabled.isChecked(),
         }
 
 

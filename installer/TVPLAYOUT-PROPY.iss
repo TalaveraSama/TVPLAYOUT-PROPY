@@ -1,7 +1,7 @@
 ﻿; ============================================================================
-; TVPlayout PRO V24.0.2.36 — Instalador completo para Windows
+; TVPlayout PRO V24.0.2.37 — Instalador completo para Windows
 ;
-; Genera UN SOLO Setup_TVPlayoutPRO_V24.0.2.36.exe que instala:
+; Genera UN SOLO Setup_TVPlayoutPRO_V24.0.2.37.exe que instala:
 ;   • TVPlayoutPRO.exe  (aplicación PySide6 + PyAV congelada, carpeta _internal)
 ;   • ffmpeg.exe, ffprobe.exe y mpv.exe en la RAÍZ del programa
 ;   • Opcional: NDI Runtime x64 y VLC (se empaquetan si están en vendor\)
@@ -16,7 +16,7 @@
 ; ============================================================================
 
 #define MyAppName "TVPlayout PRO"
-#define MyAppVersion "V24.0.2.36"
+#define MyAppVersion "V24.0.2.37"
 #define MyAppPublisher "TVPlayout PRO"
 #define MyAppExeName "TVPlayoutPRO.exe"
 #define MyAppId "{7A4C2E90-3B1D-4F5A-8C2E-9D0B1A2C3E4F}"

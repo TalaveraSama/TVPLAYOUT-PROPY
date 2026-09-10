@@ -695,7 +695,10 @@ def test_rtmp_drift_uses_real_ffmpeg_position_not_wall_clock():
     # El watcher no compara a ciegas durante el arranque y descuenta el gap.
     assert "if ffmpeg_pos < 0:" in main
     assert "self._rtmp_drift_baseline = mpv_time - ffmpeg_pos" in main
-    assert "drift = abs((mpv_time - ffmpeg_pos) - self._rtmp_drift_baseline)" in main
+    # v24.0.2.37: drift con SIGNO — la salida adelantada (monitor local lento)
+    # jamás se reinicia; sólo se corrige la salida que va detrás.
+    assert "signed = (mpv_time - ffmpeg_pos) - self._rtmp_drift_baseline" in main
+    assert "if signed < 0:" in main and "_rtmp_drift_local_lag_warned" in main
     # sc_threshold solo aporta algo a x264; en AMF/NVENC sólo generaba ruido.
     assert output.count('"-sc_threshold", "0"') == 1
 
@@ -771,6 +774,8 @@ def test_drift_watcher_tolerates_startup_gap_and_catches_real_stall():
     mw._rtmp_drift_clip = None
     mw._rtmp_drift_had_unknown = False
     mw._rtmp_drift_suspend_until = 0.0
+    mw._rtmp_drift_local_lag_warned = False
+    mw._status = lambda *a, **k: None      # el aviso de monitor lento no toca la UI real
 
     # A) Calentando (VPS abriendo el archivo por red): no compara ni realinea.
     mw.ctrl.elapsed = 8.0
@@ -803,6 +808,105 @@ def test_drift_watcher_tolerates_startup_gap_and_catches_real_stall():
     # Tras realinear queda suspendido: no bucle inmediato.
     mw._rtmp_check_drift()
     assert len(mw.output.seeks) == 1
+
+    # E) v24.0.2.37: la SALIDA va ADELANTADA y el gap crece (monitor local
+    #    decodificando a <1x, caso del VPS con CPU justa): la señal RTMP está
+    #    sana a 1x y NO se toca — antes esto reiniciaba cada ~25 s.
+    mw.output.seeks.clear()
+    mw._rtmp_drift_clip = None          # forzar nueva línea base
+    mw._rtmp_drift_suspend_until = 0.0  # levantar la suspensión del realineo D
+    mw._rtmp_drift_last_restart = 0.0
+    mw.ctrl.elapsed = 20.0
+    mw.output.current_position = 21.0   # salida 1 s por delante
+    mw._rtmp_check_drift()
+    assert mw._rtmp_drift_baseline == -1.0
+    for t in range(22, 60, 2):
+        mw.ctrl.elapsed = float(t)          # monitor a ~0.66x
+        mw.output.current_position = float(t) * 1.0 + 1.0 - (20.0 - 21.0) - (-1.0)  # ~1x real
+        mw.output.current_position = float(t) + (t - 22) * 0.34      # se adelanta progresivamente
+        mw._rtmp_check_drift()
+    assert mw.output.seeks == [], "la salida adelantada (monitor lento) no se reinicia"
+    assert mw._rtmp_drift_local_lag_warned is True, "debió avisar una vez del monitor lento"
+
+
+def test_clock_mode_advances_without_local_decode_and_ndi_is_disabled():
+    """v24.0.2.37: modo Reloj (VPS sin decodificación local) + NDI off."""
+    import time as _time
+    # --- Estructural: cableado del modo Reloj y del NDI deshabilitado.
+    playout = _read("app", "playout.py")
+    window = _read("app", "main_window.py")
+    dialogs = _read("app", "dialogs.py")
+    dialogs_extra = _read("app", "dialogs_extra.py")
+    assert "self.clock_only = False" in playout
+    assert "def clock_tick(self):" in playout and '_on_ended("eof")' in playout
+    assert "if self.clock_only and self._started_at > 0 and not self.paused:" in playout
+    assert "if self.clock_only:\n            # v24.0.2.37: modo Reloj — sin decodificación local" in playout
+    assert '"clock")' in dialogs and "ideal VPS" in dialogs
+    assert "self.ctrl.clock_tick()" in window
+    assert "RELOJ DEL SISTEMA" in window
+    assert '"ndi_disabled": True' in window
+    assert 'str(profile.get("protocol", "RTMP")).upper() == "NDI"' in window
+    assert '"ndi_disabled": self.ndi_disabled.isChecked(),' in dialogs
+    assert "deshabilitado temporalmente en Ajustes" in dialogs_extra
+
+    # --- Runtime: el reloj de pared dirige el playout sin reproductor.
+    if _qt_app() is None:
+        return
+    from app.playout import PlayoutController
+
+    ctrl = PlayoutController.__new__(PlayoutController)
+    ctrl.clock_only = True
+    ctrl.paused = False
+    ctrl.onair = 0
+    ctrl.items = [{"path": "/tmp/media/peli.mkv", "title": "Peli", "duration": 2.0,
+                   "source_duration": 2.0, "category": "Películas"}]
+    ctrl._pos = 0.0
+    ctrl._dur = 2.0
+    ctrl._started_at = _time.time()
+    ctrl._position_base = 0.0
+    ctrl._midroll_next_at = 0.0
+    ctrl.midroll_enabled = False
+    ended = []
+    ctrl._on_ended = lambda reason: ended.append(reason)
+    ctrl._identifier_eligible = lambda item: False
+    assert ctrl.is_on_air
+
+    t0 = ctrl.elapsed
+    assert t0 < 0.5, "el reloj debe partir de ~0"
+    assert ctrl.clock_tick() is False       # todavía no termina (dur=2s)
+    _time.sleep(1.2)
+    assert 1.0 <= ctrl.elapsed - t0 <= 1.5, "avanza con el reloj de pared a 1x"
+    _time.sleep(1.1)
+    assert ctrl.clock_tick() is True        # llegó al final → avanza de evento
+    assert ended == ["eof"]
+
+    # Pausa: congela el reloj sin reproductor local.
+    ctrl._started_at = _time.time()
+    ctrl._pos = 0.0
+    ctrl.paused = True
+    frozen = ctrl.elapsed
+    _time.sleep(0.3)
+    assert abs(ctrl.elapsed - frozen) < 0.05, "en pausa el reloj no avanza"
+
+
+def test_output_profiles_skip_ndi_when_disabled():
+    """v24.0.2.37: con ndi_disabled los destinos NDI no arrancan (solo RTMP/SRT)."""
+    if _qt_app() is None:
+        return
+    from app.main_window import MainWindow
+    mw = MainWindow.__new__(MainWindow)
+    mw.settings = {"outputs": [
+        {"enabled": True, "name": "Principal", "protocol": "RTMP", "target": "rtmp://x/live"},
+        {"enabled": True, "name": "NDI local", "protocol": "NDI", "target": "CANAL1"},
+        {"enabled": True, "name": "SRT", "protocol": "SRT", "target": "srt://x:9000"},
+    ]}
+    mw._status = lambda *a, **k: None
+    mw.rtmp_url = type("U", (), {"text": ""})()
+    profiles = mw._output_profiles()
+    assert [p["protocol"] for p in profiles] == ["RTMP", "SRT"], profiles
+    mw.settings["ndi_disabled"] = False
+    profiles = mw._output_profiles()
+    assert [p["protocol"] for p in profiles] == ["RTMP", "NDI", "SRT"], profiles
 
 
 if __name__ == "__main__":

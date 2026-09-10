@@ -149,9 +149,9 @@ def test_main_window_has_drift_watcher():
     assert idx > 0
     # Leer una ventana amplia: el guard de proceso activo se documenta antes
     # de la realineación y puede desplazar el seek dentro de la función.
-    # (v24.0.2.35 amplía la ventana: el docstring de medición real del
-    # FFmpeg desplaza el resto del cuerpo más allá de 3500 caracteres.)
-    block = src[idx:idx + 5000]
+    # (v24.0.2.37 amplía la ventana: el guard direccional del drift —no
+    # reiniciar cuando la salida va adelantada— desplaza el seek.)
+    block = src[idx:idx + 6500]
     # v22.2.2: el watcher lee current_position (estimación dinámica), no
     # current_offset (estático).
     assert "self.output.current_position" in block, \

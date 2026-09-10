@@ -63,6 +63,10 @@ DEFAULT_SETTINGS = {
     "tmdb_card_poster_size": 100, "tmdb_card_poster_shape": "cuadrado", "tmdb_card_text_scale": 100,
     "tmdb_card_backdrop_fill": False,
     "monitor_mode": "pyav", "monitor_player": "VLC", "monitor_player_path": "", "monitor_feed_port": 39000,
+    # v24.0.2.37: NDI deshabilitado temporalmente a petición del operador
+    # (el VPS no tiene el NDI Runtime y el reintento llenaba el log). Se
+    # reactiva con la casilla de Ajustes.
+    "ndi_disabled": True,
     "restore_playlist": True, "autoplay": False, "probe_on_scan": True, "autotrim_on_scan": True,
     "mode": "auto", "loop": True, "exact_time": True, "autofill": False, "tandas": False, "autoscroll": True,
     "volume": 100, "muted": False, "emergency_clip": "", "splitter": [1120, 430],
@@ -250,6 +254,9 @@ class MainWindow(QMainWindow):
         self._rtmp_drift_baseline = None
         self._rtmp_drift_clip = None
         self._rtmp_drift_had_unknown = False
+        # v24.0.2.37: aviso único cuando el monitor local va más lento que la
+        # señal (CPU insuficiente): la salida está sana y no se toca.
+        self._rtmp_drift_local_lag_warned = False
         self._rtmp_drift_timer = QTimer(self)
         self._rtmp_drift_timer.setInterval(2000)
         self._rtmp_drift_timer.timeout.connect(self._rtmp_check_drift)
@@ -754,6 +761,15 @@ class MainWindow(QMainWindow):
 
     def apply_settings(self, first=False):
         s = self.settings
+        # v24.0.2.37: modo Reloj del sistema — playout sin decodificación
+        # local (VPS). El monitor muestra el estado en vez del vídeo.
+        clock_mode = str(s.get("monitor_mode", "pyav")) == "clock"
+        self.ctrl.clock_only = clock_mode
+        if clock_mode:
+            try:
+                self.video.set_active(False, "RELOJ DEL SISTEMA\n(sin decodificación local — VPS)")
+            except Exception:  # noqa: BLE001
+                pass
         self.ctrl.audio_pref = s.get("audio_pref", AUDIO_PREFS[0])
         self.ctrl.sub_pref = s.get("sub_pref", "OFF")
         self.ctrl.autofill_category = s.get("autofill_category", "Todas")
@@ -1947,13 +1963,24 @@ class MainWindow(QMainWindow):
     def _output_profiles(self):
         """Devuelve destinos nuevos y convierte la URL única antigua."""
         profiles = []
+        ndi_disabled = bool(self.settings.get("ndi_disabled", True))
+        skipped_ndi = 0
         for profile in self.settings.get("outputs") or []:
             if not isinstance(profile, dict) or not profile.get("enabled", True):
                 continue
             target = str(profile.get("target") or profile.get("url") or "").strip()
-            if target:
-                profiles.append({"enabled": True, "name": str(profile.get("name") or profile.get("protocol", "RTMP")),
-                                 "protocol": str(profile.get("protocol", "RTMP")).upper(), "target": target})
+            if not target:
+                continue
+            if ndi_disabled and str(profile.get("protocol", "RTMP")).upper() == "NDI":
+                # v24.0.2.37: NDI deshabilitado temporalmente (Ajustes): sólo
+                # quedan activas las salidas RTMP/SRT.
+                skipped_ndi += 1
+                continue
+            profiles.append({"enabled": True, "name": str(profile.get("name") or profile.get("protocol", "RTMP")),
+                             "protocol": str(profile.get("protocol", "RTMP")).upper(), "target": target})
+        if skipped_ndi:
+            self._status(f"NDI deshabilitado temporalmente • {skipped_ndi} destino(s) NDI omitido(s) "
+                         "(reactívalo en Ajustes)")
         if not profiles:
             legacy = self.rtmp_url.text().strip() or str(self.settings.get("rtmp_url", "")).strip()
             if legacy:
@@ -2337,6 +2364,7 @@ class MainWindow(QMainWindow):
             self._rtmp_drift_clip = clip
             self._rtmp_drift_baseline = None
             self._rtmp_drift_bad_count = 0
+            self._rtmp_drift_local_lag_warned = False
         elif self._rtmp_drift_had_unknown:
             # El proceso se reinició dentro del mismo clip (salto/realineo):
             # la medición anterior ya no aplica.
@@ -2355,7 +2383,8 @@ class MainWindow(QMainWindow):
             return
         # Dos lecturas consecutivas y enfriamiento: una reconexión normal de
         # 1–3 segundos no debe convertirse en un bucle que mate RTMP.
-        drift = abs((mpv_time - ffmpeg_pos) - self._rtmp_drift_baseline)
+        signed = (mpv_time - ffmpeg_pos) - self._rtmp_drift_baseline
+        drift = abs(signed)
         now = time.time()
         if drift >= self._rtmp_drift_threshold:
             self._rtmp_drift_bad_count += 1
@@ -2363,12 +2392,31 @@ class MainWindow(QMainWindow):
             self._rtmp_drift_bad_count = 0
         if self._rtmp_drift_bad_count < 2 or now - self._rtmp_drift_last_restart < 12.0:
             return
+        if signed < 0:
+            # v24.0.2.37: la SALIDA va ADELANTADA al playout local: el monitor
+            # local es el que no da abasto (CPU insuficiente para decodificar
+            # en tiempo real) y la señal RTMP está sana a 1x. Reiniciarla
+            # "hacia atrás" cortaba la emisión cada ~25 s (log del 23:05).
+            # La salida no se toca; se avisa una sola vez por clip.
+            self._rtmp_drift_bad_count = 0
+            if not self._rtmp_drift_local_lag_warned:
+                self._rtmp_drift_local_lag_warned = True
+                log.warning(
+                    "RTMP va %.1fs por delante del monitor local (equipo no descodifica en "
+                    "tiempo real): la señal sigue en tiempo real y NO se reinicia. Usa el modo "
+                    "Reloj del sistema (Ajustes → Monitor de programa) para liberar CPU.",
+                    -signed)
+                self._status("Monitor local más lento que la señal • la emisión RTMP sigue "
+                             "en tiempo real y no se corta • cambia Monitor de programa a "
+                             "«Reloj del sistema» en Ajustes para VPS sin GPU de monitor")
+            return
         log.info("RTMP drift %.2fs (mpv=%.2fs, ffmpeg=%.2fs, base=%.2fs) — realineando",
                  drift, mpv_time, ffmpeg_pos, self._rtmp_drift_baseline)
         self.output.seek_to(self.ctrl.onair, mpv_time)
         self._rtmp_drift_bad_count = 0
         self._rtmp_drift_last_restart = now
         self._rtmp_drift_baseline = None
+        self._rtmp_drift_local_lag_warned = False
         # Suspender el watcher mientras FFmpeg reconecta.
         self._rtmp_drift_suspend_until = now + 8.0
 
@@ -2404,7 +2452,7 @@ class MainWindow(QMainWindow):
         d = SettingsDialog(self, self.settings)
         if d.exec() == QDialog.Accepted:
             vals = d.values()
-            changed_output = any(self.settings.get(k) != vals[k] for k in ("resolution", "fps", "encoder", "bitrate", "audio_bitrate", "subtitle_burn", "ffmpeg_extra", "rtmp_url"))
+            changed_output = any(self.settings.get(k) != vals[k] for k in ("resolution", "fps", "encoder", "bitrate", "audio_bitrate", "subtitle_burn", "ffmpeg_extra", "rtmp_url", "ndi_disabled"))
             changed_player = any(self.settings.get(k) != vals[k] for k in ("hwdec", "audio_device"))
             changed_tracks = any(self.settings.get(k) != vals[k] for k in ("audio_pref", "sub_pref"))
             changed_monitor = any(self.settings.get(k) != vals[k] for k in
@@ -2499,6 +2547,12 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(str(msg), 15000)
 
     def _tick_ui(self):
+        # v24.0.2.37: en modo Reloj el reloj de pared dispara tandas y avances.
+        try:
+            if self.ctrl.clock_only:
+                self.ctrl.clock_tick()
+        except Exception:  # noqa: BLE001
+            pass
         now = datetime.now()
         self.clock.setText(now.strftime("%H:%M:%S"))
         self.date_lbl.setText(f"{DAYS_ES[now.weekday()]} {now.day:02d} {MONTHS_ES[now.month - 1]} {now.year}")

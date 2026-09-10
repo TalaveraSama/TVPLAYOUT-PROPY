@@ -163,6 +163,12 @@ class PlayoutController(QObject):
         # "pegado" al terminar la lista (tick tras tick sin nunca asentarse).
         self._filler_fail_count = 0
         self._pos = 0.0
+        # v24.0.2.37: modo Reloj del sistema (monitor_mode="clock"): el playout
+        # avanza con el reloj de pared SIN decodificar localmente. Ideal para
+        # VPS sin tarjeta gráfica de monitor ni CPU de sobra: el PyAV local a
+        # menos de 1x arrastraba el reloj de la emisión y el RTMP (que sí va a
+        # 1x) parecía "adelantado", provocando realineaciones en bucle.
+        self.clock_only = False
         self._dur = 0.0
         self._started_at = 0.0
         self._log_id = None
@@ -197,6 +203,10 @@ class PlayoutController(QObject):
 
     @property
     def elapsed(self):
+        # v24.0.2.37: en modo Reloj la posición ES el reloj de pared desde el
+        # arranque del evento (no hay reproductor local que la reporte).
+        if self.clock_only and self._started_at > 0 and not self.paused:
+            return max(0.0, self._pos + (time.time() - self._started_at))
         # v22.2.4: si mpv no está reportando time-pos por IPC (caso
         # documentado en v22.2.3 con build vieja de mpv), _pos queda en
         # 0 aunque el video SÍ avance visualmente. En ese caso estimamos
@@ -620,9 +630,11 @@ class PlayoutController(QObject):
         # devolver al operador a una película que ya decidió saltar.
         if self._midroll_resume and not _internal:
             self._midroll_resume = None
-        if (not _internal and not self._identifier_transition and
+        if (not _internal and not self._identifier_transition and not self.clock_only and
                 self._identifier_eligible(item) and self.identifiers_enabled and
                 self.identifier_in_path and os.path.isfile(self.identifier_in_path)):
+            # v24.0.2.37: en modo Reloj no hay reproductor local para los
+            # identificadores de entrada; se saltan (la emisión continúa).
             return self._start_identifier(index, "in")
         if not item.get("path") or not os.path.isfile(item["path"]):
             item["status"] = ST_ERROR
@@ -653,15 +665,20 @@ class PlayoutController(QObject):
         item["duration"] = effective_duration
         item["_start_offset"] = resume_offset
         self.paused = False
-        try:
-            # La llamada histórica era start=trim_start, end=trim_end; para
-            # reanudación, playback_start conserva el mismo end absoluto.
-            ok = self.player.play(item["path"], audio_id=aid, sub_id=sid,
-                                  start=playback_start, end=trim_end)
-        except TypeError:
-            # Compatibilidad con reproductores alternativos que aún no
-            # exponen el argumento end; el aire activo es PyAVPlayer.
-            ok = self.player.play(item["path"], audio_id=aid, sub_id=sid, start=playback_start)
+        if self.clock_only:
+            # v24.0.2.37: modo Reloj — sin decodificación local. Las salidas IP
+            # (FFmpeg) decodifican por su cuenta; el playout avanza con el reloj.
+            ok = True
+        else:
+            try:
+                # La llamada histórica era start=trim_start, end=trim_end; para
+                # reanudación, playback_start conserva el mismo end absoluto.
+                ok = self.player.play(item["path"], audio_id=aid, sub_id=sid,
+                                      start=playback_start, end=trim_end)
+            except TypeError:
+                # Compatibilidad con reproductores alternativos que aún no
+                # exponen el argumento end; el aire activo es PyAVPlayer.
+                ok = self.player.play(item["path"], audio_id=aid, sub_id=sid, start=playback_start)
         if not ok:
             item["status"] = ST_ERROR
             item["note"] = "reproductor local no disponible"
@@ -750,14 +767,52 @@ class PlayoutController(QObject):
         if not self.is_on_air:
             return False
         self.paused = not self.paused
-        self.player.set_pause(self.paused)
+        if self.clock_only:
+            # v24.0.2.37: congelar/reanudar el reloj sin tocar el reproductor.
+            if self.paused:
+                self._pos = self.elapsed
+            else:
+                self._started_at = time.time()
+        else:
+            self.player.set_pause(self.paused)
         self.message.emit("PAUSA (solo local)" if self.paused else "REANUDADO")
         return self.paused
 
     def seek_fraction(self, frac):
         if self.is_on_air and self.duration > 0:
+            if self.clock_only:
+                # v24.0.2.37: seek por reloj, sin reproductor local.
+                target = min(max(0.0, float(frac) * self.duration), max(0.0, self.duration - 0.5))
+                self._pos = target
+                self._started_at = time.time()
+                self.position.emit(self._pos, self._dur)
+                return
             target = max(0.0, float(frac) * self.duration - self._position_base)
             self.player.seek(target, absolute=True)
+
+    def clock_tick(self):
+        """v24.0.2.37: avance del playout por reloj de pared (modo Reloj).
+
+        Lo llama el timer de la interfaz (~2 Hz) cuando el monitor local está
+        desactivado: dispara la tanda intermedia a su hora y el paso al
+        siguiente evento al llegar al final, igual que haría el reproductor
+        local. Devuelve True si avanzó de evento.
+        """
+        if not self.clock_only or not self.is_on_air or self.paused or self.onair < 0:
+            return False
+        if self.onair == -2:   # el filler tiene su propio ciclo de recarga
+            return False
+        pos = self.elapsed
+        if (self.midroll_enabled and self._midroll_next_at > 0 and
+                self.current and self._identifier_eligible(self.current) and
+                pos >= self._midroll_next_at):
+            self._start_midroll()
+            return True
+        dur = self.duration
+        if dur > 0 and pos >= dur:
+            self._on_ended("eof")
+            return True
+        return False
 
     # ---------------------------------------------------------- eventos mpv
     def _on_loaded(self):
