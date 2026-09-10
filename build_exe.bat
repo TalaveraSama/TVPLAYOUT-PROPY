@@ -13,7 +13,7 @@ REM ============================================================================
 setlocal EnableExtensions EnableDelayedExpansion
 cd /d "%~dp0"
 
-set "APP_VERSION=V24.0.2.40"
+set "APP_VERSION=V24.0.2.41"
 set "VENV=.venv-build"
 set "PYEXE=%VENV%\Scripts\python.exe"
 set "OUT=%~dp0dist\TVPlayoutPRO"

@@ -42,6 +42,79 @@ def download_image(url, path):
     return _download(str(url), Path(path))
 
 
+# v24.0.2.41: limpieza de consultas TMDB. Los títulos provenientes del nombre
+# de archivo arrastran año y etiquetas de release («American Fiction 2023 1080p
+# WEBRip x264 AAC5 1-[YTS MX]»), y TMDB no encontraba nada. Ahora el año se
+# envía como parámetro propio (``year=``) y las etiquetas se filtran.
+_YEAR_RE = re.compile(r"(?<!\d)(19\d{2}|20\d{2})(?!\d)")
+# Etiquetas de audio con su canal («AAC5 1», «DDP5 1», «DTS 5 1») y canales
+# sueltos («5 1», «2 0»). Se quitan ANTES de tokenizar para no dejar dígitos
+# huérfanos.
+_PRE_JUNK_RE = re.compile(
+    r"\b(?:aac|ac3|eac3|dd[p+]?|dts|truehd|atmos)\s?\d?(?:\s?\d)?\b"
+    r"|\b[257]\s?[01]\b", re.IGNORECASE)
+_JUNK_TOKEN_RE = re.compile(
+    r"""^(?:
+      (?:1080|2160|1440|720|480|360)[pi] | 4k | uhd | hdr(?:10)? |
+      web[-_ ]?rip | web[-_ ]?dl | br[-_ ]?rip | blu[-_ ]?ray | bd[-_ ]?rip | dvd[-_ ]?rip |
+      hdrip | hdtc | camrip |
+      [xh][-_ ]?26[45] | hevc | avc | xvid | divx |
+      ac3 | eac3 | dd[p+]? | dts(?:[-_ ]?hd)? | truehd | atmos | mp3 | flac | opus |
+      repack | proper | remux | extended | unrated | remastered |
+      dubbed | dual | latino | castellano | subbed | subs | subtitulad[oa] |
+      yts | yify | rarbg | ettv | tgx | amzn | nf | dsnp | hmax | atvp |
+      mkv | mp4 | avi | mov | wmv
+    )$""", re.IGNORECASE | re.VERBOSE)
+
+
+def clean_movie_query(title):
+    """Normaliza un título de archivo → (consulta limpia, año o "").
+
+    - El año (19xx/20xx) se extrae como parámetro separado. Si el título
+      ARRANCA con el año («2012», «1917») forma parte del título y no se
+      usa como año de búsqueda salvo que haya otro año después.
+    - Se eliminan etiquetas de release (resolución, códecs, grupos) y
+      cualquier bloque [corchetes] o (paréntesis).
+    - Nunca se tocan palabras legítimas: «Destino Final 3» conserva su
+      «Final» (sólo se filtran tokens inequívocamente técnicos).
+    """
+    text = re.sub(r"\.[A-Za-z0-9]{2,5}$", "", str(title or ""))
+    text = re.sub(r"[._]+", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    if not text:
+        return "", ""
+    year = ""
+    for match in _YEAR_RE.finditer(text):
+        if match.start() == 0:
+            if match.end() == len(text):
+                break                      # el título ES un año («2012»)
+            continue                       # año al inicio: parte del título
+        year = match.group(1)              # el último año no inicial gana
+    text = _PRE_JUNK_RE.sub(" ", text)     # 5.1 / 7.1 / 2.0 / aac5 / aac
+    text = re.sub(r"\[[^\]]*\]|\{[^}]*\}|\([^)]*\)", " ", text)
+    tokens = []
+    year_dropped = False
+    for position, token in enumerate(text.split()):
+        if _JUNK_TOKEN_RE.match(token):
+            continue
+        if "-" in token[1:]:
+            # Etiquetas pegadas con guion («H265-DUAL», «LATINO-YTS»): si TODAS
+            # las partes son técnicas, se elimina el token entero. Un título
+            # legítimo («Spider-Man») tiene partes no técnicas y se conserva.
+            parts = [p for p in token.split("-") if p]
+            junk_parts = [bool(_JUNK_TOKEN_RE.match(p)) for p in parts]
+            if all(junk_parts):
+                continue                      # «H265-DUAL»: todo técnico
+            if any(junk_parts) and all(j or len(p) <= 3 for p, j in zip(parts, junk_parts)):
+                continue                      # «H264-CM»: códec + iniciales de grupo
+        if year and token == year and not year_dropped and position > 0:
+            year_dropped = True            # quitar sólo el año extraído
+            continue
+        tokens.append(token)
+    query = re.sub(r"\s+", " ", " ".join(tokens)).strip(" -–—:.,;")
+    return query, year
+
+
 class TMDBLookupWorker(QThread):
     """Busca la película sin bloquear el hilo de la interfaz ni el aire."""
 
@@ -65,8 +138,9 @@ class TMDBLookupWorker(QThread):
             self.failed.emit(self.title, "Falta TMDB_API_KEY o título")
             return
         try:
-            query = self._safe_title(self.title)
-            key = hashlib.sha1(f"{self.language}|{query}".encode("utf-8", "replace")).hexdigest()[:20]
+            # v24.0.2.41: consulta limpia + año como parámetro propio.
+            query, year = clean_movie_query(self.title)
+            key = hashlib.sha1(f"{self.language}|{query}|{year}".encode("utf-8", "replace")).hexdigest()[:20]
             TMDB_CACHE.mkdir(parents=True, exist_ok=True)
             meta_path = TMDB_CACHE / f"{key}.json"
             metadata = None
@@ -76,15 +150,23 @@ class TMDBLookupWorker(QThread):
                 except (OSError, ValueError):
                     metadata = None
             if not metadata:
-                params = urllib.parse.urlencode({
-                    "api_key": self.api_key,
-                    "query": query,
-                    "language": self.language,
-                    "include_adult": "false",
-                    "page": 1,
-                })
-                data = _request_json(f"{TMDB_API}/search/movie?{params}")
-                result = (data.get("results") or [None])[0]
+                def _search(with_year):
+                    params = {
+                        "api_key": self.api_key,
+                        "query": query,
+                        "language": self.language,
+                        "include_adult": "false",
+                        "page": 1,
+                    }
+                    if with_year and year:
+                        params["year"] = year
+                    data = _request_json(f"{TMDB_API}/search/movie?{urllib.parse.urlencode(params)}")
+                    return (data.get("results") or [None])[0]
+                result = _search(True)
+                if not result and year:
+                    # El año del nombre de archivo puede estar mal (o ser el
+                    # de una re-edición): reintentar sin él antes de rendirse.
+                    result = _search(False)
                 if not result:
                     self.failed.emit(self.title, f"TMDB no encontró: {query}")
                     return
@@ -132,13 +214,20 @@ class TMDBSearchWorker(QThread):
             self.failed.emit("Falta la API key o el texto de búsqueda")
             return
         try:
-            params = urllib.parse.urlencode({
+            # v24.0.2.41: el texto del operador también se limpia (año → year=).
+            query, year = clean_movie_query(self.query)
+            if not query:
+                query = self.query
+            params = {
                 "api_key": self.api_key,
-                "query": self.query,
+                "query": query,
                 "language": self.language,
                 "include_adult": "false",
                 "page": 1,
-            })
+            }
+            if year:
+                params["year"] = year
+            params = urllib.parse.urlencode(params)
             data = _request_json(f"{TMDB_API}/search/movie?{params}")
             out = []
             TMDB_CACHE.mkdir(parents=True, exist_ok=True)

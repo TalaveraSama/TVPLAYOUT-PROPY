@@ -1141,6 +1141,87 @@ exit 1
     assert "Reconectando el mismo evento en" in output
     assert "Reintentos agotados" in output
 
+def test_tmdb_queries_are_cleaned_before_searching():
+    """v24.0.2.41: el año y las etiquetas de release no viajan en la consulta."""
+    # --- Puro: títulos reales que fallaban en el log del VPS.
+    from app.tmdb import clean_movie_query
+    casos = [
+        ("13 dias en el lago de la muerte 2025", ("13 dias en el lago de la muerte", "2025")),
+        ("American Fiction 2023 1080p WEBRip x264 AAC5 1-[YTS MX]", ("American Fiction", "2023")),
+        ("Heart Eyes 2025 1080p WEBRip x264 AAC5 1-[YTS MX]", ("Heart Eyes", "2025")),
+        ("Fistful of Vengeance 2022 1080p WEBRip x264 AAC5 1-[YTS MX]",
+         ("Fistful of Vengeance", "2022")),
+        ("La Huérfana 2009 1080p BluRay DD5 1 Latino [YTS]", ("La Huérfana", "2009")),
+        ("Kraven 2024 2160p WEB-DL DDP5 1 Atmos HDR H265-DUAL", ("Kraven", "2024")),
+        ("Interestelar 4K UHD HDR DUAL LATINO SUBTITULADO", ("Interestelar", "")),
+        ("Movie.Name.2023.1080p.WEBRip.x264", ("Movie Name", "2023")),
+    ]
+    for dirty, expected in casos:
+        assert clean_movie_query(dirty) == expected, (dirty, clean_movie_query(dirty))
+    # El año al inicio forma parte del título («2012», «1917»).
+    assert clean_movie_query("2012 2009 1080p BluRay") == ("2012", "2009")
+    assert clean_movie_query("1917 2019") == ("1917", "2019")
+    assert clean_movie_query("Class of 1999 1990") == ("Class of 1999", "1990")
+    # Palabras legítimas NUNCA se filtran.
+    assert clean_movie_query("Destino Final 3 (2006) [BluRay 1080p]") == ("Destino Final 3", "2006")
+    assert clean_movie_query("Spider-Man 2002 1080p BluRay x264-YIFY") == ("Spider-Man", "2002")
+    assert clean_movie_query("Abracadabra") == ("Abracadabra", "")
+    assert clean_movie_query("300") == ("300", "")
+
+    # --- Runtime: la URL a TMDB lleva la consulta limpia y el año aparte.
+    if _qt_app() is None:
+        return
+    import os as _os, tempfile as _tf, shutil as _sh
+    import app.tmdb as TM
+    from app.tmdb import TMDBLookupWorker
+
+    tmp = _tf.mkdtemp(prefix="tmdb41_")
+    old_cache, old_req, old_dl = TM.TMDB_CACHE, TM._request_json, TM._download
+    urls = []
+    try:
+        TM.TMDB_CACHE = __import__("pathlib").Path(tmp)
+        TM._download = lambda url, path: False
+        def fake_request(url):
+            urls.append(url)
+            if "year=2023" in url and "query=American+Fiction" in url:
+                return {"results": [{"id": 1, "title": "American Fiction",
+                                     "release_date": "2023-12-15",
+                                     "overview": "meta", "poster_path": "/p.jpg",
+                                     "backdrop_path": ""}]}
+            return {"results": []}
+        TM._request_json = fake_request
+        got = []
+        w = TMDBLookupWorker("KEY", "American Fiction 2023 1080p WEBRip x264 AAC5 1-[YTS MX]")
+        w.result.connect(lambda t, m: got.append((t, m)))
+        w.failed.connect(lambda t, e: got.append(("FAIL", e)))
+        w.run()   # síncrono
+        assert got and got[0][0] != "FAIL", got
+        assert "query=American+Fiction" in urls[0] and "year=2023" in urls[0], urls
+        assert "1080p" not in urls[0] and "WEBRip" not in urls[0] and "YTS" not in urls[0]
+
+        # Año incorrecto en el nombre de archivo → reintento SIN año (fallback).
+        urls.clear()
+        got.clear()
+        w2 = TMDBLookupWorker("KEY", "American Fiction 1999")
+        w2.result.connect(lambda t, m: got.append((t, m)))
+        w2.failed.connect(lambda t, e: got.append(("FAIL", e)))
+        w2.run()
+        assert len(urls) == 2, urls                     # con año y sin año
+        assert "year=1999" in urls[0] and "year=" not in urls[1], urls
+        assert got and got[0][0] == "FAIL", got         # sin resultados en ambos intentos
+        # El mensaje de error muestra la consulta LIMPIA (depurable).
+        assert "American Fiction 1999" not in got[0][1], got[0][1]
+    finally:
+        TM.TMDB_CACHE, TM._request_json, TM._download = old_cache, old_req, old_dl
+        _sh.rmtree(tmp, ignore_errors=True)
+
+    # --- Estructural: el buscador del editor también limpia y usa year=.
+    tmdb_src = _read("app", "tmdb.py")
+    assert "def clean_movie_query(title):" in tmdb_src
+    assert '"year"] = year' in tmdb_src and 'params["year"] = year' in tmdb_src
+    assert "result = _search(False)" in tmdb_src
+
+
 if __name__ == "__main__":
     tests = [(name, fn) for name, fn in globals().items() if name.startswith("test_") and callable(fn)]
     failed = 0
