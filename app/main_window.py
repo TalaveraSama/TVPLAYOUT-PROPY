@@ -281,7 +281,9 @@ class MainWindow(QMainWindow):
         if self.settings.get("restore_playlist", True):
             n = self.ctrl.restore_current()
             if n:
-                self._status(f"Playlist restaurada • {n} eventos")
+                hint = getattr(self.ctrl, "_resume_hint", None)
+                extra = f" • continúa en el evento {hint[0] + 1} según la hora" if hint else ""
+                self._status(f"Playlist restaurada • {n} eventos{extra}")
         self.rebuild_grid()
         self._shortcuts()
 
@@ -852,7 +854,13 @@ class MainWindow(QMainWindow):
 
     def _autostart(self):
         if self.settings.get("autoplay") and self.ctrl.items and not self.ctrl.is_on_air:
-            self.ctrl.play_next("auto")
+            # v24.0.2.43: si la playlist se restauró con punto de reanudación
+            # (cerrada estando al aire), continuar en ese evento y offset.
+            hint = getattr(self.ctrl, "_resume_hint", None)
+            if hint and 0 <= hint[0] < len(self.ctrl.items):
+                self.ctrl.play_index(hint[0], "auto", start_offset=max(0.0, hint[1]))
+            else:
+                self.ctrl.play_next("auto")
         if self.settings.get("rtmp_autostart") and self.ctrl.items and not self.output:
             self._rtmp_start()
 

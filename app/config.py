@@ -20,7 +20,7 @@ def _runtime_root():
 
 ROOT = _runtime_root()
 APP_NAME = "TVPlayout PRO"
-APP_VERSION = "V24.0.2.42"
+APP_VERSION = "V24.0.2.43"
 IS_WINDOWS = os.name == "nt"
 
 

@@ -1249,6 +1249,97 @@ def test_installer_uses_local_mpv_before_downloading():
     assert "mpv-x86_64-installer.exe" in bat
 
 
+def test_playlist_resumes_by_clock_after_restart():
+    """v24.0.2.43: lo EMITIDO sobrevive al reinicio y la lista continúa donde
+    había quedado SEGÚN LA HORA (avanza por reloj mientras estuvo cerrada)."""
+    # --- Estructural: persistencia de estados + snapshot + reanudación.
+    db_src = _read("app", "db.py")
+    playout = _read("app", "playout.py")
+    window = _read("app", "main_window.py")
+    assert '("status", "TEXT DEFAULT \'\'")' in db_src and '("aired_at", "TEXT DEFAULT \'\'")' in db_src
+    assert "mark_out,status,aired_at" in db_src, "el INSERT de playlist_items lleva estado y hora"
+    assert '"status": d.get("status") or ""' in db_src
+    assert "def _restore_progress_by_clock" in playout and "def _persist_live" in playout
+    assert "live_onair" in playout and "live_at" in playout
+    assert "start_offset=max(0.0, hint[1])" in window and "continúa en el evento" in window
+    assert "if src.get(\"status\") in DONE_STATES:" in playout
+
+    # --- Runtime: cerrar a mitad de un evento y "reiniciar" 45 s después.
+    if _qt_app() is None:
+        return
+    import os as _os, tempfile as _tf, shutil as _sh
+    from datetime import datetime as _dt, timedelta as _td
+    from PySide6.QtCore import QObject as _QObj, Signal as _Sig
+    from app.db import DB as _DB
+    from app.playout import PlayoutController, make_item, ST_AIRED, ST_PENDING
+
+    class _FakePlayer(_QObj):
+        ended = _Sig(str); loaded = _Sig(); position = _Sig(float, float); process_died = _Sig()
+        def play(self, *a, **k):
+            return True
+        def stop(self):
+            pass
+        def set_pause(self, _p):
+            pass
+
+    tmp = _tf.mkdtemp(prefix="resume43_")
+    try:
+        db = _DB(_os.path.join(tmp, "t.db"))
+        for name, dur in (("A", 10.0), ("B", 20.0), ("C", 60.0)):
+            p = _os.path.join(tmp, f"{name}.mkv")
+            with open(p, "wb") as handle:
+                handle.write(b"x")
+            db.upsert_media(p, name, "Películas")
+            db.update_media_meta(p, duration=dur, source_duration=dur)
+        rows = db.search_media("", "Películas", limit=10)
+
+        ctrl = PlayoutController(db, _FakePlayer())
+        ctrl.clock_only = True
+        ctrl.replace_playlist([make_item(r) for r in rows], start=False)
+        # Al aire: evento 2 (B), posición 10 s. Se "cierra" la aplicación.
+        assert ctrl.play_index(1, "manual")
+        db.set_setting("live_pos", 10.0)
+        db.set_setting("live_at", (_dt.now() - _td(seconds=45)).isoformat(sep=" ", timespec="seconds"))
+        ctrl.save_current()
+
+        # "Reinicio": controlador nuevo restaurando la misma playlist.
+        ctrl2 = PlayoutController(db, _FakePlayer())
+        n = ctrl2.restore_current()
+        assert n == 3
+        statuses = [it["status"] for it in ctrl2.items]
+        # A (antes del snapshot) y B (10s + 45s ≥ 20s) quedaron EMITIDO;
+        # C (35 s de sus 60) es el punto de reanudación por reloj.
+        assert statuses[:2] == [ST_AIRED, ST_AIRED], statuses
+        hint = ctrl2._resume_hint
+        assert hint is not None and hint[0] == 2, hint
+        assert 33.0 <= hint[1] <= 37.0, hint
+        # Los EMITIDO también quedan persistidos para el próximo arranque.
+        ctrl2.save_current()
+        persisted = [r.get("status") for r in db.load_playlist("__current__")]
+        assert persisted[:2] == [ST_AIRED, ST_AIRED], persisted
+
+        # Autoplay con punto de reanudación: arranca el evento 3 EN el offset.
+        from app.main_window import MainWindow as _MW
+        mw = _MW.__new__(_MW)
+        mw.settings = {"autoplay": True, "rtmp_autostart": False}
+        mw.ctrl = ctrl2
+        mw.output = None
+        mw._autostart()
+        assert ctrl2.onair == 2, "debió continuar en el evento 3"
+        assert ctrl2._pos >= 33.0, ctrl2._pos
+        assert ctrl2._resume_hint is None, "el hint se consume al usarse"
+
+        # Sin snapshot (STOP deliberado antes de cerrar): sólo estados.
+        db.set_setting("live_onair", -1)
+        ctrl3 = PlayoutController(db, _FakePlayer())
+        ctrl3.restore_current()
+        assert [it["status"] for it in ctrl3.items][:2] == [ST_AIRED, ST_AIRED]
+        assert ctrl3._resume_hint is None
+        assert ctrl3.items[2]["status"] == ST_PENDING
+    finally:
+        _sh.rmtree(tmp, ignore_errors=True)
+
+
 if __name__ == "__main__":
     tests = [(name, fn) for name, fn in globals().items() if name.startswith("test_") and callable(fn)]
     failed = 0

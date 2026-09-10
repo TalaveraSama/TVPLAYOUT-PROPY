@@ -97,6 +97,11 @@ def make_item(row_or_dict, **extra):
         "late": False,
         "note": src.get("note") or "",
     }
+    # v24.0.2.43: continuidad al reiniciar — lo EMITIDO se conserva.
+    if src.get("status") in DONE_STATES:
+        item["status"] = src["status"]
+    if src.get("aired_at") is not None:
+        item["aired_at"] = src["aired_at"]
     item.update(extra)
     return item
 
@@ -163,6 +168,10 @@ class PlayoutController(QObject):
         # "pegado" al terminar la lista (tick tras tick sin nunca asentarse).
         self._filler_fail_count = 0
         self._pos = 0.0
+        # v24.0.2.43: hint de reanudación tras restaurar (índice, offset) y
+        # marca del último snapshot persistido.
+        self._resume_hint = None
+        self._last_live_persist = 0.0
         # v24.0.2.37: modo Reloj del sistema (monitor_mode="clock"): el playout
         # avanza con el reloj de pared SIN decodificar localmente. Ideal para
         # VPS sin tarjeta gráfica de monitor ni CPU de sobra: el PyAV local a
@@ -260,6 +269,9 @@ class PlayoutController(QObject):
         self.onair = -1
         self.cue = -1
         self._fixed_fired.clear()
+        # v24.0.2.43: lista nueva → el snapshot en vivo ya no aplica.
+        self._resume_hint = None
+        self._clear_live()
         if notify:
             self.items_changed.emit()
             self.onair_changed.emit(-1)
@@ -427,6 +439,26 @@ class PlayoutController(QObject):
         self._mark_dirty()
 
     # ------------------------------------------------------------- guardado
+    def _persist_live(self):
+        """v24.0.2.43: snapshot del aire (evento, posición, hora) para que al
+        reiniciar la lista continúe donde había quedado SEGÚN LA HORA."""
+        try:
+            if not (0 <= self.onair < len(self.items)):
+                self._clear_live()
+                return
+            self.db.set_setting("live_onair", int(self.onair))
+            self.db.set_setting("live_path", str(self.items[self.onair].get("path") or ""))
+            self.db.set_setting("live_pos", round(float(self._pos or 0.0), 3))
+            self.db.set_setting("live_at", datetime.now().isoformat(sep=" ", timespec="seconds"))
+        except Exception as exc:  # noqa: BLE001
+            log.warning("no se pudo persistir el snapshot del aire: %s", exc)
+
+    def _clear_live(self):
+        try:
+            self.db.set_setting("live_onair", -1)
+        except Exception:  # noqa: BLE001
+            pass
+
     def save_current(self):
         if not self._dirty:
             return
@@ -449,8 +481,68 @@ class PlayoutController(QObject):
         self.items = items
         self.onair = -1
         self.cue = -1
+        self._resume_hint = None
+        self._fixed_fired.clear()
+        # v24.0.2.43: lo EMITIDO se conserva y la lista continúa donde había
+        # quedado según la hora en que se cerró la aplicación.
+        self._restore_progress_by_clock()
+        # Persistir los estados restaurados/avanzados por reloj: sin esto, un
+        # arranque sin reproducción perdía la continuidad en el próximo cierre.
+        self._dirty = True
+        self.save_current()
         self.items_changed.emit()
         return len(items)
+
+    def _restore_progress_by_clock(self):
+        """v24.0.2.43: reanudación por reloj de pared.
+
+        Con el snapshot del aire (evento + posición + hora de cierre) avanza
+        la línea de tiempo el tiempo que la aplicación estuvo cerrada: lo que
+        ya se emitió queda EMITIDO y se marca el evento que debería estar al
+        aire AHORA, con el offset para reanudar sin repetir nada.
+        """
+        try:
+            idx = int(self.db.get_setting("live_onair", -1) or -1)
+            path = str(self.db.get_setting("live_path", "") or "")
+            pos = float(self.db.get_setting("live_pos", 0.0) or 0.0)
+            stamp = str(self.db.get_setting("live_at", "") or "")
+        except Exception:  # noqa: BLE001
+            return
+        # Sin snapshot válido: sólo restaurar estados persistidos.
+        for it in self.items:
+            if it.get("status") == ST_ONAIR:
+                it["status"] = ST_PENDING
+        if not stamp or not (0 <= idx < len(self.items)):
+            return
+        if path and self.items[idx].get("path") != path:
+            return                      # la lista cambió: snapshot obsoleto
+        try:
+            closed_at = datetime.fromisoformat(stamp)
+        except ValueError:
+            return
+        now = datetime.now()
+        elapsed = max(0.0, (now - closed_at).total_seconds())
+        # Todo lo anterior al evento del snapshot ya salió al aire.
+        for it in self.items[:idx]:
+            if it.get("status") not in DONE_STATES:
+                it["status"] = ST_AIRED
+        pos += elapsed
+        i = idx
+        while 0 <= i < len(self.items):
+            duration = float(self.items[i].get("duration") or 0)
+            if duration > 0 and pos >= duration:
+                self.items[i]["status"] = ST_AIRED
+                if not self.items[i].get("aired_at"):
+                    self.items[i]["aired_at"] = now
+                pos -= duration
+                i += 1
+            else:
+                break
+        if i < len(self.items):
+            self.items[i]["status"] = ST_PENDING
+            self._resume_hint = (i, round(max(0.0, pos), 3))
+            log.info("Continuidad por reloj: reanuda en el evento %d, offset %.0fs "
+                     "(aplicación cerrada %.0fs)", i + 1, pos, elapsed)
 
     def export_items(self):
         return [dict(it) for it in self.items]
@@ -625,6 +717,8 @@ class PlayoutController(QObject):
     def play_index(self, index, reason="manual", start_offset=0.0, _internal=False):
         if not (0 <= index < len(self.items)):
             return False
+        # v24.0.2.43: el hint de reanudación se consume al usarse.
+        self._resume_hint = None
         item = self.items[index]
         # Un cambio manual/fijo cancela una reanudación pendiente; no debemos
         # devolver al operador a una película que ya decidió saltar.
@@ -714,6 +808,8 @@ class PlayoutController(QObject):
             except Exception as e:  # noqa: BLE001
                 log.error("callback de inicio: %s", e)
         self._mark_dirty()
+        # v24.0.2.43: snapshot del aire para la continuidad al reiniciar.
+        self._persist_live()
         return True
 
     def _finish_current(self, status):
@@ -746,6 +842,9 @@ class PlayoutController(QObject):
         return False
 
     def stop(self):
+        # v24.0.2.43: un STOP deliberado no debe reanudarse solo al reiniciar
+        # (los EMITIDO se conservan; sólo se descarta el punto de reanudación).
+        self._clear_live()
         self._finish_current(ST_CUT)
         self.player.stop()
         prev = self.onair
@@ -833,6 +932,13 @@ class PlayoutController(QObject):
         shown_dur = (max(0.0, float(dur or 0.0)) + self._position_base
                      if dur and dur > 0 else self._dur)
         self._pos = shown_pos
+        # v24.0.2.43: mantener fresco el snapshot del aire (cada ~5 s).
+        try:
+            if time.time() - getattr(self, "_last_live_persist", 0.0) >= 5.0:
+                self._last_live_persist = time.time()
+                self._persist_live()
+        except Exception:  # noqa: BLE001
+            pass
         if shown_dur and shown_dur > 0:
             if abs(shown_dur - self._dur) > 0.5:
                 self._dur = shown_dur

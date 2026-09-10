@@ -94,6 +94,23 @@ DEFAULT_CATEGORIES = ["Películas", "Series", "Infantil", "Documentales", "Músi
 CURRENT_PLAYLIST = "__current__"
 
 
+def _parse_air_stamp(value):
+    """v24.0.2.43: texto ISO → datetime (o None) para aired_at."""
+    try:
+        return datetime.fromisoformat(str(value)) if value else None
+    except ValueError:
+        return None
+
+
+def _air_stamp(value):
+    """v24.0.2.43: datetime → texto ISO (columna aired_at de playlist_items)."""
+    if not value:
+        return ""
+    if isinstance(value, datetime):
+        return value.isoformat(sep=" ", timespec="seconds")
+    return str(value)
+
+
 class DB:
     def __init__(self, path):
         self.path = str(path)
@@ -126,6 +143,9 @@ class DB:
             ("source_duration", "REAL DEFAULT 0"),
             ("mark_in", "REAL DEFAULT 0"),
             ("mark_out", "REAL DEFAULT 0"),
+            # v24.0.2.43: lo emitido sobrevive al reinicio (continuidad 24/7).
+            ("status", "TEXT DEFAULT ''"),
+            ("aired_at", "TEXT DEFAULT ''"),
         ]:
             if name not in pi:
                 self.conn.execute(f"ALTER TABLE playlist_items ADD COLUMN {name} {ddl}")
@@ -394,12 +414,14 @@ class DB:
             pid = self.conn.execute("SELECT id FROM playlists WHERE name=?", (name,)).fetchone()[0]
             self.conn.execute("DELETE FROM playlist_items WHERE playlist_id=?", (pid,))
             self.conn.executemany(
-                """INSERT INTO playlist_items(playlist_id,media_id,position,audio_lang,subtitle_lang,path,title,category,fixed_time,duration,source_duration,mark_in,mark_out)
-                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                """INSERT INTO playlist_items(playlist_id,media_id,position,audio_lang,subtitle_lang,path,title,category,fixed_time,duration,source_duration,mark_in,mark_out,status,aired_at)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 [(pid, int(it.get("media_id") or 0), pos, it.get("audio_lang", "") or "", it.get("subtitle_lang", "") or "",
                   it.get("path", ""), it.get("title", ""), it.get("category", ""), it.get("fixed_time", "") or "",
                   float(it.get("duration") or 0), float(it.get("source_duration") or it.get("duration") or 0),
-                  max(0.0, float(it.get("mark_in") or 0)), max(0.0, float(it.get("mark_out") or 0)))
+                  max(0.0, float(it.get("mark_in") or 0)), max(0.0, float(it.get("mark_out") or 0)),
+                  # v24.0.2.43: estado de emisión y hora de inicio al aire.
+                  str(it.get("status") or ""), _air_stamp(it.get("aired_at")))
                  for pos, it in enumerate(items, 1)])
             self.conn.commit()
             return pid
@@ -433,6 +455,9 @@ class DB:
                     "audio_lang": d.get("audio_lang") or "",
                     "subtitle_lang": d.get("subtitle_lang") or "",
                     "fixed_time": d.get("fixed_time") or "",
+                    # v24.0.2.43: continuidad al reiniciar.
+                    "status": d.get("status") or "",
+                    "aired_at": _parse_air_stamp(d.get("aired_at")),
                 }
                 if media:
                     for k in ("width", "height", "fps", "video_codec", "audio_codec", "tracks", "thumb",
