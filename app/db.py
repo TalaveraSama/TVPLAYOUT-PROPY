@@ -163,13 +163,25 @@ class DB:
             ("tmdb_backdrop", "TEXT DEFAULT ''"),
             ("mark_in", "REAL DEFAULT 0"),
             ("mark_out", "REAL DEFAULT 0"),
-            # v24.0.2.36: 1 = ya analizado por el auto-recorte (aunque no haya
-            # nada que cortar). Evita re-analizar en cada escaneo películas
-            # que legítimamente no tienen intro/final envueltos en negro.
+            # v24.0.2.36: legado del auto-recorte (eliminado en v24.0.2.45).
+            # La columna se conserva para no romper bases antiguas.
             ("autotrim_done", "INTEGER DEFAULT 0"),
         ]:
             if name not in m:
                 self.conn.execute(f"ALTER TABLE media ADD COLUMN {name} {ddl}")
+        # v24.0.2.45: el auto-recorte se eliminó por completo (competía con la
+        # emisión leyendo la biblioteca por red). Se limpian UNA sola vez las
+        # marcas que dejó —en biblioteca y en las playlists guardadas, que
+        # heredaban y persistían los recortes— para que las películas vuelvan
+        # a emitirse completas. Los recortes manuales de «Editar clip» siguen
+        # disponibles; los hechos a partir de ahora no se vuelven a tocar.
+        if self.get_setting("autotrim_removed_v45", None) is None:
+            self.conn.execute("UPDATE media SET mark_in=0, mark_out=0, autotrim_done=0")
+            self.conn.execute(
+                "UPDATE playlist_items SET mark_in=0, mark_out=0,"
+                " duration=CASE WHEN source_duration>0 THEN source_duration ELSE duration END")
+            self.conn.commit()
+            self.set_setting("autotrim_removed_v45", 1)
 
     # -------------------------------------------------------------- settings
     def get_setting(self, key, default=None):
@@ -463,8 +475,8 @@ class DB:
                     for k in ("width", "height", "fps", "video_codec", "audio_codec", "tracks", "thumb",
                               "tmdb_poster", "tmdb_backdrop", "tmdb_title", "tmdb_year", "tmdb_overview"):
                         item[k] = media[k] if k in media.keys() else ""
-                    # v24.0.2.30: los recortes de biblioteca (auto-recorte /
-                    # Editar clip) se heredan si el evento no tiene propios.
+                    # v24.0.2.30: los recortes de biblioteca (Editar clip)
+                    # se heredan si el evento no tiene propios.
                     if item["mark_in"] <= 0 and "mark_in" in media.keys():
                         item["mark_in"] = max(0.0, float(media["mark_in"] or 0))
                     if item["mark_out"] <= 0 and "mark_out" in media.keys():

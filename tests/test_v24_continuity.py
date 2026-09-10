@@ -10,6 +10,10 @@ import os
 import sys
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# v24.0.2.45: disponible para todos los tests (antes dependía del orden de
+# ejecución: lo insertaba un test de auto-recorte ya eliminado).
+if REPO not in sys.path:
+    sys.path.insert(0, REPO)
 
 
 def _read(*parts):
@@ -264,29 +268,22 @@ def test_mpv_ipc_windows_pipe_is_byte_stream_not_message_mode():
     assert "IPC _PipeConn falló de forma inesperada" in player
 
 
-def test_library_autotrim_and_clip_editing_apply_marks_to_playlist():
-    """v24.0.2.30: auto-recorte de intro/final y Editar clip en biblioteca.
+def test_library_clip_editing_applies_marks_to_playlist():
+    """v24.0.2.30 (v24.0.2.45: sin auto-recorte): Editar clip en biblioteca.
 
     Las marcas viven en la tabla media (mark_in/mark_out) y fluyen solas a la
     playlist vía make_item; make_item ya las lee del dict de la fila."""
     window = _read("app", "main_window.py")
     db = _read("app", "db.py")
-    autotrim = _read("app", "autotrim.py")
     playout = _read("app", "playout.py")
     dialog = _read("app", "dialogs.py")
     # Migración y persistencia de marcas en media.
     assert '("mark_in", "REAL DEFAULT 0")' in db and '("mark_out", "REAL DEFAULT 0")' in db
     assert '"mark_in", "mark_out"' in db  # update_media_meta permitidos
     assert "trim_effective" in db
-    # Detector: lógica pura + worker con blackdetect.
-    assert "def parse_blackdetect" in autotrim and "def compute_marks" in autotrim
-    assert "blackdetect=d=" in autotrim and "class AutoTrimWorker" in autotrim
-    assert "HEAD_WINDOW" in autotrim and "TAIL_WINDOW" in autotrim and "MARGIN" in autotrim
-    # Botones y acciones en biblioteca.
-    assert "✂ Auto-recortar biblioteca" in window and "start_autotrim" in window
-    assert "start_autotrim_selected" in window and "Auto-recortar selección" in window
+    # Botones y acciones en biblioteca (sólo edición manual).
     assert "✎ Editar clip" in window and "edit_library_clip" in window
-    assert "AutoTrimWorker" in window and "LibraryClipDialog" in window
+    assert "LibraryClipDialog" in window and "AutoTrimWorker" not in window
     # Diálogo de edición de clip de biblioteca.
     assert "class LibraryClipDialog" in dialog and "Guardar en biblioteca" in dialog
     # Propagación a eventos ya cargados y herencia al cargar playlists.
@@ -294,7 +291,6 @@ def test_library_autotrim_and_clip_editing_apply_marks_to_playlist():
     assert "se heredan si el evento no tiene propios" in db
     # La columna Duración muestra el recorte aplicado.
     assert "✂ {fmt_tc(dur_eff)}" in window
-
 
 def test_windows_fit_tv_logical_resolution_and_dialogs_can_scroll():
     main = _read("app", "main_window.py")
@@ -317,104 +313,6 @@ def test_program_monitor_uses_the_encoded_ffmpeg_feed():
     assert "onfail=ignore" in output and "proc.wait(timeout=2.5)" in output
     assert "Programa FFmpeg → reproductor externo" in dialogs
     assert "monitor_player_path" in dialogs
-
-
-def test_autotrim_detects_netflix_style_intro_and_outro():
-    """Lógica pura: el ident envuelto en negros se salta; el final se recorta."""
-    import sys as _sys
-    _sys.path.insert(0, REPO)
-    try:
-        from app.autotrim import compute_marks, parse_blackdetect
-    except Exception:  # PySide6 ausente: se valida sólo la estructura
-        return
-    # Parser del stderr de blackdetect.
-    text = ("[blackdetect @ 0x1] black_start:0 black_end:1.92 black_duration:1.92\n"
-            "[blackdetect @ 0x2] black_start:10.1 black_end:12.4 black_duration:2.3\n")
-    assert parse_blackdetect(text) == [(0.0, 1.92), (10.1, 12.4)]
-    assert parse_blackdetect("sin negros aqui") == []
-    # Patrón Netflix: negro → ident → negro → película.
-    duration = 2 * 3600 + 15 * 60  # 2h15
-    mi, mo = compute_marks(duration, head_blacks=[(0, 1.9), (10.1, 12.4)],
-                           tail_blacks=[(duration - 25, duration - 20)])
-    assert 12.4 < mi <= 13.0, "arranca tras el último negro (ident saltado)"
-    assert duration - 25.5 <= mo < duration - 25, "corta en el primer negro del final"
-    # Sin negros: sin recorte.
-    assert compute_marks(duration, [], []) == (0.0, 0.0)
-    # Cortes mínimos respetados y nunca deja menos de un minuto.
-    assert compute_marks(duration, [(0, 0.3)], []) == (0.0, 0.0)
-    assert compute_marks(90, head_blacks=[(0, 80)], tail_blacks=[]) == (0.0, 0.0)
-    # Los micro-negros (parpadeos) se ignoran aunque el detector no filtre.
-    assert compute_marks(5000, head_blacks=[(0, 0.1)], tail_blacks=[(4880, 4880.1)]) == (0.0, 0.0)
-    assert compute_marks(duration, head_blacks=[(0, 100)]) == (0.0, 0.0)
-
-
-def test_autotrim_worker_marks_done_and_runs_automatically_after_scan():
-    """v24.0.2.36: el worker marca autotrim_done (no re-analiza) y el pase
-    automático post-escaneo sólo toma películas sin analizar."""
-    import os as _os, tempfile as _tf, shutil as _sh
-    if _qt_app() is None:
-        return
-    from app.autotrim import AutoTrimWorker
-    from app.db import DB as Database
-
-    tmp = _tf.mkdtemp(prefix="autotrim36_")
-    try:
-        fake = _os.path.join(tmp, "ffmpeg_fake.sh")
-        counter = _os.path.join(tmp, "count")
-        with open(fake, "w") as f:
-            f.write("#!/bin/bash\n"
-                    "echo x >> " + counter + "\n"
-                    "echo '[blackdetect @ 0x1] black_start:0 black_end:4.5 black_duration:4.5' >&2\n"
-                    "exit 0\n")
-        _os.chmod(fake, 0o755)
-
-        database = Database(_os.path.join(tmp, "t.db"))
-        nueva = _os.path.join(tmp, "peli_nueva.mkv")
-        vista = _os.path.join(tmp, "peli_vista.mkv")
-        database.upsert_media(nueva, "Peli Nueva", "Películas")
-        database.update_media_meta(nueva, duration=3600.0)
-        database.upsert_media(vista, "Peli Vista", "Películas")
-        database.update_media_meta(vista, duration=3600.0, autotrim_done=1)
-
-        rows = database.search_media("", "Películas", limit=100)
-        assert len(rows) == 2, [r["title"] for r in rows]
-        AutoTrimWorker(database, fake, rows, force=False).run()  # síncrono
-
-        by_title = {r["title"]: r for r in database.search_media("", "Películas", limit=100)}
-        # La nueva quedó recortada (intro saltada, final cortado) y marcada.
-        assert abs(by_title["Peli Nueva"]["mark_in"] - 4.75) < 0.01
-        assert abs(by_title["Peli Nueva"]["mark_out"] - 3479.75) < 0.01
-        assert by_title["Peli Nueva"]["autotrim_done"] == 1
-        # La ya analizada no se tocó y el ffmpeg falso se invocó SOLO para la
-        # nueva (2 pasadas: cabecera y cola).
-        assert by_title["Peli Vista"]["mark_in"] == 0
-        with open(counter) as f:
-            assert len(f.read().split()) == 2, "debió analizar sólo la película nueva"
-
-        # Segundo pase (p. ej. siguiente escaneo): nada pendiente, 0 invocaciones.
-        AutoTrimWorker(database, fake, database.search_media("", "Películas", limit=100),
-                       force=False).run()
-        with open(counter) as f:
-            assert len(f.read().split()) == 2, "no debe re-analizar lo ya procesado"
-
-        # Forzado (menú contextual): re-analiza aunque esté marcada.
-        AutoTrimWorker(database, fake, database.search_media("", "Películas", limit=100),
-                       force=True).run()
-        with open(counter) as f:
-            assert len(f.read().split()) == 6, "forzado re-analiza las dos (2+2+2)"
-    finally:
-        _sh.rmtree(tmp, ignore_errors=True)
-
-    # Cableado del pase automático post-escaneo.
-    window = _read("app", "main_window.py")
-    dialogs = _read("app", "dialogs.py")
-    autotrim = _read("app", "autotrim.py")
-    assert "autotrim_on_scan" in window and '"autotrim_on_scan": True' in window
-    assert "finished_all.connect(self._probe_done)" in window
-    assert "def _probe_done(self, n):" in window and "_autotrim_new_movies()" in window
-    assert "def _autotrim_new_movies(self):" in window
-    assert "autotrim_done" in autotrim and autotrim.count("update_media_meta") >= 2
-    assert '"autotrim_on_scan": self.autotrim_on_scan.isChecked(),' in dialogs
 
 
 def _qt_app():
@@ -1340,69 +1238,16 @@ def test_playlist_resumes_by_clock_after_restart():
         _sh.rmtree(tmp, ignore_errors=True)
 
 
-def test_autotrim_is_gentle_with_the_live_stream_and_subs_retry():
-    """v24.0.2.44: el auto-recorte no compite con la emisión al aire y los
-    subtítulos se reintentan ante fallos transitorios (log 13:12 / 12:43)."""
-    # --- Estructural
-    autotrim = _read("app", "autotrim.py")
+def test_subtitle_extraction_retries_after_transient_failure():
+    """v24.0.2.44: un fallo transitorio de subtítulos (red compartida) no
+    descarta la película para toda la sesión: se reintenta."""
     output = _read("app", "output.py")
-    window = _read("app", "main_window.py")
-    assert "INTER_FILE_DELAY_ON_AIR = 5.0" in autotrim and "INTER_FILE_DELAY = 1.5" in autotrim
-    assert "on_air_check=None" in autotrim and "INTER_FILE_DELAY_ON_AIR if on_air else INTER_FILE_DELAY" in autotrim
-    assert "BELOW_NORMAL_PRIORITY" in autotrim and "BELOW_NORMAL_PRIORITY" in output
-    assert "on_air_check=lambda:" in window
-    # Subtítulos: 2 intentos, reinicio del contador al triunfar.
     assert "SUBS_MAX_ATTEMPTS = 2" in output and "self._subs_failed = {}" in output
     assert "self._subs_failed.pop(key, None)" in output
-    assert "intento %d/%d" in output or "intento {0}/{1}" in output
-    # «Resumed reading» ya no inunda el log de la interfaz.
+    assert "BELOW_NORMAL_PRIORITY" in output
     assert '"Resumed reading" in line' in output and 'log.debug("ffmpeg: %s", line)' in output
-
-    # --- Runtime: pausa dinámica del auto-recorte
     if _qt_app() is None:
         return
-    import os as _os, tempfile as _tf, shutil as _sh
-    import app.autotrim as AT
-    from app.autotrim import AutoTrimWorker
-    from app.db import DB as Database
-
-    tmp = _tf.mkdtemp(prefix="gentle44_")
-    fake = _os.path.join(tmp, "ffmpeg_fake.sh")
-    with open(fake, "w") as handle:
-        handle.write("#!/bin/bash\n"
-                     "echo '[blackdetect @ 0x1] black_start:0 black_end:4.5 black_duration:4.5' >&2\n"
-                     "exit 0\n")
-    _os.chmod(fake, 0o755)
-    database = Database(_os.path.join(tmp, "t.db"))
-    for name in ("A", "B"):
-        p = _os.path.join(tmp, f"{name}.mkv")
-        with open(p, "wb") as handle:
-            handle.write(b"x")
-        database.upsert_media(p, name, "Películas")
-        database.update_media_meta(p, duration=3600.0)
-    rows = database.search_media("", "Películas", limit=10)
-
-    real_sleep = AT.time.sleep
-    try:
-        delays = []
-        AT.time.sleep = lambda s: delays.append(s)
-        # Con emisión al aire: pausa larga entre archivos.
-        AutoTrimWorker(database, fake, rows, force=False,
-                       on_air_check=lambda: True).run()
-        assert delays == [AT.INTER_FILE_DELAY_ON_AIR], delays
-        # Sin emisión: pausa corta (más rápido).
-        database.reset_probe_paths([r["path"] for r in rows]) if False else None
-        for r in rows:
-            database.update_media_meta(r["path"], mark_in=0, mark_out=0, autotrim_done=0)
-        delays.clear()
-        AutoTrimWorker(database, fake, rows, force=False,
-                       on_air_check=lambda: False).run()
-        assert delays == [AT.INTER_FILE_DELAY], delays
-    finally:
-        AT.time.sleep = real_sleep
-        _sh.rmtree(tmp, ignore_errors=True)
-
-    # --- Runtime: reintento de subtítulos tras un fallo transitorio
     from app.output import OutputWorker
     worker = OutputWorker("ffmpeg", [], "rtmp://x/live", "1920x1080", "29.97", "AUTO", 6000)
     key = worker._subs_key("/tmp/una pelicula.mkv", 0)
@@ -1415,6 +1260,47 @@ def test_autotrim_is_gentle_with_the_live_stream_and_subs_retry():
     worker._subs_failed = {key: 2}
     assert worker._subtitle_base("/tmp/una pelicula.mkv", 0, key, "/tmp/base.srt") == ""
     assert key not in worker._subs_extracting
+
+
+def test_autotrim_removed_completely():
+    """v24.0.2.45: el auto-recorte se eliminó por completo (competía con la
+    emisión leyendo la biblioteca por red). Las marcas que dejó se limpian
+    una sola vez; el recorte manual de «Editar clip» sigue disponible."""
+    import os as _os
+    assert not _os.path.exists(_os.path.join(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))), "app", "autotrim.py"))
+    window = _read("app", "main_window.py")
+    assert "AutoTrimWorker" not in window and "Auto-recortar" not in window
+    assert "autotrim_on_scan" not in window and "_launch_autotrim" not in window
+    assert "autotrim_on_scan" not in _read("app", "dialogs.py")
+    # El recorte manual sigue existiendo (Editar clip / herencia de marcas).
+    assert "Editar clip" in window and "mark_in" in _read("app", "playout.py")
+    if _qt_app() is None:
+        return
+    import tempfile as _tf, shutil as _sh
+    from app.db import DB as Database
+    tmp = _tf.mkdtemp(prefix="noautotrim45_")
+    path = _os.path.join(tmp, "t.db")
+    try:
+        db = Database(path)
+        pa, pb = _os.path.join(tmp, "A.mkv"), _os.path.join(tmp, "B.mkv")
+        db.upsert_media(pa, "A", "Películas")
+        db.update_media_meta(pa, duration=3600.0, mark_in=7.5, mark_out=3500.0, autotrim_done=1)
+        db.upsert_media(pb, "B", "Películas")
+        db.update_media_meta(pb, duration=7200.0, mark_in=5.0)
+        # Simular una BD de la versión anterior (sin la bandera de limpieza).
+        db.conn.execute("DELETE FROM settings WHERE key='autotrim_removed_v45'")
+        db.conn.commit()
+        # Reabrir → la migración limpia las marcas una sola vez.
+        db2 = Database(path)
+        for row in db2.search_media("", "Películas", limit=10):
+            assert not (row["mark_in"] or 0) and not (row["mark_out"] or 0), row["path"]
+        # Un recorte manual hecho DESPUÉS de la limpieza sobrevive a reinicios.
+        db2.update_media_meta(pa, mark_in=12.0)
+        db3 = Database(path)
+        row = [r for r in db3.search_media("", "Películas", limit=10) if r["path"] == pa][0]
+        assert abs(float(row["mark_in"]) - 12.0) < 0.01
+    finally:
+        _sh.rmtree(tmp, ignore_errors=True)
 
 
 if __name__ == "__main__":
