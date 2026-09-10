@@ -20,6 +20,10 @@ from .ndi_sender import NDISender, logo_suppressed_for_category
 log = logger.get("rtmp")
 CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
+# v24.0.2.35: línea de progreso de FFmpeg (-stats): "time=HH:MM:SS.ms".
+_PROGRESS_RE = re.compile(r"time=(\d+):(\d+):(\d+(?:\.\d+)?)")
+
+
 def logo_safe_area_43(width, height):
     """Devuelve los límites horizontales del área 4:3 dentro de la salida.
 
@@ -124,6 +128,13 @@ class OutputWorker(QThread):
         # de drift compara el offset ESTÁTICO contra la posición DINÁMICA de
         # mpv, y nunca converge.
         self._clip_emit_started = 0.0
+        # v24.0.2.35: posición REAL emitida leída del propio FFmpeg (-stats,
+        # línea "time="). La estimación por reloj de pared contaba la
+        # latencia de arranque (abrir el archivo por red + conectar al RTMP,
+        # 7-9 s en VPS con almacenamiento lento) como si fuera contenido
+        # emitido, y el watcher de drift reiniciaba FFmpeg en bucle.
+        self._out_time = -1.0
+        self._out_time_at = 0.0
 
     @staticmethod
     def _norm_items(items):
@@ -302,7 +313,10 @@ class OutputWorker(QThread):
         if subtitle_burn and sid is not None and sid >= 0:
             vf.insert(0, f"subtitles='{_ffmpeg_filter_path(source)}':si={sid}")
         gop = int(round(float(self.fps) * 2))
-        cmd = [self.ffmpeg, "-hide_banner", "-loglevel", "warning", "-nostdin", "-re"]
+        # v24.0.2.35: -stats hace que FFmpeg reporte su posición real
+        # ("time=") aunque el loglevel sea warning; el watcher de drift la
+        # usa en lugar de estimar por reloj de pared.
+        cmd = [self.ffmpeg, "-hide_banner", "-loglevel", "warning", "-stats", "-nostdin", "-re"]
         if source_offset > 0:
             # offset es relativo al corte de playlist; FFmpeg debe buscar en
             # la posición absoluta mark-in + offset dentro del archivo.
@@ -343,10 +357,11 @@ class OutputWorker(QThread):
             cmd += ["-map", "0:v:0", "-map", amap, "-vf", ",".join(vf)]
         cmd += ["-sn", "-dn", "-map_metadata", "-1", "-map_chapters", "-1", "-c:v", codec,
                 "-b:v", f"{self.bitrate}k", "-maxrate", f"{self.bitrate}k", "-bufsize", f"{self.bitrate * 2}k",
-                "-g", str(gop), "-keyint_min", str(gop), "-sc_threshold", "0",
+                "-g", str(gop), "-keyint_min", str(gop),
                 "-pix_fmt", "yuv420p", "-r", str(self.fps)]
         if codec == "libx264":
-            cmd += ["-preset", "veryfast", "-profile:v", "high", "-bf", "2", "-x264-params", "nal-hrd=cbr:force-cfr=1"]
+            cmd += ["-preset", "veryfast", "-profile:v", "high", "-bf", "2", "-sc_threshold", "0",
+                    "-x264-params", "nal-hrd=cbr:force-cfr=1"]
         elif codec == "h264_nvenc":
             cmd += ["-preset", "p4", "-tune", "ll", "-rc", "cbr", "-profile:v", "high", "-bf", "2"]
         elif codec == "h264_qsv":
@@ -493,23 +508,29 @@ class OutputWorker(QThread):
 
     @property
     def current_position(self):
-        """v22.2.2: posición estimada actual del FFmpeg (en segundos dentro
-        del clip que se está emitiendo). Se calcula como
-        current_offset + (now - clip_emit_started).
+        """v24.0.2.35: posición REAL del FFmpeg (segundos dentro del clip).
 
-        Esto es lo que el watcher de drift del playout local debe comparar
-        contra self.player._time (la posición actual de mpv local).
+        Se lee de la línea ``time=`` que FFmpeg reporta con ``-stats``:
+        ``current_offset + out_time``. Mientras el proceso está calentando
+        (todavía no emitió su primer frame medible — abrir el archivo por
+        red y conectar al RTMP puede tardar varios segundos) devuelve
+        **-1.0** para que el watcher de drift NO compare contra una
+        estimación inflada: la versión anterior usaba el reloj de pared y
+        contaba esa latencia de arranque como drift, reiniciando FFmpeg en
+        bucle cada ~13 s en VPS con almacenamiento lento.
 
-        Si el FFmpeg no está corriendo, devuelve current_offset sin
-        acumular tiempo (no tiene sentido).
+        Si el FFmpeg no está corriendo, devuelve current_offset.
         """
         with self._lock:
             offset = float(getattr(self, "_current_offset", 0.0) or 0.0)
-            started = float(getattr(self, "_clip_emit_started", 0.0) or 0.0)
+            out_time = float(getattr(self, "_out_time", -1.0))
+            measured_at = float(getattr(self, "_out_time_at", 0.0) or 0.0)
             proc = getattr(self, "proc", None)
-        if not proc or proc.poll() is not None or started <= 0:
+        if not proc or proc.poll() is not None:
             return offset
-        return offset + max(0.0, time.time() - started)
+        if measured_at <= 0 or out_time < 0:
+            return -1.0  # calentando: sin medición real todavía
+        return offset + max(0.0, out_time)
 
     NOISE = ("Immediate exit requested", "Last message repeated", "Error muxing a packet", "Error writing trailer",
              "Error closing file", "Terminating thread", "Error submitting a packet")
@@ -519,6 +540,17 @@ class OutputWorker(QThread):
             for line in proc.stderr:
                 line = line.rstrip()
                 if not line:
+                    continue
+                # v24.0.2.35: la línea de progreso (-stats) aporta la posición
+                # real; se registra y no se repite en el log de la interfaz.
+                m = _PROGRESS_RE.search(line)
+                if m and ("frame=" in line or "speed=" in line):
+                    try:
+                        self._out_time = (int(m.group(1)) * 3600.0 + int(m.group(2)) * 60.0
+                                          + float(m.group(3)))
+                        self._out_time_at = time.time()
+                    except (ValueError, IndexError):
+                        pass
                     continue
                 if any(n in line for n in self.NOISE):     # ruido normal al cortar FFmpeg para saltar de evento
                     continue
@@ -587,6 +619,9 @@ class OutputWorker(QThread):
                     # de posición usa este timestamp (no _clip_started) para
                     # descontar el tiempo de arranque de FFmpeg.
                     self._clip_emit_started = time.time()
+                    # v24.0.2.35: nueva medición real para este proceso.
+                    self._out_time = -1.0
+                    self._out_time_at = 0.0
                     proc = self.proc
                 if first:
                     self.state.emit(True, f"{self.protocol} ON AIR • {label} • {self.resolution}@{self.fps} • {self.bitrate} kbps")
@@ -904,10 +939,13 @@ class MultiOutputManager(QObject):
 
     @property
     def current_position(self):
+        # v24.0.2.35: -1 mientras todos los workers calientan (arranque).
         for worker in self.workers:
             if worker.isRunning():
-                return worker.current_position
-        return 0.0
+                position = worker.current_position
+                if position >= 0:
+                    return position
+        return -1.0 if self.workers else 0.0
 
     @property
     def current_index(self):

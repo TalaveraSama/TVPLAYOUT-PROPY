@@ -244,6 +244,12 @@ class MainWindow(QMainWindow):
         self._rtmp_drift_threshold = 6.0
         self._rtmp_drift_bad_count = 0
         self._rtmp_drift_last_restart = 0.0
+        # v24.0.2.35: gap de arranque del clip (latencia normal de FFmpeg al
+        # abrir el archivo y conectar) que se descuenta del drift. Sin esto,
+        # un VPS con almacenamiento de red lento reiniciaba FFmpeg en bucle.
+        self._rtmp_drift_baseline = None
+        self._rtmp_drift_clip = None
+        self._rtmp_drift_had_unknown = False
         self._rtmp_drift_timer = QTimer(self)
         self._rtmp_drift_timer.setInterval(2000)
         self._rtmp_drift_timer.timeout.connect(self._rtmp_check_drift)
@@ -2257,10 +2263,11 @@ class MainWindow(QMainWindow):
         """v22.2.2: detecta desincronización entre el playout local y el RTMP
         y la corrige reiniciando FFmpeg con el offset correcto.
 
-        Compara la posición DINÁMICA de mpv contra la posición estimada
-        DINÁMICA del FFmpeg (current_offset + tiempo desde que arrancó).
-        Esto es lo correcto: el offset estático solo no representa la
-        posición actual del FFmpeg (que avanza con el reloj).
+        Compara la posición de mpv contra la posición REAL del FFmpeg
+        (current_position, medido con -stats desde v24.0.2.35) y descuenta
+        el gap de arranque del clip: sólo un gap que CRECE respecto a esa
+        línea base es drift real (encoder lento o entrada que no da
+        abasto).
 
         El RTMP se desfasa progresivamente porque FFmpeg re-encodea
         (latencia acumulada). Si la diferencia supera el umbral, llamamos
@@ -2286,13 +2293,42 @@ class MainWindow(QMainWindow):
         # se queda en 0 y se genera un loop de drift infinito. elapsed
         # estima la posición con el reloj de pared como fallback.
         mpv_time = float(self.ctrl.elapsed or 0.0)
-        # Posición estimada actual del FFmpeg (avanza con el reloj desde
-        # que arrancó el clip). current_position se calcula internamente
-        # como current_offset + (now - clip_emit_started).
-        ffmpeg_pos = float(self.output.current_position or 0.0)
+        # v24.0.2.35: posición REAL del FFmpeg, leída de su propia línea
+        # "time=" (-stats). Antes se estimaba con el reloj de pared desde el
+        # Popen, lo que contaba la latencia de arranque (abrir el archivo
+        # por red + conectar al RTMP: 7-9 s en un VPS con disco de red) como
+        # si fuera contenido emitido, y este watcher reiniciaba FFmpeg en
+        # bucle cada ~13 s congelando la salida.
+        ffmpeg_pos = float(self.output.current_position)
+        if ffmpeg_pos < 0:
+            # FFmpeg calentando (sin frames medidos todavía): no comparar.
+            self._rtmp_drift_had_unknown = True
+            return
+        clip = getattr(self.output, "current_index", -1)
+        if clip != self._rtmp_drift_clip:
+            # Clip nuevo: nueva línea base de arranque.
+            self._rtmp_drift_clip = clip
+            self._rtmp_drift_baseline = None
+            self._rtmp_drift_bad_count = 0
+        elif self._rtmp_drift_had_unknown:
+            # El proceso se reinició dentro del mismo clip (salto/realineo):
+            # la medición anterior ya no aplica.
+            self._rtmp_drift_baseline = None
+            self._rtmp_drift_bad_count = 0
+        self._rtmp_drift_had_unknown = False
+        if self._rtmp_drift_baseline is None:
+            # Primer frame medido del clip: el gap frente al monitor local
+            # (latencia de arranque) es CONSTANTE y saludable; se descuenta
+            # de las mediciones siguientes. Sólo un gap que CRECE es drift
+            # real (encoder lento o entrada que no da abasto).
+            self._rtmp_drift_baseline = mpv_time - ffmpeg_pos
+            self._rtmp_drift_bad_count = 0
+            log.info("RTMP en vivo • mpv=%.2fs, ffmpeg=%.2fs, gap de arranque %.2fs",
+                     mpv_time, ffmpeg_pos, self._rtmp_drift_baseline)
+            return
         # Dos lecturas consecutivas y enfriamiento: una reconexión normal de
         # 1–3 segundos no debe convertirse en un bucle que mate RTMP.
-        drift = abs(mpv_time - ffmpeg_pos)
+        drift = abs((mpv_time - ffmpeg_pos) - self._rtmp_drift_baseline)
         now = time.time()
         if drift >= self._rtmp_drift_threshold:
             self._rtmp_drift_bad_count += 1
@@ -2300,11 +2336,12 @@ class MainWindow(QMainWindow):
             self._rtmp_drift_bad_count = 0
         if self._rtmp_drift_bad_count < 2 or now - self._rtmp_drift_last_restart < 12.0:
             return
-        log.info("RTMP drift %.2fs (mpv=%.2fs, ffmpeg_est=%.2fs) — realineando",
-                 drift, mpv_time, ffmpeg_pos)
+        log.info("RTMP drift %.2fs (mpv=%.2fs, ffmpeg=%.2fs, base=%.2fs) — realineando",
+                 drift, mpv_time, ffmpeg_pos, self._rtmp_drift_baseline)
         self.output.seek_to(self.ctrl.onair, mpv_time)
         self._rtmp_drift_bad_count = 0
         self._rtmp_drift_last_restart = now
+        self._rtmp_drift_baseline = None
         # Suspender el watcher mientras FFmpeg reconecta.
         self._rtmp_drift_suspend_until = now + 8.0
 

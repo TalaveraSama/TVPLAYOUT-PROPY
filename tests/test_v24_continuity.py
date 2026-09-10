@@ -610,6 +610,132 @@ def test_runtime_root_points_to_exe_dir_when_frozen():
         assert str(cfg.ROOT) == REPO
 
 
+def test_rtmp_drift_uses_real_ffmpeg_position_not_wall_clock():
+    """v24.0.2.35: la posición de FFmpeg se mide con -stats, no se estima.
+
+    La estimación por reloj de pared contaba la latencia de arranque (abrir
+    el archivo por red + conectar al RTMP: 7-9 s en un VPS lento) como
+    contenido emitido y el watcher reiniciaba FFmpeg en bucle cada ~13 s.
+    """
+    output = _read("app", "output.py")
+    main = _read("app", "main_window.py")
+    assert '"-stats"' in output and "_PROGRESS_RE" in output
+    assert "time=(\\d+):(\\d+):(\\d+(?:\\.\\d+)?)" in output
+    assert "return -1.0  # calentando: sin medición real todavía" in output
+    assert "return -1.0 if self.workers else 0.0" in output
+    # El watcher no compara a ciegas durante el arranque y descuenta el gap.
+    assert "if ffmpeg_pos < 0:" in main
+    assert "self._rtmp_drift_baseline = mpv_time - ffmpeg_pos" in main
+    assert "drift = abs((mpv_time - ffmpeg_pos) - self._rtmp_drift_baseline)" in main
+    # sc_threshold solo aporta algo a x264; en AMF/NVENC sólo generaba ruido.
+    assert output.count('"-sc_threshold", "0"') == 1
+
+
+def test_progress_line_parsing_and_current_position():
+    """Runtime: _drain_stderr captura time= y current_position lo refleja."""
+    if _qt_app() is None:
+        return
+    from app.output import OutputWorker
+
+    class _FakeStderr:
+        lines = [
+            "frame=  100 fps= 25 q=28.0 size=    512kB time=00:00:04.00 bitrate=1049.6kbits/s speed=1x\r",
+            "frame=  150 fps= 25 q=28.0 size=    768kB time=00:00:06.00 bitrate=1049.6kbits/s speed=1x\r",
+            "[out#0/flv @ 0x1] Codec AVOption sc_threshold has not been used\n",
+        ]
+        def __iter__(self):
+            return iter(self.lines)
+
+    class _FakeProc:
+        stderr = _FakeStderr()
+        def poll(self):
+            return None
+
+    worker = OutputWorker("ffmpeg", [], "rtmp://x/live", "1920x1080", "29.97", "AUTO", 6000)
+    worker._current_offset = 12.0
+    worker.proc = _FakeProc()
+    worker._drain_stderr(worker.proc, [])
+    assert abs(worker._out_time - 6.0) < 0.001, worker._out_time
+    assert abs(worker.current_position - 18.0) < 0.001  # 12.0 + 6.0 reales
+    # Sin medición todavía (calentando): -1, nunca una estimación inflada.
+    worker._out_time = -1.0
+    worker._out_time_at = 0.0
+    assert worker.current_position == -1.0
+
+
+def test_drift_watcher_tolerates_startup_gap_and_catches_real_stall():
+    """Runtime: el gap de arranque no es drift; un gap que crece sí lo es."""
+    if _qt_app() is None:
+        return
+    from app.main_window import MainWindow
+
+    class _Ctrl:
+        is_on_air = True
+        paused = False
+        elapsed = 0.0
+        onair = 0
+
+    class _Out:
+        def __init__(self):
+            self.seeks = []
+            self._position = -1.0
+            self.index = 0
+        @property
+        def current_position(self):
+            return self._position
+        @current_position.setter
+        def current_position(self, value):
+            self._position = float(value)
+        def isRunning(self):
+            return True
+        has_active_process = True
+        def seek_to(self, index, offset):
+            self.seeks.append((index, offset))
+
+    mw = MainWindow.__new__(MainWindow)
+    mw.output = _Out()
+    mw.ctrl = _Ctrl()
+    mw._rtmp_drift_threshold = 6.0
+    mw._rtmp_drift_bad_count = 0
+    mw._rtmp_drift_last_restart = 0.0
+    mw._rtmp_drift_baseline = None
+    mw._rtmp_drift_clip = None
+    mw._rtmp_drift_had_unknown = False
+    mw._rtmp_drift_suspend_until = 0.0
+
+    # A) Calentando (VPS abriendo el archivo por red): no compara ni realinea.
+    mw.ctrl.elapsed = 8.0
+    mw.output.current_position = -1.0
+    for _ in range(5):
+        mw._rtmp_check_drift()
+    assert mw.output.seeks == []
+
+    # B) Primer frame medido: fija el gap de arranque como línea base.
+    mw.ctrl.elapsed = 10.0
+    mw.output.current_position = 2.0   # 8 s detrás del monitor local (arranque lento)
+    mw._rtmp_check_drift()
+    assert mw._rtmp_drift_baseline == 8.0
+    assert mw.output.seeks == []
+
+    # C) Gap constante = salida estable retrasada: NUNCA realinea
+    #    (la versión anterior reiniciaba FFmpeg cada ~13 s en este punto).
+    for t in range(12, 40, 2):
+        mw.ctrl.elapsed = float(t)
+        mw.output.current_position = float(t - 8)
+        mw._rtmp_check_drift()
+    assert mw.output.seeks == [], "un gap de arranque constante no es drift"
+
+    # D) El gap CRECE (entrada que no da abasto): realigna una sola vez.
+    mw.ctrl.elapsed = 60.0
+    mw.output.current_position = 30.0   # el gap pasó de 8 a 30 s
+    mw._rtmp_check_drift()
+    mw._rtmp_check_drift()
+    assert len(mw.output.seeks) == 1, mw.output.seeks
+    # Tras realinear queda suspendido: no bucle inmediato.
+    mw._rtmp_check_drift()
+    assert len(mw.output.seeks) == 1
+
+
 if __name__ == "__main__":
     tests = [(name, fn) for name, fn in globals().items() if name.startswith("test_") and callable(fn)]
     failed = 0
