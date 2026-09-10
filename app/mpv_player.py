@@ -42,29 +42,47 @@ class _PipeConn:
         self._win = os.name == "nt"
         if self._win:
             import _winapi  # noqa: WPS433
-            from multiprocessing.connection import PipeConnection  # type: ignore
-            handle = _winapi.CreateFile(path, _winapi.GENERIC_READ | _winapi.GENERIC_WRITE, 0, _winapi.NULL,
-                                        _winapi.OPEN_EXISTING, _winapi.FILE_FLAG_OVERLAPPED, _winapi.NULL)
-            self._conn = PipeConnection(handle)
+            # mpv crea el named pipe de --input-ipc-server en modo BYTE
+            # (stream). La versión anterior lo envolvía en
+            # multiprocessing.connection.PipeConnection, que asume modo
+            # MESSAGE: sus recv_bytes() nunca entregaban el flujo de
+            # eventos JSON de mpv (time-pos/duration/file-loaded/end-file
+            # y el VU quedaban mudos y el playout avanzaba a ciegas con
+            # el watchdog). Abrimos el handle SÍNCRONO (sin
+            # FILE_FLAG_OVERLAPPED) y hacemos ReadFile/WriteFile
+            # bloqueantes directos; el lector arma las líneas JSON
+            # delimitadas por '\n' en _read_loop.
+            self._winapi = _winapi
+            self._handle = _winapi.CreateFile(
+                path, _winapi.GENERIC_READ | _winapi.GENERIC_WRITE, 0, _winapi.NULL,
+                _winapi.OPEN_EXISTING, 0, _winapi.NULL)
         else:
             self._sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             self._sock.connect(path)
 
     def send(self, data: bytes):
         if self._win:
-            self._conn.send_bytes(data)
+            mv = memoryview(data)
+            while mv:
+                n, err = self._winapi.WriteFile(self._handle, mv)
+                if err or not n:
+                    raise OSError(f"WriteFile en el pipe falló (err={err}, escritos={n})")
+                mv = mv[n:]
         else:
             self._sock.sendall(data)
 
     def recv(self) -> bytes:
         if self._win:
-            return self._conn.recv_bytes(65536)
+            # Handle síncrono: ReadFile bloquea hasta que hay datos.
+            # Lanza OSError (ERROR_BROKEN_PIPE) cuando mpv cierra el pipe.
+            data, _err = self._winapi.ReadFile(self._handle, 65536)
+            return data
         return self._sock.recv(65536)
 
     def close(self):
         try:
             if self._win:
-                self._conn.close()
+                self._winapi.CloseHandle(self._handle)
             else:
                 try:
                     self._sock.shutdown(socket.SHUT_RDWR)
@@ -223,6 +241,11 @@ class MPVPlayer(QObject):
                 return _PipeConn(self.ipc_path)
             except OSError:
                 time.sleep(0.05)
+            except Exception as e:  # noqa: BLE001
+                # cualquier fallo inesperado abriendo el pipe no debe
+                # tumbar la app: se degrada a "MPV no conectado"
+                log.error("IPC _PipeConn falló de forma inesperada: %s", e)
+                return None
         return None
 
     def _attach(self, conn):

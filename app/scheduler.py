@@ -2,6 +2,8 @@
 
 V22.1: sincronización al arrancar (catch-up), deduplicación por período y
 validación de día del mes (incluye soporte para 29/30/31 en meses cortos).
+Una regla diaria genera la playlist una vez por fecha; la continuidad puede
+repetirla con Loop y reemplazarla con la nueva lista al llegar el siguiente día.
 """
 from datetime import datetime, timedelta
 import calendar
@@ -104,10 +106,17 @@ class SchedulerService(QObject):
         if not self.running:
             return
         now = datetime.now()
-        # Si la hora actual no matchea con ninguna regla, no hay nada que hacer.
-        current_hhmm = now.strftime("%H:%M")
+        # Generar las reglas del día cuya hora ya llegó, aunque la aplicación
+        # haya arrancado después de la hora exacta.
         for s in self.db.schedules(True):
-            if (s["start_time"] or "")[:5] != current_hhmm:
+            try:
+                hour, minute = [int(x) for x in (s["start_time"] or "00:00")[:5].split(":")]
+                scheduled_today = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            except (TypeError, ValueError):
+                continue
+            # Si la aplicación arranca después de la hora programada, generar
+            # también la lista diaria pendiente. No esperamos al día siguiente.
+            if scheduled_today > now:
                 continue
             if not self.matches_day(s, now):
                 continue

@@ -31,7 +31,13 @@ CREATE TABLE IF NOT EXISTS media(
     height INTEGER DEFAULT 0,
     fps REAL DEFAULT 0,
     video_codec TEXT DEFAULT '',
-    metadata_ok INTEGER DEFAULT 0
+    metadata_ok INTEGER DEFAULT 0,
+    tmdb_id INTEGER DEFAULT 0,
+    tmdb_title TEXT DEFAULT '',
+    tmdb_year TEXT DEFAULT '',
+    tmdb_overview TEXT DEFAULT '',
+    tmdb_poster TEXT DEFAULT '',
+    tmdb_backdrop TEXT DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS playlists(
     id INTEGER PRIMARY KEY,
@@ -88,6 +94,23 @@ DEFAULT_CATEGORIES = ["Películas", "Series", "Infantil", "Documentales", "Músi
 CURRENT_PLAYLIST = "__current__"
 
 
+def _parse_air_stamp(value):
+    """v24.0.2.43: texto ISO → datetime (o None) para aired_at."""
+    try:
+        return datetime.fromisoformat(str(value)) if value else None
+    except ValueError:
+        return None
+
+
+def _air_stamp(value):
+    """v24.0.2.43: datetime → texto ISO (columna aired_at de playlist_items)."""
+    if not value:
+        return ""
+    if isinstance(value, datetime):
+        return value.isoformat(sep=" ", timespec="seconds")
+    return str(value)
+
+
 class DB:
     def __init__(self, path):
         self.path = str(path)
@@ -117,6 +140,12 @@ class DB:
             ("category", "TEXT DEFAULT ''"),
             ("fixed_time", "TEXT DEFAULT ''"),
             ("duration", "REAL DEFAULT 0"),
+            ("source_duration", "REAL DEFAULT 0"),
+            ("mark_in", "REAL DEFAULT 0"),
+            ("mark_out", "REAL DEFAULT 0"),
+            # v24.0.2.43: lo emitido sobrevive al reinicio (continuidad 24/7).
+            ("status", "TEXT DEFAULT ''"),
+            ("aired_at", "TEXT DEFAULT ''"),
         ]:
             if name not in pi:
                 self.conn.execute(f"ALTER TABLE playlist_items ADD COLUMN {name} {ddl}")
@@ -126,9 +155,33 @@ class DB:
             ("tracks", "TEXT DEFAULT ''"),
             ("thumb", "TEXT DEFAULT ''"),
             ("probe_error", "TEXT DEFAULT ''"),
+            ("tmdb_id", "INTEGER DEFAULT 0"),
+            ("tmdb_title", "TEXT DEFAULT ''"),
+            ("tmdb_year", "TEXT DEFAULT ''"),
+            ("tmdb_overview", "TEXT DEFAULT ''"),
+            ("tmdb_poster", "TEXT DEFAULT ''"),
+            ("tmdb_backdrop", "TEXT DEFAULT ''"),
+            ("mark_in", "REAL DEFAULT 0"),
+            ("mark_out", "REAL DEFAULT 0"),
+            # v24.0.2.36: legado del auto-recorte (eliminado en v24.0.2.45).
+            # La columna se conserva para no romper bases antiguas.
+            ("autotrim_done", "INTEGER DEFAULT 0"),
         ]:
             if name not in m:
                 self.conn.execute(f"ALTER TABLE media ADD COLUMN {name} {ddl}")
+        # v24.0.2.45: el auto-recorte se eliminó por completo (competía con la
+        # emisión leyendo la biblioteca por red). Se limpian UNA sola vez las
+        # marcas que dejó —en biblioteca y en las playlists guardadas, que
+        # heredaban y persistían los recortes— para que las películas vuelvan
+        # a emitirse completas. Los recortes manuales de «Editar clip» siguen
+        # disponibles; los hechos a partir de ahora no se vuelven a tocar.
+        if self.get_setting("autotrim_removed_v45", None) is None:
+            self.conn.execute("UPDATE media SET mark_in=0, mark_out=0, autotrim_done=0")
+            self.conn.execute(
+                "UPDATE playlist_items SET mark_in=0, mark_out=0,"
+                " duration=CASE WHEN source_duration>0 THEN source_duration ELSE duration END")
+            self.conn.commit()
+            self.set_setting("autotrim_removed_v45", 1)
 
     # -------------------------------------------------------------- settings
     def get_setting(self, key, default=None):
@@ -264,21 +317,58 @@ class DB:
         with self._lock:
             return self.conn.execute("SELECT * FROM media WHERE path=?", (str(path),)).fetchone()
 
-    def unprobed_media(self, limit=200):
+    def unprobed_media(self, limit=200, paths=None):
         with self._lock:
+            args = []
+            where = ["metadata_ok=0", "(probe_error='' OR probe_error IS NULL)"]
+            if paths is not None:
+                paths = [str(p) for p in paths if p]
+                if not paths:
+                    return []
+                where.append("path IN (" + ",".join("?" for _ in paths) + ")")
+                args.extend(paths)
+            args.append(int(limit))
             return self.conn.execute(
-                "SELECT * FROM media WHERE metadata_ok=0 AND (probe_error='' OR probe_error IS NULL) ORDER BY id LIMIT ?",
-                (int(limit),)).fetchall()
+                "SELECT * FROM media WHERE " + " AND ".join(where) + " ORDER BY id LIMIT ?",
+                args).fetchall()
+
+    def reset_probe_paths(self, paths):
+        paths = [str(p) for p in paths if p]
+        if not paths:
+            return
+        with self._lock:
+            marks = ",".join("?" for _ in paths)
+            self.conn.execute(f"UPDATE media SET metadata_ok=0, probe_error='' WHERE path IN ({marks})", paths)
+            self.conn.commit()
 
     def update_media_meta(self, path, **fields):
         allowed = {"duration", "width", "height", "fps", "video_codec", "audio_codec", "tracks",
-                   "thumb", "metadata_ok", "probe_error", "title", "category"}
+                   "thumb", "metadata_ok", "probe_error", "title", "category",
+                   "mark_in", "mark_out", "autotrim_done"}
         cols = [(k, v) for k, v in fields.items() if k in allowed]
         if not cols:
             return
         with self._lock:
             sql = "UPDATE media SET " + ", ".join(f"{k}=?" for k, _ in cols) + " WHERE path=?"
             self.conn.execute(sql, [json.dumps(v) if isinstance(v, (list, dict)) else v for _, v in cols] + [str(path)])
+            self.conn.commit()
+
+    def update_tmdb_metadata(self, path, metadata):
+        """Guarda la ficha TMDB y sus imágenes descargadas para la biblioteca."""
+        metadata = metadata or {}
+        fields = {
+            "tmdb_id": int(metadata.get("id") or 0),
+            "tmdb_title": str(metadata.get("title") or ""),
+            "tmdb_year": str(metadata.get("year") or ""),
+            "tmdb_overview": str(metadata.get("overview") or ""),
+            "tmdb_poster": str(metadata.get("poster_file") or ""),
+            "tmdb_backdrop": str(metadata.get("backdrop_file") or ""),
+        }
+        with self._lock:
+            self.conn.execute("""UPDATE media SET tmdb_id=?, tmdb_title=?, tmdb_year=?,
+                               tmdb_overview=?, tmdb_poster=?, tmdb_backdrop=? WHERE path=?""",
+                              (fields["tmdb_id"], fields["tmdb_title"], fields["tmdb_year"],
+                               fields["tmdb_overview"], fields["tmdb_poster"], fields["tmdb_backdrop"], str(path)))
             self.conn.commit()
 
     def set_media_category(self, path, category):
@@ -336,11 +426,15 @@ class DB:
             pid = self.conn.execute("SELECT id FROM playlists WHERE name=?", (name,)).fetchone()[0]
             self.conn.execute("DELETE FROM playlist_items WHERE playlist_id=?", (pid,))
             self.conn.executemany(
-                """INSERT INTO playlist_items(playlist_id,media_id,position,audio_lang,subtitle_lang,path,title,category,fixed_time,duration)
-                   VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                """INSERT INTO playlist_items(playlist_id,media_id,position,audio_lang,subtitle_lang,path,title,category,fixed_time,duration,source_duration,mark_in,mark_out,status,aired_at)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 [(pid, int(it.get("media_id") or 0), pos, it.get("audio_lang", "") or "", it.get("subtitle_lang", "") or "",
                   it.get("path", ""), it.get("title", ""), it.get("category", ""), it.get("fixed_time", "") or "",
-                  float(it.get("duration") or 0)) for pos, it in enumerate(items, 1)])
+                  float(it.get("duration") or 0), float(it.get("source_duration") or it.get("duration") or 0),
+                  max(0.0, float(it.get("mark_in") or 0)), max(0.0, float(it.get("mark_out") or 0)),
+                  # v24.0.2.43: estado de emisión y hora de inicio al aire.
+                  str(it.get("status") or ""), _air_stamp(it.get("aired_at")))
+                 for pos, it in enumerate(items, 1)])
             self.conn.commit()
             return pid
 
@@ -358,19 +452,36 @@ class DB:
                     media = self.conn.execute("SELECT * FROM media WHERE id=?", (d["media_id"],)).fetchone()
                 if media is None and d.get("path"):
                     media = self.conn.execute("SELECT * FROM media WHERE path=?", (d["path"],)).fetchone()
+                source_duration = (d.get("source_duration") or
+                                   (media["duration"] if media and media["duration"] else 0) or
+                                   d.get("duration") or 0)
                 item = {
                     "media_id": media["id"] if media else d.get("media_id"),
                     "path": (media["path"] if media else d.get("path")) or "",
                     "title": d.get("title") or (media["title"] if media else "") or Path(d.get("path") or "").stem,
                     "category": d.get("category") or (media["category"] if media else "") or "Otros",
-                    "duration": (media["duration"] if media and media["duration"] else d.get("duration")) or 0,
+                    "duration": d.get("duration") or source_duration,
+                    "source_duration": source_duration,
+                    "mark_in": max(0.0, float(d.get("mark_in") or 0)),
+                    "mark_out": max(0.0, float(d.get("mark_out") or 0)),
                     "audio_lang": d.get("audio_lang") or "",
                     "subtitle_lang": d.get("subtitle_lang") or "",
                     "fixed_time": d.get("fixed_time") or "",
+                    # v24.0.2.43: continuidad al reiniciar.
+                    "status": d.get("status") or "",
+                    "aired_at": _parse_air_stamp(d.get("aired_at")),
                 }
                 if media:
-                    for k in ("width", "height", "fps", "video_codec", "audio_codec", "tracks", "thumb"):
+                    for k in ("width", "height", "fps", "video_codec", "audio_codec", "tracks", "thumb",
+                              "tmdb_poster", "tmdb_backdrop", "tmdb_title", "tmdb_year", "tmdb_overview"):
                         item[k] = media[k] if k in media.keys() else ""
+                    # v24.0.2.30: los recortes de biblioteca (Editar clip)
+                    # se heredan si el evento no tiene propios.
+                    if item["mark_in"] <= 0 and "mark_in" in media.keys():
+                        item["mark_in"] = max(0.0, float(media["mark_in"] or 0))
+                    if item["mark_out"] <= 0 and "mark_out" in media.keys():
+                        item["mark_out"] = max(0.0, float(media["mark_out"] or 0))
+                    item["duration"] = trim_effective(item)
                 if item["path"]:
                     out.append(item)
             return out
@@ -476,3 +587,19 @@ class DB:
             self.conn.execute("UPDATE air_log SET status='INTERRUMPIDO', ended_at=? WHERE ended_at='' OR ended_at IS NULL",
                               (datetime.now().isoformat(timespec="seconds"),))
             self.conn.commit()
+
+
+def trim_effective(item):
+    """Duración efectiva de un item de playlist aplicando sus recortes."""
+    source = float(item.get("source_duration") or item.get("duration") or 0)
+    start = max(0.0, float(item.get("mark_in") or 0))
+    end = float(item.get("mark_out") or 0)
+    if source > 0:
+        start = min(start, source)
+        if end > 0:
+            end = min(end, source)
+    if end <= 0:
+        end = source
+    if end < start:
+        end = start
+    return max(0.0, end - start)

@@ -5,13 +5,13 @@ from datetime import datetime
 
 from PySide6.QtCore import Qt, QTime, QDate, Signal
 from PySide6.QtGui import QColor, QBrush
-from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QGridLayout, QFormLayout, QLabel, QPushButton,
+from PySide6.QtWidgets import (QApplication, QDialog, QVBoxLayout, QHBoxLayout, QGridLayout, QFormLayout, QLabel, QPushButton,
                                QTableWidget, QTableWidgetItem, QAbstractItemView, QHeaderView, QLineEdit, QComboBox,
-                               QSpinBox, QCheckBox, QTimeEdit, QDateEdit, QMessageBox, QFileDialog, QInputDialog,
-                               QPlainTextEdit, QTabWidget, QWidget, QListWidget, QListWidgetItem, QGroupBox)
+                               QSpinBox, QDoubleSpinBox, QCheckBox, QTimeEdit, QDateEdit, QMessageBox, QFileDialog, QInputDialog,
+                               QPlainTextEdit, QTabWidget, QWidget, QListWidget, QListWidgetItem, QGroupBox, QScrollArea, QFrame)
 
 from . import logger
-from .config import (MPV_PATH, FFMPEG_PATH, FFPROBE_PATH, ROOT, RESOLUTIONS, FPS_LIST, ENCODERS, AUDIO_PREFS, SUB_PREFS,
+from .config import (MPV_PATH, VLC_PATH, FFMPEG_PATH, FFPROBE_PATH, ROOT, RESOLUTIONS, FPS_LIST, ENCODERS, AUDIO_PREFS, SUB_PREFS,
                      category_color, DB_PATH, APP_VERSION)
 from .scheduler import MODE_LABELS, DAY_LABELS
 from .widgets import fmt_tc
@@ -28,13 +28,41 @@ def _btn(text, slot=None, name=None, tip=None):
     return b
 
 
+def _note(text):
+    label = QLabel(text)
+    label.setWordWrap(True)
+    label.setMinimumWidth(0)
+    return label
+
+
 class BaseDialog(QDialog):
     def __init__(self, parent, title, w=900, h=600):
         super().__init__(parent)
         self.setWindowTitle(f"{title} — TVPlayout PRO {APP_VERSION}")
-        self.resize(w, h)
+        screen = (parent.screen() if parent is not None else None) or QApplication.primaryScreen()
+        available = screen.availableGeometry() if screen is not None else None
+        if available is not None:
+            # Respeta la resolución lógica de Windows/TV y nunca nace más
+            # grande que el área visible detrás de la barra de tareas.
+            w = min(int(w), max(480, available.width() - 32))
+            h = min(int(h), max(360, available.height() - 56))
+        self.resize(max(480, int(w)), max(360, int(h)))
+        self.setMinimumSize(480, 360)
+        self.setSizeGripEnabled(True)
         self.setModal(False)
         self.setWindowFlag(Qt.WindowMinMaxButtonsHint, True)
+        self.setWindowFlag(Qt.WindowCloseButtonHint, True)
+
+    @staticmethod
+    def scroll_page(widget):
+        """Envuelve páginas altas para que funcionen en TV/escala DPI grande."""
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll.setWidget(widget)
+        return scroll
 
 
 # ============================================================ PLAYLIST MANAGER
@@ -162,6 +190,10 @@ class PlaylistManagerDialog(BaseDialog):
                         f.write(f"#EXTINF:{int(it['duration'] or -1)},{it['title']}\n")
                         if it.get("fixed_time"):
                             f.write(f"#EXT-X-TVPLAYOUT-FIXED:{it['fixed_time']}\n")
+                        if float(it.get("mark_in") or 0) > 0:
+                            f.write(f"#EXT-X-TVPLAYOUT-MARKIN:{float(it['mark_in']):.3f}\n")
+                        if float(it.get("mark_out") or 0) > 0:
+                            f.write(f"#EXT-X-TVPLAYOUT-MARKOUT:{float(it['mark_out']):.3f}\n")
                         f.write(it["path"] + "\n")
             self.parent().statusBar().showMessage("Playlist exportada: " + path)
         except OSError as e:
@@ -181,27 +213,61 @@ class PlaylistManagerDialog(BaseDialog):
                             row = self.db.media_by_path(d["path"])
                             base = make_item(row) if row else make_item(d)
                             base["fixed_time"] = d.get("fixed_time", "") or ""
+                            base["mark_in"] = max(0.0, float(d.get("mark_in") or 0))
+                            base["mark_out"] = max(0.0, float(d.get("mark_out") or 0))
+                            if base.get("source_duration"):
+                                from .playout import trim_bounds
+                                start, end, effective = trim_bounds(base)
+                                base["mark_in"], base["mark_out"], base["duration"] = start, (end if end < base["source_duration"] else 0.0), effective
                             items.append(base)
             else:
                 title = ""
                 fixed = ""
+                m3u_duration = 0.0
+                mark_in = 0.0
+                mark_out = 0.0
                 with open(path, encoding="utf-8", errors="replace") as f:
                     for line in f:
                         line = line.strip()
                         if not line:
                             continue
                         if line.startswith("#EXTINF"):
-                            title = line.split(",", 1)[1] if "," in line else ""
+                            head, title = (line.split(",", 1) + [""])[:2] if "," in line else (line, "")
+                            try:
+                                m3u_duration = max(0.0, float(head.split(":", 1)[1]))
+                            except (ValueError, IndexError):
+                                m3u_duration = 0.0
                         elif line.startswith("#EXT-X-TVPLAYOUT-FIXED:"):
                             fixed = line.split(":", 1)[1]
+                        elif line.startswith("#EXT-X-TVPLAYOUT-MARKIN:"):
+                            try:
+                                mark_in = max(0.0, float(line.split(":", 1)[1]))
+                            except ValueError:
+                                mark_in = 0.0
+                        elif line.startswith("#EXT-X-TVPLAYOUT-MARKOUT:"):
+                            try:
+                                mark_out = max(0.0, float(line.split(":", 1)[1]))
+                            except ValueError:
+                                mark_out = 0.0
                         elif line.startswith("#"):
                             continue
                         else:
                             row = self.db.media_by_path(line)
-                            it = make_item(row) if row else make_item({"path": line, "title": title or os.path.splitext(os.path.basename(line))[0]})
+                            it = make_item(row) if row else make_item({
+                                "path": line,
+                                "title": title or os.path.splitext(os.path.basename(line))[0],
+                                "duration": m3u_duration,
+                                "source_duration": m3u_duration,
+                            })
                             it["fixed_time"] = fixed
+                            it["mark_in"] = mark_in
+                            it["mark_out"] = mark_out
+                            if it.get("source_duration"):
+                                from .playout import trim_bounds
+                                start, end, effective = trim_bounds(it)
+                                it["mark_in"], it["mark_out"], it["duration"] = start, (end if end < it["source_duration"] else 0.0), effective
                             items.append(it)
-                            title, fixed = "", ""
+                            title, fixed, m3u_duration, mark_in, mark_out = "", "", 0.0, 0.0, 0.0
         except (OSError, ValueError) as e:
             QMessageBox.critical(self, "Importar", str(e))
             return
@@ -345,7 +411,9 @@ class SchedulerDialog(BaseDialog):
         self.scheduler = scheduler
         root = QVBoxLayout(self)
         root.addWidget(QLabel("Cada regla genera una playlist automática desde una categoría y la pone AL AIRE a la hora indicada "
-                              "(también actualiza la salida RTMP si está activa)."))
+                              "(también actualiza las salidas RTMP/SRT/NDI si están activas). Una regla Diario genera una lista por fecha; "
+                              "activa Loop para repetirla al terminar y Autofill para añadir medios cuando se agote, hasta que la próxima "
+                              "generación diaria reemplace la lista."))
         self.table = QTableWidget(0, 11)
         self.table.setHorizontalHeaderLabels(["Activo", "Nombre", "Modo", "Hora", "Días", "Día mes", "Mes Q", "Categoría",
                                               "Cantidad", "Orden", "Próxima ejecución"])
@@ -740,8 +808,11 @@ class SettingsDialog(BaseDialog):
         self.burn.setChecked(bool(self.settings.get("subtitle_burn", False)))
         self.extra = QLineEdit(self.settings.get("ffmpeg_extra", ""))
         self.extra.setPlaceholderText("argumentos extra de FFmpeg (avanzado)")
-        self.autostart_rtmp = QCheckBox("Iniciar RTMP automáticamente al abrir la aplicación si hay playlist")
+        self.autostart_rtmp = QCheckBox("Iniciar salidas IP automáticamente al abrir la aplicación si hay playlist")
         self.autostart_rtmp.setChecked(bool(self.settings.get("rtmp_autostart", False)))
+        self.outputs_btn = QPushButton("Configurar destinos RTMP / SRT / NDI…")
+        self.outputs_btn.clicked.connect(parent.open_outputs)
+        f.addRow("Destinos", self.outputs_btn)
         f.addRow("URL de salida", self.rtmp)
         f.addRow("Resolución", self.res)
         f.addRow("FPS", self.fps)
@@ -751,7 +822,7 @@ class SettingsDialog(BaseDialog):
         f.addRow("", self.burn)
         f.addRow("FFmpeg extra", self.extra)
         f.addRow("", self.autostart_rtmp)
-        tabs.addTab(w, "SALIDA RTMP")
+        tabs.addTab(self.scroll_page(w), "SALIDA RTMP")
 
         # --- audio / subs / automatización
         w2 = QWidget()
@@ -767,6 +838,26 @@ class SettingsDialog(BaseDialog):
         self.hwdec.setCurrentText(self.settings.get("hwdec", "auto-safe"))
         self.audio_device = QLineEdit(self.settings.get("audio_device", ""))
         self.audio_device.setPlaceholderText("vacío = predeterminado (ej. wasapi/{guid})")
+        self.monitor_mode = QComboBox()
+        self.monitor_mode.addItem("PyAV/libav (predeterminado)", "pyav")
+        self.monitor_mode.addItem("Programa FFmpeg → reproductor externo", "program_feed")
+        # v24.0.2.37: para VPS sin monitor ni CPU de sobra: el playout avanza
+        # con el reloj de pared y sólo FFmpeg decodifica (las salidas IP).
+        self.monitor_mode.addItem("Reloj del sistema (sin decodificar — ideal VPS)", "clock")
+        self.monitor_mode.setCurrentIndex(max(0, self.monitor_mode.findData(self.settings.get("monitor_mode", "pyav"))))
+        self.monitor_player = QComboBox()
+        self.monitor_player.addItems(["VLC", "mpv", "ffplay"])
+        self.monitor_player.setCurrentText(str(self.settings.get("monitor_player", "VLC")))
+        self.monitor_player_path = QLineEdit(self.settings.get("monitor_player_path", ""))
+        self.monitor_player_path.setPlaceholderText("vlc.exe, mpv.exe o ffplay.exe")
+        self.monitor_player_browse = QPushButton("Buscar…")
+        self.monitor_player_browse.clicked.connect(self._choose_monitor_player)
+        monitor_path_row = QHBoxLayout()
+        monitor_path_row.addWidget(self.monitor_player_path, 1)
+        monitor_path_row.addWidget(self.monitor_player_browse)
+        self.monitor_feed_port = QSpinBox()
+        self.monitor_feed_port.setRange(1024, 65535)
+        self.monitor_feed_port.setValue(int(self.settings.get("monitor_feed_port", 39000)))
         self.autofill_cat = QComboBox()
         self.autofill_cat.addItem("Todas")
         self.autofill_cat.addItems(parent.db.categories())
@@ -780,24 +871,83 @@ class SettingsDialog(BaseDialog):
         self.tanda_n = QSpinBox()
         self.tanda_n.setRange(1, 20)
         self.tanda_n.setValue(int(self.settings.get("tandas_count", 2)))
+        self.midroll_enabled = QCheckBox("Activar tanda intermedia (control separado de la tanda al final)")
+        self.midroll_enabled.setChecked(bool(self.settings.get("midroll_enabled", False)))
+        self.midroll_cat = QComboBox()
+        self.midroll_cat.addItems(parent.db.categories())
+        self.midroll_cat.setCurrentText(self.settings.get("midroll_category", "Publicidad"))
+        self.midroll_interval = QSpinBox()
+        self.midroll_interval.setRange(1, 240)
+        self.midroll_interval.setSuffix(" min")
+        self.midroll_interval.setValue(max(1, int(self.settings.get("midroll_interval_minutes", 15))))
+        self.identifiers_enabled = QCheckBox("Activar identificadores en Películas y Música")
+        self.identifiers_enabled.setChecked(bool(self.settings.get("identifiers_enabled", False)))
+        self.identifier_in = QLineEdit(self.settings.get("identifier_in_path", ""))
+        self.identifier_in.setPlaceholderText("Vídeo de entrada • aproximadamente 8 segundos")
+        self.identifier_in_browse = QPushButton("Buscar…")
+        self.identifier_in_browse.clicked.connect(lambda: self._choose_identifier(self.identifier_in))
+        in_row = QHBoxLayout()
+        in_row.addWidget(self.identifier_in, 1)
+        in_row.addWidget(self.identifier_in_browse)
+        self.identifier_out = QLineEdit(self.settings.get("identifier_out_path", ""))
+        self.identifier_out.setPlaceholderText("Vídeo de salida • aproximadamente 8 segundos")
+        self.identifier_out_browse = QPushButton("Buscar…")
+        self.identifier_out_browse.clicked.connect(lambda: self._choose_identifier(self.identifier_out))
+        out_row = QHBoxLayout()
+        out_row.addWidget(self.identifier_out, 1)
+        out_row.addWidget(self.identifier_out_browse)
+        self.tmdb_enabled = QCheckBox("Mostrar tarjeta TMDB periódica para Películas")
+        self.tmdb_enabled.setChecked(bool(self.settings.get("tmdb_enabled", False)))
+        self.tmdb_key = QLineEdit(self.settings.get("tmdb_api_key", ""))
+        self.tmdb_key.setEchoMode(QLineEdit.EchoMode.Password)
+        self.tmdb_key.setPlaceholderText("API key de TMDB")
+        self.tmdb_interval = QSpinBox()
+        self.tmdb_interval.setRange(1, 240)
+        self.tmdb_interval.setSuffix(" min")
+        self.tmdb_interval.setValue(max(1, int(self.settings.get("tmdb_interval_minutes", 18))))
+        self.tmdb_duration = QSpinBox()
+        self.tmdb_duration.setRange(1, 60)
+        self.tmdb_duration.setSuffix(" s")
+        self.tmdb_duration.setValue(max(1, int(self.settings.get("tmdb_duration_seconds", 15))))
         self.restore_pl = QCheckBox("Restaurar la última playlist al abrir")
         self.restore_pl.setChecked(bool(self.settings.get("restore_playlist", True)))
         self.autoplay = QCheckBox("Poner AL AIRE automáticamente al abrir (continuidad 24/7)")
         self.autoplay.setChecked(bool(self.settings.get("autoplay", False)))
         self.probe_on_scan = QCheckBox("Analizar metadatos/miniaturas tras escanear (requiere ffprobe)")
         self.probe_on_scan.setChecked(bool(self.settings.get("probe_on_scan", True)))
+        self.ndi_disabled = QCheckBox("Deshabilitar salidas NDI temporalmente (dejar solo RTMP y SRT)")
+        self.ndi_disabled.setChecked(bool(self.settings.get("ndi_disabled", True)))
         f2.addRow("Audio preferido", self.audio)
         f2.addRow("Subtítulos preferidos", self.sub)
+        f2.addRow("", _note("Si hay un evento al aire, guardar estos valores cambia la pista en vivo; puede haber un corte IP breve."))
         f2.addRow("Decodificación HW (mpv)", self.hwdec)
         f2.addRow("Dispositivo de audio (mpv)", self.audio_device)
+        f2.addRow("Monitor de programa", self.monitor_mode)
+        f2.addRow("Reproductor monitor", self.monitor_player)
+        f2.addRow("Ejecutable monitor", monitor_path_row)
+        f2.addRow("Puerto feed local", self.monitor_feed_port)
+        f2.addRow("", _note("El modo Programa FFmpeg muestra en VLC/mpv/ffplay la misma señal codificada que sale por RTMP/SRT, incluyendo subtítulos y audio. PyAV sigue siendo el modo predeterminado."))
         f2.addRow("Autofill: categoría", self.autofill_cat)
         f2.addRow("Autofill: cantidad", self.autofill_n)
         f2.addRow("Tandas: categoría", self.tanda_cat)
         f2.addRow("Tandas: anuncios por corte", self.tanda_n)
+        f2.addRow("", self.midroll_enabled)
+        f2.addRow("Tanda intermedia: categoría", self.midroll_cat)
+        f2.addRow("Tanda intermedia: intervalo", self.midroll_interval)
+        f2.addRow("", self.identifiers_enabled)
+        f2.addRow("Identificador de entrada", in_row)
+        f2.addRow("Identificador de salida", out_row)
+        f2.addRow("", _note("Los identificadores se usan sólo en Películas y Música; no se insertan en Publicidad, filler ni slate."))
+        f2.addRow("", self.tmdb_enabled)
+        f2.addRow("TMDB API key", self.tmdb_key)
+        f2.addRow("TMDB: intervalo", self.tmdb_interval)
+        f2.addRow("TMDB: duración visible", self.tmdb_duration)
+        f2.addRow("", _note("La tarjeta combina backdrop, póster, título y año; su posición, alineación y estilo se ajustan con vista previa en Tarjeta TMDB (panel FUNCIONES). Requiere una API key de TMDB."))
         f2.addRow("", self.restore_pl)
         f2.addRow("", self.autoplay)
         f2.addRow("", self.probe_on_scan)
-        tabs.addTab(w2, "REPRODUCCIÓN / AUTOMATIZACIÓN")
+        f2.addRow("", self.ndi_disabled)
+        tabs.addTab(self.scroll_page(w2), "REPRODUCCIÓN / AUTOMATIZACIÓN")
 
         # --- sistema
         w3 = QWidget()
@@ -808,15 +958,17 @@ class SettingsDialog(BaseDialog):
             l.setTextInteractionFlags(Qt.TextSelectableByMouse)
             return l
         f3.addRow("mpv", chip(MPV_PATH))
+        f3.addRow("VLC (opcional)", chip(VLC_PATH))
         f3.addRow("ffmpeg", chip(FFMPEG_PATH))
         f3.addRow("ffprobe", chip(FFPROBE_PATH))
         f3.addRow("Base de datos", chip(str(DB_PATH)))
         f3.addRow("Carpeta del proyecto", chip(str(ROOT)))
         note = QLabel("Coloca mpv.exe en mpv-x86_64\\ y ffmpeg.exe + ffprobe.exe en la raíz del proyecto (o carpeta ffmpeg\\bin). "
-                      "También puedes definir MPV_PATH / FFMPEG_PATH en un archivo .env. Reinicia tras cambiar rutas.")
+                      "VLC es opcional: se usa como reproductor alternativo de vistas previas y del monitor de programa. "
+                      "También puedes definir MPV_PATH / FFMPEG_PATH / VLC_PATH en un archivo .env. Reinicia tras cambiar rutas.")
         note.setWordWrap(True)
         f3.addRow(note)
-        tabs.addTab(w3, "SISTEMA")
+        tabs.addTab(self.scroll_page(w3), "SISTEMA")
 
         bottom = QHBoxLayout()
         bottom.addStretch()
@@ -824,6 +976,22 @@ class SettingsDialog(BaseDialog):
         bottom.addWidget(_btn("💾 Guardar", self.accept, "primary"))
         v.addLayout(bottom)
         self.setModal(True)
+
+    def _choose_monitor_player(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Seleccionar reproductor del monitor", "",
+            "Ejecutables (*.exe);;Todos los archivos (*.*)",
+        )
+        if path:
+            self.monitor_player_path.setText(path)
+
+    def _choose_identifier(self, field):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Seleccionar identificador de aproximadamente 8 segundos", "",
+            "Vídeo (*.mp4 *.mov *.mkv *.avi *.webm *.ts);;Todos los archivos (*.*)",
+        )
+        if path:
+            field.setText(path)
 
     def values(self):
         return {
@@ -840,13 +1008,28 @@ class SettingsDialog(BaseDialog):
             "sub_pref": self.sub.currentText(),
             "hwdec": self.hwdec.currentText(),
             "audio_device": self.audio_device.text().strip(),
+            "monitor_mode": self.monitor_mode.currentData() or "pyav",
+            "monitor_player": self.monitor_player.currentText(),
+            "monitor_player_path": self.monitor_player_path.text().strip(),
+            "monitor_feed_port": self.monitor_feed_port.value(),
             "autofill_category": self.autofill_cat.currentText(),
             "autofill_count": self.autofill_n.value(),
             "tandas_category": self.tanda_cat.currentText(),
             "tandas_count": self.tanda_n.value(),
+            "midroll_enabled": self.midroll_enabled.isChecked(),
+            "midroll_category": self.midroll_cat.currentText(),
+            "midroll_interval_minutes": self.midroll_interval.value(),
+            "identifiers_enabled": self.identifiers_enabled.isChecked(),
+            "identifier_in_path": self.identifier_in.text().strip(),
+            "identifier_out_path": self.identifier_out.text().strip(),
+            "tmdb_enabled": self.tmdb_enabled.isChecked(),
+            "tmdb_api_key": self.tmdb_key.text().strip(),
+            "tmdb_interval_minutes": self.tmdb_interval.value(),
+            "tmdb_duration_seconds": self.tmdb_duration.value(),
             "restore_playlist": self.restore_pl.isChecked(),
             "autoplay": self.autoplay.isChecked(),
             "probe_on_scan": self.probe_on_scan.isChecked(),
+            "ndi_disabled": self.ndi_disabled.isChecked(),
         }
 
 
@@ -855,8 +1038,18 @@ class EditClipDialog(QDialog):
     def __init__(self, parent, item, categories):
         super().__init__(parent)
         self.setWindowTitle("Editar evento")
-        self.resize(520, 300)
+        screen = (parent.screen() if parent is not None else None) or QApplication.primaryScreen()
+        available = screen.availableGeometry() if screen is not None else None
+        width, height = 560, 430
+        if available is not None:
+            width = min(width, max(480, available.width() - 32))
+            height = min(height, max(340, available.height() - 56))
+        self.resize(width, height)
+        self.setMinimumSize(480, 340)
+        self.setSizeGripEnabled(True)
+        self.setWindowFlag(Qt.WindowMinMaxButtonsHint, True)
         self.item = item
+        self.source_duration = max(0.0, float(item.get("source_duration") or item.get("duration") or 0))
         f = QFormLayout(self)
         self.title = QLineEdit(item.get("title", ""))
         self.cat = QComboBox()
@@ -865,6 +1058,35 @@ class EditClipDialog(QDialog):
             self.cat.setCurrentText(item["category"])
         self.fixed = QLineEdit(item.get("fixed_time", ""))
         self.fixed.setPlaceholderText("HH:MM o HH:MM:SS — vacío = secuencial")
+        trim_max = max(86400.0, self.source_duration)
+        self.trim_start = QDoubleSpinBox()
+        self.trim_start.setDecimals(3)
+        self.trim_start.setRange(0.0, trim_max)
+        self.trim_start.setSingleStep(0.5)
+        self.trim_start.setSuffix(" s")
+        self.trim_start.setToolTip("Segundos que se quitarán al principio del video")
+        self.trim_start.setValue(max(0.0, min(self.source_duration, float(item.get("mark_in") or 0))))
+        self.trim_end = QDoubleSpinBox()
+        self.trim_end.setDecimals(3)
+        self.trim_end.setRange(0.0, trim_max)
+        self.trim_end.setSingleStep(0.5)
+        self.trim_end.setSuffix(" s")
+        self.trim_end.setToolTip("Segundos que se quitarán al final del video; no necesitas calcular la duración total")
+        mark_out = float(item.get("mark_out") or 0)
+        end_to_remove = max(0.0, self.source_duration - mark_out) if mark_out > 0 and self.source_duration > 0 else 0.0
+        self.trim_end.setValue(min(self.source_duration, end_to_remove))
+        self.trim_preview = QLabel()
+        self.trim_preview.setStyleSheet("color:#8fd6a3;")
+        self.trim_start.valueChanged.connect(self._update_trim_preview)
+        self.trim_end.valueChanged.connect(self._update_trim_preview)
+        reset = _btn("Restablecer corte", self._reset_trim)
+        trim_box = QHBoxLayout()
+        trim_box.addWidget(self.trim_start)
+        trim_box.addWidget(QLabel("inicio"))
+        trim_box.addWidget(self.trim_end)
+        trim_box.addWidget(QLabel("final"))
+        trim_box.addWidget(reset)
+        self._update_trim_preview()
         self.audio = QComboBox()
         self.audio.addItem("Por defecto", "")
         self.sub = QComboBox()
@@ -873,12 +1095,26 @@ class EditClipDialog(QDialog):
         for t in item.get("tracks") or []:
             label = f"#{t.get('idx', 0) + 1} {t.get('lang') or '?'} {t.get('title') or ''} ({t.get('codec', '')})".strip()
             if t.get("type") == "a":
-                self.audio.addItem(label, t.get("lang") or f"#{t.get('idx')}")
+                # Guardar el índice real evita depender de que el archivo
+                # tenga correctamente etiquetado el idioma (eng/es).
+                self.audio.addItem(label, f"#{t.get('idx')}")
             elif t.get("type") == "s":
-                self.sub.addItem(label, t.get("lang") or f"#{t.get('idx')}")
+                self.sub.addItem(label, f"#{t.get('idx')}")
         cur_a = self.audio.findData(item.get("audio_lang", ""))
+        if cur_a < 0:
+            for track in item.get("tracks") or []:
+                if (track.get("type") == "a" and item.get("audio_lang") and
+                        item.get("audio_lang").lower() in {str(track.get("lang") or "").lower(), str(track.get("title") or "").lower()}):
+                    cur_a = self.audio.findData(f"#{track.get('idx')}")
+                    break
         self.audio.setCurrentIndex(max(0, cur_a))
         cur_s = self.sub.findData(item.get("subtitle_lang", ""))
+        if cur_s < 0:
+            for track in item.get("tracks") or []:
+                if (track.get("type") == "s" and item.get("subtitle_lang") and
+                        item.get("subtitle_lang").lower() in {str(track.get("lang") or "").lower(), str(track.get("title") or "").lower()}):
+                    cur_s = self.sub.findData(f"#{track.get('idx')}")
+                    break
         self.sub.setCurrentIndex(max(0, cur_s))
         path = QLabel(item.get("path", ""))
         path.setWordWrap(True)
@@ -888,6 +1124,8 @@ class EditClipDialog(QDialog):
         info.setStyleSheet("color:#9a9a9a;")
         f.addRow("Título", self.title)
         f.addRow("Categoría", self.cat)
+        f.addRow("Recortar (segundos)", trim_box)
+        f.addRow("Resultado", self.trim_preview)
         f.addRow("Hora fija", self.fixed)
         f.addRow("Pista de audio", self.audio)
         f.addRow("Subtítulos", self.sub)
@@ -896,8 +1134,34 @@ class EditClipDialog(QDialog):
         row = QHBoxLayout()
         row.addStretch()
         row.addWidget(_btn("Cancelar", self.reject))
-        row.addWidget(_btn("Aceptar", self.accept, "primary"))
+        row.addWidget(_btn("Aceptar", self._accept, "primary"))
         f.addRow(row)
+
+    def _reset_trim(self):
+        self.trim_start.setValue(0.0)
+        self.trim_end.setValue(0.0)
+
+    def _update_trim_preview(self):
+        start = float(self.trim_start.value())
+        end = float(self.trim_end.value())
+        if self.source_duration > 0:
+            result = max(0.0, self.source_duration - start - end)
+            self.trim_preview.setText(
+                f"Original: {fmt_tc(self.source_duration)} • Resultado: {fmt_tc(result)}"
+            )
+        else:
+            self.trim_preview.setText("Duración original no disponible; escanea el archivo para validar el corte.")
+
+    def _accept(self):
+        start = float(self.trim_start.value())
+        end = float(self.trim_end.value())
+        if self.source_duration > 0 and start + end >= self.source_duration:
+            QMessageBox.warning(
+                self, "Corte",
+                "Los segundos quitados al principio y al final deben dejar al menos una fracción de video."
+            )
+            return
+        self.accept()
 
     def values(self):
         ft = self.fixed.text().strip()
@@ -908,5 +1172,133 @@ class EditClipDialog(QDialog):
                 ft = f"{h:02d}:{m:02d}" + (f":{s:02d}" if s else "")
             except (ValueError, IndexError):
                 ft = ""
+        trim_start = float(self.trim_start.value())
+        trim_end = float(self.trim_end.value())
+        # El modelo interno conserva mark-out como posición absoluta, pero la
+        # interfaz permite al operador pensar en segundos a recortar desde el
+        # final, sin calcular la duración total del video.
+        mark_out = max(0.0, self.source_duration - trim_end) if trim_end > 0 else 0.0
         return {"title": self.title.text().strip() or self.item.get("title", ""), "category": self.cat.currentText(),
-                "fixed_time": ft, "audio_lang": self.audio.currentData() or "", "subtitle_lang": self.sub.currentData() or ""}
+                "fixed_time": ft, "audio_lang": self.audio.currentData() or "", "subtitle_lang": self.sub.currentData() or "",
+                "mark_in": trim_start, "mark_out": mark_out,
+                "source_duration": self.source_duration}
+
+
+class LibraryClipDialog(QDialog):
+    """Editar un medio de la biblioteca: título, categoría y recortes.
+
+    Los recortes (mark in / mark out) se guardan en la biblioteca y se aplican
+    automáticamente cuando el medio se añade a la playlist; el archivo original
+    nunca se modifica. La interfaz usa la misma metáfora que Editar evento:
+    segundos quitados al principio y al final.
+    """
+
+    def __init__(self, parent, media, categories):
+        super().__init__(parent)
+        self.setWindowTitle("Editar clip (biblioteca)")
+        screen = (parent.screen() if parent is not None else None) or QApplication.primaryScreen()
+        available = screen.availableGeometry() if screen is not None else None
+        width, height = 540, 400
+        if available is not None:
+            width = min(int(width), max(480, available.width() - 32))
+            height = min(int(height), max(340, available.height() - 56))
+        self.resize(max(480, int(width)), max(340, int(height)))
+        self.setMinimumSize(480, 340)
+        self.setSizeGripEnabled(True)
+        self.setWindowFlag(Qt.WindowMinMaxButtonsHint, True)
+
+        m = dict(media or {})
+        self.source_duration = max(0.0, float(m.get("duration") or 0))
+        self.path = str(m.get("path") or "")
+
+        f = QFormLayout(self)
+        self.title = QLineEdit(str(m.get("title") or ""))
+        self.cat = QComboBox()
+        self.cat.setEditable(True)
+        self.cat.addItems(categories)
+        if m.get("category") in categories:
+            self.cat.setCurrentText(str(m["category"]))
+        trim_max = max(86400.0, self.source_duration)
+        mark_in = max(0.0, float(m.get("mark_in") or 0))
+        mark_out = max(0.0, float(m.get("mark_out") or 0))
+        end_removed = max(0.0, self.source_duration - mark_out) if mark_out > 0 and self.source_duration > 0 else 0.0
+        self.trim_start = QDoubleSpinBox()
+        self.trim_start.setDecimals(3)
+        self.trim_start.setRange(0.0, trim_max)
+        self.trim_start.setSingleStep(0.5)
+        self.trim_start.setSuffix(" s")
+        self.trim_start.setToolTip("Segundos que se quitarán al principio (intro, logotipos…)")
+        self.trim_start.setValue(min(self.source_duration, mark_in) if self.source_duration else mark_in)
+        self.trim_end = QDoubleSpinBox()
+        self.trim_end.setDecimals(3)
+        self.trim_end.setRange(0.0, trim_max)
+        self.trim_end.setSingleStep(0.5)
+        self.trim_end.setSuffix(" s")
+        self.trim_end.setToolTip("Segundos que se quitarán del final (créditos, cierre…)")
+        self.trim_end.setValue(min(self.source_duration, end_removed))
+        self.trim_preview = QLabel()
+        self.trim_preview.setStyleSheet("color:#8fd6a3;")
+        self.trim_start.valueChanged.connect(self._update_trim_preview)
+        self.trim_end.valueChanged.connect(self._update_trim_preview)
+        reset = _btn("Restablecer corte", self._reset_trim)
+        trim_box = QHBoxLayout()
+        trim_box.addWidget(self.trim_start)
+        trim_box.addWidget(QLabel("quitar del inicio"))
+        trim_box.addWidget(self.trim_end)
+        trim_box.addWidget(QLabel("quitar del final"))
+        trim_box.addWidget(reset)
+        path_lbl = QLabel(self.path)
+        path_lbl.setWordWrap(True)
+        path_lbl.setStyleSheet("color:#9a9a9a;")
+        dur_lbl = QLabel(f"Duración total: {fmt_tc(self.source_duration)}" +
+                         (f" • resolución {m.get('width') or '?'}x{m.get('height') or '?'}" if m.get("width") else ""))
+        dur_lbl.setStyleSheet("color:#9a9a9a;")
+        f.addRow("Título", self.title)
+        f.addRow("Categoría", self.cat)
+        f.addRow("Recorte", trim_box)
+        f.addRow("", self.trim_preview)
+        f.addRow("", dur_lbl)
+        f.addRow("Archivo", path_lbl)
+        btns = QHBoxLayout()
+        btns.addStretch()
+        cancel = QPushButton("Cancelar")
+        cancel.clicked.connect(self.reject)
+        ok = QPushButton("💾 Guardar en biblioteca")
+        ok.setObjectName("primary")
+        ok.clicked.connect(self._accept)
+        btns.addWidget(cancel)
+        btns.addWidget(ok)
+        f.addRow(btns)
+        self._update_trim_preview()
+
+    def _reset_trim(self):
+        self.trim_start.setValue(0.0)
+        self.trim_end.setValue(0.0)
+
+    def _update_trim_preview(self):
+        start = float(self.trim_start.value())
+        end = float(self.trim_end.value())
+        if self.source_duration > 0:
+            effective = max(0.0, self.source_duration - start - end)
+            self.trim_preview.setText(
+                f"Duración al aire: {fmt_tc(effective)}  •  empieza en {fmt_tc(start)}  •  termina en {fmt_tc(max(start, self.source_duration - end))}")
+        else:
+            self.trim_preview.setText("Duración desconocida: analiza los metadatos para ver la vista previa del corte.")
+
+    def _accept(self):
+        start = float(self.trim_start.value())
+        end = float(self.trim_end.value())
+        if self.source_duration > 0 and start + end >= self.source_duration:
+            QMessageBox.warning(self, "Corte",
+                                "Los segundos quitados al principio y al final deben dejar al menos una fracción de video.")
+            return
+        self.accept()
+
+    def values(self):
+        trim_start = float(self.trim_start.value())
+        trim_end = float(self.trim_end.value())
+        mark_out = max(0.0, self.source_duration - trim_end) if trim_end > 0 else 0.0
+        return {"title": self.title.text().strip() or "",
+                "category": self.cat.currentText().strip() or "Otros",
+                "mark_in": trim_start,
+                "mark_out": mark_out}

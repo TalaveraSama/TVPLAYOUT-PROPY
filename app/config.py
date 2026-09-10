@@ -2,11 +2,43 @@
 from pathlib import Path
 import os
 import shutil
+import sys
 
-ROOT = Path(__file__).resolve().parent.parent
+
+def _runtime_root():
+    """Carpeta persistente de la aplicación, también dentro de PyInstaller.
+
+    En modo desarrollo ``__file__`` apunta al checkout. En un ejecutable
+    congelado no se debe usar ``sys._MEIPASS``: en onefile es temporal y se
+    borra al cerrar, lo que perdería la base, logs y cache. La carpeta del
+    ejecutable es la raíz portable estable.
+    """
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent.parent
+
+
+ROOT = _runtime_root()
 APP_NAME = "TVPlayout PRO"
-APP_VERSION = "V22"
+APP_VERSION = "V24.0.2.45"
 IS_WINDOWS = os.name == "nt"
+
+
+def _first_asset(*paths):
+    for path in paths:
+        path = Path(path)
+        if path.is_file():
+            return path
+    return None
+
+
+# El usuario puede colocar su identidad visual sin modificar el código.
+# logo.ico se usa como icono del EXE cuando existe; logo.png como icono de la
+# ventana y como ruta sugerida para el logo de salida RTMP.
+APP_ICON_PATH = _first_asset(ROOT / "assets" / "logo.png", ROOT / "logo.png",
+                             ROOT / "assets" / "logo.ico", ROOT / "logo.ico")
+APP_EXE_ICON_PATH = _first_asset(ROOT / "assets" / "logo.ico", ROOT / "logo.ico")
+DEFAULT_LOGO_PATH = _first_asset(ROOT / "assets" / "logo.png", ROOT / "logo.png")
 
 
 def _load_env_file():
@@ -48,8 +80,8 @@ VIDEO_EXTS = {
 LANG_PRIORITY = ["es-MX", "es-419", "Latino", "Latin", "LAT", "spa", "es", "esp", "Spanish", "Español", "Castellano"]
 SUB_PRIORITY = ["es-MX", "spa-MX", "es-419", "Latino", "Latin", "spa", "es", "esp", "Spanish", "Español", "Castellano"]
 
-AUDIO_PREFS = ["AUTO / Español latino preferido", "es-MX", "es-419", "spa", "es", "Original"]
-SUB_PREFS = ["AUTO / Español MX preferido", "es-MX", "spa-MX", "es-419", "spa", "es", "OFF"]
+AUDIO_PREFS = ["AUTO / Español latino preferido", "es-MX", "es-419", "spa", "es", "en", "eng", "English", "Original"]
+SUB_PREFS = ["AUTO / Español MX preferido", "es-MX", "spa-MX", "es-419", "spa", "es", "en", "eng", "English", "OFF"]
 
 RESOLUTIONS = ["1920x1080", "1280x720", "720x576", "720x480", "3840x2160"]
 FPS_LIST = ["23.976", "24", "25", "29.97", "30", "50", "59.94", "60"]
@@ -111,6 +143,10 @@ def find_binary(name: str, env_name: str = "") -> str:
 
 MPV_PATH = find_binary("mpv", "MPV_PATH")
 FFMPEG_PATH = find_binary("ffmpeg", "FFMPEG_PATH")
+# NDI no viene habilitado en la mayoría de builds genéricas de FFmpeg.
+# Permite colocar una build separada como ffmpeg-ndi.exe sin cambiar la
+# salida RTMP/SRT estable.
+FFMPEG_NDI_PATH = find_binary("ffmpeg-ndi", "FFMPEG_NDI_PATH")
 FFPROBE_PATH = ""
 if FFMPEG_PATH:
     _probe = Path(FFMPEG_PATH).with_name("ffprobe.exe" if IS_WINDOWS else "ffprobe")
@@ -118,3 +154,26 @@ if FFMPEG_PATH:
         FFPROBE_PATH = str(_probe)
 if not FFPROBE_PATH:
     FFPROBE_PATH = find_binary("ffprobe", "FFPROBE_PATH")
+
+
+# v24.0.2.32: VLC es el reproductor alternativo para las vistas previas de
+# biblioteca/playlist y para el monitor de programa FFmpeg. El instalador
+# oficial lo deja en Program Files\VideoLAN\VLC (no siempre está en el PATH).
+def find_vlc() -> str:
+    found = find_binary("vlc", "VLC_PATH")
+    if found:
+        return found
+    if IS_WINDOWS:
+        bases = [os.environ.get("ProgramFiles", ""), os.environ.get("ProgramW6432", ""),
+                 os.environ.get("ProgramFiles(x86)", "")]
+        for base in (b for b in bases if b):
+            exe = Path(base) / "VideoLAN" / "VLC" / "vlc.exe"
+            try:
+                if exe.is_file():
+                    return str(exe.resolve())
+            except OSError:
+                continue
+    return ""
+
+
+VLC_PATH = find_vlc()

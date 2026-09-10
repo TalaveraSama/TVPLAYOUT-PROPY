@@ -1,83 +1,82 @@
 # -*- mode: python ; coding: utf-8 -*-
+"""PyInstaller spec para TVPlayout PRO.
+
+Produce una distribución onedir portable:
+    dist/TVPlayoutPRO/TVPlayoutPRO.exe
+
+Las DLL de PySide6/PyAV quedan en _internal junto al ejecutable. El BAT de
+build copia ffmpeg.exe y ffprobe.exe al nivel del EXE, porque son herramientas
+externas y no deben mezclarse con el runtime Python. Los recursos de identidad
+visual se copian desde assets/.
 """
-PyInstaller spec para TVPlayout PRO V22.
-
-Uso:
-    pyinstaller tvplayout.spec --clean --noconfirm
-
-Salida: dist/TVPlayoutPRO/TVPlayoutPRO.exe (modo onedir, más rápido de arrancar)
-       dist/TVPlayoutPRO.exe                   (modo onefile, un solo .exe grande)
-"""
-
-import sys
 from pathlib import Path
 
-block_cipher = None
+from PyInstaller.utils.hooks import collect_all, collect_submodules
 
-# Recolectar submódulos de la app (todos los archivos .py bajo app/)
-a = Analysis(
-    ['main.py'],
-    pathex=[str(Path('.').resolve())],
-    binaries=[],
-    datas=[],
-    hiddenimports=[
-        'PySide6.QtSvg',
-        'PySide6.QtMultimedia',
-        'app.config',
-        'app.db',
-        'app.dialogs',
-        'app.dialogs_extra',
-        'app.logger',
-        'app.main_window',
-        'app.mpv_player',
-        'app.output',
-        'app.playout',
-        'app.prober',
-        'app.scanner',
-        'app.scheduler',
-        'app.theme',
-        'app.widgets',
-    ],
+block_cipher = None
+# PyInstaller ejecuta el spec con exec(), sin garantizar __file__. SPECPATH
+# es su carpeta de spec; cwd queda como fallback porque el BAT hace cd a la raíz.
+APP_ROOT = Path(globals().get("SPECPATH", Path.cwd())).resolve()
+APP_EXE_ICON = APP_ROOT / "assets" / "logo.ico"
+
+# PyAV carga parte de libav dinámicamente; collect_all evita que una versión
+# nueva de PyAV quede incompleta por depender de un nombre de DLL no listado.
+av_datas, av_binaries, av_hidden = collect_all("av")
+app_hidden = collect_submodules("app")
+
+analysis = Analysis(
+    [str(APP_ROOT / "main.py")],
+    pathex=[str(APP_ROOT)],
+    binaries=av_binaries,
+    datas=av_datas,
+    hiddenimports=sorted(set(av_hidden + app_hidden + [
+        "PySide6.QtSvg",
+        "PySide6.QtMultimedia",
+        "app.pyav_player",
+    ])),
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
     excludes=[
-        'tkinter',
-        'matplotlib',
-        'numpy',
-        'pandas',
-        'PySide6.QtWebEngineCore',
-        'PySide6.QtWebEngineWidgets',
-        'PySide6.Qt3DCore',
-        'PySide6.Qt3DRender',
+        "tkinter",
+        "matplotlib",
+        "pandas",
+        "PySide6.QtWebEngineCore",
+        "PySide6.QtWebEngineWidgets",
+        "PySide6.Qt3DCore",
+        "PySide6.Qt3DRender",
     ],
-    win_no_prefer_redirects=False,
-    win_private_assemblies=False,
-    cipher=block_cipher,
     noarchive=False,
+    optimize=0,
 )
 
-pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
+pyz = PYZ(analysis.pure, analysis.zipped_data, cipher=block_cipher)
 
 exe = EXE(
     pyz,
-    a.scripts,
-    a.binaries,
-    a.zipfiles,
-    a.datas,
+    analysis.scripts,
     [],
-    name='TVPlayoutPRO',
+    exclude_binaries=True,
+    name="TVPlayoutPRO",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=False,            # No usar UPX: corrompe binarios de PySide6 a veces
-    upx_exclude=[],
-    runtime_tmpdir=None,
-    console=False,        # Sin consola (ventana GUI pura)
+    upx=False,
+    console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
+    icon=str(APP_EXE_ICON) if APP_EXE_ICON.is_file() else None,
     codesign_identity=None,
     entitlements_file=None,
-    # icon='assets/icon.ico',   # descomentar si tenés un .ico
+)
+
+coll = COLLECT(
+    exe,
+    analysis.binaries,
+    analysis.zipfiles,
+    analysis.datas,
+    strip=False,
+    upx=False,
+    name="TVPlayoutPRO",
 )

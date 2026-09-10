@@ -1,31 +1,63 @@
-"""Motor de salida RTMP/SRT/UDP con FFmpeg.
+"""Motor de salida RTMP/SRT/NDI/UDP con FFmpeg.
 
-Emite la playlist clip a clip por la misma URL. El playout local (mpv) es el «master»: cada vez que
-empieza un evento, la salida salta al mismo evento (`sync_items(..., force_jump=True)`). Si un clip
-termina en FFmpeg antes de recibir la orden del master, espera un breve periodo de gracia y después
-continúa solo con el siguiente evento (red de seguridad para la continuidad 24/7).
+Emite la playlist clip a clip. Cada destino puede tener su propio proceso
+FFmpeg y el playout local PyAV es el master: cuando empieza un evento, todas
+las salidas saltan al mismo evento (`sync_items(..., force_jump=True)`).
 """
+import glob
+import hashlib
 import json
 import os
 import re
 import subprocess
+import tempfile
 import threading
 import time
 
-from PySide6.QtCore import QThread, Signal
+from PySide6.QtCore import QThread, Signal, QObject
 
 from . import logger
 from .prober import pick_audio, pick_subtitle
+from .ndi_sender import NDISender, logo_suppressed_for_category
 
 log = logger.get("rtmp")
 CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+# v24.0.2.44: la extracción de subtítulos corre junto a la emisión; prioridad
+# baja en Windows para no robar recursos (en otros sistemas el flag es 0).
+BELOW_NORMAL_PRIORITY = getattr(subprocess, "BELOW_NORMAL_PRIORITY_CLASS", 0)
 
-LOGO_POSITIONS = {
-    "arriba-izquierda": ("{m}", "{m}"),
-    "arriba-derecha": ("W-w-{m}", "{m}"),
-    "abajo-izquierda": ("{m}", "H-h-{m}"),
-    "abajo-derecha": ("W-w-{m}", "H-h-{m}"),
-}
+# v24.0.2.35: línea de progreso de FFmpeg (-stats): "time=HH:MM:SS.ms".
+_PROGRESS_RE = re.compile(r"time=(\d+):(\d+):(\d+(?:\.\d+)?)")
+
+
+def logo_safe_area_43(width, height):
+    """Devuelve los límites horizontales del área 4:3 dentro de la salida.
+
+    En una salida 16:9, el área central 4:3 ocupa el 75% del ancho y queda
+    delimitada por 12.5% y 87.5%. En una salida 4:3 ya ocupa todo el ancho.
+    """
+    width = max(1, int(width))
+    height = max(1, int(height))
+    safe_width = min(width, height * 4 / 3)
+    left = max(0.0, (width - safe_width) / 2)
+    return left, left + safe_width
+
+
+def logo_overlay_position(position, width, height, logo_margin):
+    """Genera las expresiones FFmpeg para mantener la mosca dentro de 4:3."""
+    left, right = logo_safe_area_43(width, height)
+    margin = max(0, int(logo_margin or 0))
+    x_left = f"{left:.3f}+{margin}"
+    x_right = f"{right:.3f}-w-{margin}"
+    y_top = f"{margin}"
+    y_bottom = f"H-h-{margin}"
+    if position == "arriba-izquierda":
+        return x_left, y_top
+    if position == "abajo-izquierda":
+        return x_left, y_bottom
+    if position == "abajo-derecha":
+        return x_right, y_bottom
+    return x_right, y_top
 
 
 def _ffmpeg_filter_path(path):
@@ -33,6 +65,50 @@ def _ffmpeg_filter_path(path):
     p = str(path).replace("\\", "/")
     p = p.replace(":", "\\:").replace("'", "\\'").replace(",", "\\,").replace("[", "\\[").replace("]", "\\]")
     return p
+
+
+# v24.0.2.38: caché local de subtítulos. El filtro ``subtitles=<vídeo>`` obligaba
+# a FFmpeg a abrir el archivo de vídeo una SEGUNDA vez por su cuenta; en una
+# biblioteca de red (Z:) eso detenía la señal en silencio: FFmpeg corría sin
+# error pero sin emitir un solo frame (log 2026-09-10 00:05). Ahora el subtítulo
+# se sirve desde un SRT local alineado al offset de la emisión.
+SUBS_DIR = os.path.join(tempfile.gettempdir(), "TVPlayoutPRO_subs")
+
+_SRT_TS_RE = re.compile(r"\s*(\d+):(\d+):(\d+)[,.](\d+)\s*-->\s*(\d+):(\d+):(\d+)[,.](\d+)")
+
+
+def _ts_ms(h, m, s, ms):
+    return (int(h) * 3600 + int(m) * 60 + int(s)) * 1000 + int(ms)
+
+
+def _ms_ts(v):
+    v = max(0, int(v))
+    return f"{v // 3600000:02d}:{(v % 3600000) // 60000:02d}:{(v % 60000) // 1000:02d},{v % 1000:03d}"
+
+
+def _srt_shift(text, offset):
+    """Resta ``offset`` segundos a los tiempos de un SRT.
+
+    Con ``-ss`` antes del input, los frames de la emisión arrancan en 0; los
+    subtítulos extraídos llevan tiempos absolutos de la película. Sin este
+    corrimiento los subtítulos quemados quedarían desplazados.
+    """
+    shift_ms = int(round(max(0.0, float(offset or 0.0)) * 1000.0))
+    out = []
+    for block in re.split(r"\n\s*\n", (text or "").strip()):
+        lines = block.splitlines()
+        if len(lines) < 2:
+            continue
+        m = _SRT_TS_RE.match(lines[1])
+        if not m:
+            continue
+        start = _ts_ms(m.group(1), m.group(2), m.group(3), m.group(4)) - shift_ms
+        end = _ts_ms(m.group(5), m.group(6), m.group(7), m.group(8)) - shift_ms
+        if end <= 0:
+            continue                      # el bloque queda antes del corte
+        lines[1] = f"{_ms_ts(start)} --> {_ms_ts(end)}"
+        out.append("\n".join(lines))
+    return ("\n".join(out) + "\n") if out else ""
 
 
 class OutputWorker(QThread):
@@ -51,7 +127,8 @@ class OutputWorker(QThread):
 
     def __init__(self, ffmpeg, items, url, resolution, fps, encoder, bitrate,
                  audio_preference="AUTO", subtitle_preference="OFF", subtitle_burn=False,
-                 audio_bitrate=192, loop=True, start_index=0, start_offset=0.0, extra_args="", logo=None):
+                 audio_bitrate=192, loop=True, start_index=0, start_offset=0.0, extra_args="", logo=None,
+                 program_overlay=None, program_interval=1080.0, program_duration=15.0, protocol="", monitor_feed_url=""):
         super().__init__()
         self.ffmpeg = ffmpeg
         self.items = self._norm_items(items)
@@ -68,7 +145,15 @@ class OutputWorker(QThread):
         self.start_index = int(start_index or 0)
         self.start_offset = float(start_offset or 0)
         self.extra_args = extra_args or ""
+        self.protocol = (protocol or self._infer_protocol(url)).upper()
         self.logo = logo
+        self.program_overlay = program_overlay or ""
+        self.program_interval = max(1.0, float(program_interval or 1080.0))
+        self.program_duration = max(0.0, float(program_duration or 15.0))
+        # Feed local MPEG-TS opcional: contiene exactamente el vídeo/audio
+        # ya procesado que se envía al destino, incluido el subtítulo quemado.
+        # Un reproductor externo puede usarlo como monitor real del programa.
+        self.monitor_feed_url = str(monitor_feed_url or "").strip()
         self.proc = None
         self.stop_requested = False
         self._lock = threading.RLock()
@@ -93,6 +178,21 @@ class OutputWorker(QThread):
         # de drift compara el offset ESTÁTICO contra la posición DINÁMICA de
         # mpv, y nunca converge.
         self._clip_emit_started = 0.0
+        # v24.0.2.35: posición REAL emitida leída del propio FFmpeg (-stats,
+        # línea "time="). La estimación por reloj de pared contaba la
+        # latencia de arranque (abrir el archivo por red + conectar al RTMP,
+        # 7-9 s en VPS con almacenamiento lento) como si fuera contenido
+        # emitido, y el watcher de drift reiniciaba FFmpeg en bucle.
+        self._out_time = -1.0
+        self._out_time_at = 0.0
+        # v24.0.2.38: subtítulos locales (ver _local_subtitles).
+        self._cmd_has_subs = False
+        self._subs_dropped = False
+        self._subs_extracting = set()
+        # v24.0.2.44: clave → intentos fallidos. Un fallo transitorio (p. ej.
+        # el MKV por red con 3 lectores: log 12:43, código 4294967274) ya no
+        # descarta los subtítulos para toda la sesión: se reintenta.
+        self._subs_failed = {}
 
     @staticmethod
     def _norm_items(items):
@@ -103,6 +203,17 @@ class OutputWorker(QThread):
             elif isinstance(it, dict) and it.get("path"):
                 out.append(dict(it))
         return out
+
+    def set_track_preferences(self, audio_preference, subtitle_preference):
+        """Actualiza las preferencias para el próximo salto de FFmpeg."""
+        with self._lock:
+            self.audio_preference = str(audio_preference or "AUTO / Español latino preferido")
+            self.subtitle_preference = str(subtitle_preference or "OFF")
+            # Seleccionar una pista de subtítulos durante el aire implica que
+            # debe hacerse visible en RTMP/SRT, aunque la salida se hubiera
+            # iniciado con la casilla de quemado desactivada.
+            if self.subtitle_preference.upper() != "OFF":
+                self.subtitle_burn = True
 
     # ------------------------------------------------------------- helpers
     def _available_encoders(self):
@@ -130,7 +241,18 @@ class OutputWorker(QThread):
             self._resolved = ("CPU/x264", "libx264")
             return self._resolved
         if text and not re.search(rf"\b{re.escape(codec)}\b", text):
-            raise RuntimeError(f"El encoder {requested} ({codec}) no está disponible en este FFmpeg.")
+            log.warning("Encoder solicitado %s (%s) no está en FFmpeg; usando CPU/x264", requested, codec)
+            self._resolved = ("CPU/x264", "libx264")
+            return self._resolved
+        # Que FFmpeg liste un encoder no significa que exista la GPU o su
+        # controlador. Esto ocurre con frecuencia con NVENC en equipos sin
+        # NVIDIA: probarlo aquí evita arrancar un proceso RTMP condenado a
+        # fallar con `Cannot load nvcuda.dll`.
+        if codec != "libx264" and not self._encoder_works(codec):
+            log.warning("Encoder solicitado %s (%s) no funciona en este equipo; usando CPU/x264",
+                        requested, codec)
+            self._resolved = ("CPU/x264", "libx264")
+            return self._resolved
         self._resolved = (requested, codec)
         return self._resolved
 
@@ -147,6 +269,17 @@ class OutputWorker(QThread):
             return False
 
     @staticmethod
+    def _infer_protocol(url):
+        low = str(url or "").lower()
+        if low.startswith(("rtmp://", "rtmps://")):
+            return "RTMP"
+        if low.startswith("srt://"):
+            return "SRT"
+        if low.startswith("ndi://"):
+            return "NDI"
+        return "UDP"
+
+    @staticmethod
     def _tracks_of(item):
         tracks = item.get("tracks") or []
         if isinstance(tracks, str):
@@ -156,6 +289,36 @@ class OutputWorker(QThread):
                 tracks = []
         return tracks
 
+    def _program_enable_expression(self, offset, duration):
+        """Ventanas FFmpeg relativas al reinicio actual del evento."""
+        if not self.program_overlay or not os.path.isfile(self.program_overlay):
+            return ""
+        interval = max(1.0, self.program_interval)
+        visible = max(0.0, min(self.program_duration, interval - 0.1))
+        if visible <= 0:
+            return ""
+        try:
+            origin = max(0.0, float(offset or 0.0))
+            total = float(duration or 0.0)
+        except (TypeError, ValueError):
+            origin, total = 0.0, 0.0
+        if origin <= 0.01:
+            first = 0.0
+        else:
+            first = interval - (origin % interval)
+            if first >= interval - 0.01:
+                first = 0.0
+        windows = []
+        point = first
+        # Un máximo amplio evita generar una expresión enorme en películas
+        # largas; la ventana se vuelve a calcular en el siguiente salto.
+        for _ in range(96):
+            if total > 0 and point > total:
+                break
+            windows.append(f"between(t,{point:.3f},{point + visible:.3f})")
+            point += interval
+        return "+".join(windows)
+
     def _build_command(self, item, offset=0.0):
         source = item["path"]
         if not self.ffmpeg or not os.path.isfile(self.ffmpeg):
@@ -163,46 +326,106 @@ class OutputWorker(QThread):
         if not source or not os.path.isfile(source):
             raise RuntimeError("Archivo no encontrado: " + str(source))
         low = self.url.lower()
-        if not low.startswith(("rtmp://", "rtmps://", "srt://", "udp://")):
+        if self.protocol == "NDI":
+            if not self.url or "://" in self.url and not low.startswith("ndi://"):
+                # El destino NDI es un nombre visible en la red, no una URL.
+                raise RuntimeError("El destino NDI debe tener un nombre, por ejemplo TVPlayout PRO")
+        elif not low.startswith(("rtmp://", "rtmps://", "srt://", "udp://")):
             raise RuntimeError("La salida debe comenzar por rtmp://, rtmps://, srt:// o udp://")
         try:
             w, h = [int(x) for x in self.resolution.lower().split("x", 1)]
         except Exception:
             raise RuntimeError("Resolución inválida")
         label, codec = self._resolve_encoder(self.encoder)
+        try:
+            mark_in = max(0.0, float(item.get("mark_in") or 0.0))
+            mark_out = max(0.0, float(item.get("mark_out") or 0.0))
+            source_duration = max(0.0, float(item.get("source_duration") or item.get("duration") or 0.0))
+            if source_duration > 0:
+                mark_in = min(mark_in, source_duration)
+                if mark_out > 0:
+                    mark_out = min(mark_out, source_duration)
+            if mark_out > 0 and mark_out < mark_in:
+                mark_out = mark_in
+            has_trim = mark_in > 0 or mark_out > 0
+            trim_duration = (mark_out - mark_in) if mark_out > 0 else max(0.0, source_duration - mark_in)
+            local_offset = max(0.0, float(offset or 0.0))
+            source_offset = mark_in + local_offset
+            remaining_duration = (max(0.0, trim_duration - local_offset)
+                                  if has_trim and trim_duration > 0 else 0.0)
+        except (TypeError, ValueError):
+            mark_in = mark_out = source_offset = local_offset = trim_duration = remaining_duration = 0.0
         tracks = self._tracks_of(item)
-        aid = pick_audio(tracks, item.get("audio_lang") or self.audio_preference)
-        sid = pick_subtitle(tracks, item.get("subtitle_lang") or self.subtitle_preference) if self.subtitle_burn else -1
+        audio_preference = item.get("_live_audio_preference")
+        subtitle_preference = item.get("_live_subtitle_preference")
+        if audio_preference is None:
+            audio_preference = item.get("audio_lang") or self.audio_preference
+        if subtitle_preference is None:
+            subtitle_preference = item.get("subtitle_lang") or self.subtitle_preference
+        aid = pick_audio(tracks, audio_preference)
+        subtitle_burn = self.subtitle_burn or str(subtitle_preference or "OFF").upper() != "OFF"
+        sid = pick_subtitle(tracks, subtitle_preference) if subtitle_burn else -1
 
         vf = [f"scale={w}:{h}:force_original_aspect_ratio=decrease", f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2",
               f"fps={self.fps}", "format=yuv420p"]
-        if self.subtitle_burn and sid is not None and sid >= 0:
-            vf.insert(0, f"subtitles='{_ffmpeg_filter_path(source)}':si={sid}")
+        # v24.0.2.38: subtítulos quemados desde un SRT LOCAL. El filtro con el
+        # archivo de vídeo original (red) detenía la señal sin error alguno.
+        self._cmd_has_subs = False
+        if subtitle_burn and sid is not None and sid >= 0 and not self._subs_dropped:
+            local_srt = self._local_subtitles(source, sid, source_offset)
+            if local_srt:
+                vf.insert(0, f"subtitles='{_ffmpeg_filter_path(local_srt)}'")
+                self._cmd_has_subs = True
         gop = int(round(float(self.fps) * 2))
-        cmd = [self.ffmpeg, "-hide_banner", "-loglevel", "warning", "-nostdin", "-re"]
-        if offset and offset > 0:
-            cmd += ["-ss", f"{offset:.3f}"]
+        # v24.0.2.35: -stats hace que FFmpeg reporte su posición real
+        # ("time=") aunque el loglevel sea warning; el watcher de drift la
+        # usa en lugar de estimar por reloj de pared.
+        cmd = [self.ffmpeg, "-hide_banner", "-loglevel", "warning", "-stats", "-nostdin", "-re"]
+        if source_offset > 0:
+            # offset es relativo al corte de playlist; FFmpeg debe buscar en
+            # la posición absoluta mark-in + offset dentro del archivo.
+            cmd += ["-ss", f"{source_offset:.3f}"]
         cmd += ["-i", source]
-        logo = self.logo if (self.logo and os.path.isfile(self.logo.get("path", ""))) else None
+        logo = (self.logo if (self.logo and os.path.isfile(self.logo.get("path", ""))
+                 and not logo_suppressed_for_category(item.get("category", ""), self.logo)) else None)
+        program = (self.program_overlay if (self.program_overlay and os.path.isfile(self.program_overlay)
+                   and item.get("category") in {"Películas", "Música"}) else None)
+        program_expr = self._program_enable_expression(local_offset, trim_duration) if program else ""
+        if not program_expr:
+            program = None
         amap = f"0:a:{aid}?" if isinstance(aid, int) and aid >= 0 else "0:a:0?"
         if logo:
             cmd += ["-loop", "1", "-framerate", "1", "-i", logo["path"]]
-            lw = max(16, int(w * int(logo.get("scale", 12)) / 100))
-            op = max(0.05, min(1.0, int(logo.get("opacity", 90)) / 100))
-            xe, ye = LOGO_POSITIONS.get(logo.get("position", "arriba-derecha"), LOGO_POSITIONS["arriba-derecha"])
-            m = int(logo.get("margin", 24))
-            fc = (f"[0:v]{','.join(vf)}[base];"
-                  f"[1:v]scale={lw}:-1,format=rgba,colorchannelmixer=aa={op:.2f}[logo];"
-                  f"[base][logo]overlay={xe.format(m=m)}:{ye.format(m=m)}:shortest=1:format=auto,format=yuv420p[out]")
+        if program:
+            cmd += ["-loop", "1", "-framerate", "1", "-i", program]
+        if logo or program:
+            filters = [f"[0:v]{','.join(vf)}[base]"]
+            stage = "base"
+            if logo:
+                lw = max(16, int(w * int(logo.get("scale", 10)) / 100))
+                op = max(0.05, min(1.0, int(logo.get("opacity", 90)) / 100))
+                m = int(logo.get("margin", 48))
+                xe, ye = logo_overlay_position(logo.get("position", "arriba-derecha"), w, h, m)
+                filters.append(f"[1:v]scale={lw}:-1,format=rgba,colorchannelmixer=aa={op:.2f}[logo]")
+                filters.append(f"[{stage}][logo]overlay={xe.format(m=m)}:{ye.format(m=m)}:shortest=1:format=auto[withlogo]")
+                stage = "withlogo"
+            if program:
+                program_index = 2 if logo else 1
+                filters.append(f"[{program_index}:v]format=rgba[program]")
+                filters.append(f"[{stage}][program]overlay=0:0:enable='{program_expr}':eof_action=repeat[withprogram]")
+                stage = "withprogram"
+            filters.append(f"[{stage}]format=yuv420p[out]")
+            fc = ";".join(filters)
             cmd += ["-filter_complex", fc, "-map", "[out]", "-map", amap]
         else:
             cmd += ["-map", "0:v:0", "-map", amap, "-vf", ",".join(vf)]
         cmd += ["-sn", "-dn", "-map_metadata", "-1", "-map_chapters", "-1", "-c:v", codec,
                 "-b:v", f"{self.bitrate}k", "-maxrate", f"{self.bitrate}k", "-bufsize", f"{self.bitrate * 2}k",
-                "-g", str(gop), "-keyint_min", str(gop), "-sc_threshold", "0",
+                "-g", str(gop), "-keyint_min", str(gop),
                 "-pix_fmt", "yuv420p", "-r", str(self.fps)]
         if codec == "libx264":
-            cmd += ["-preset", "veryfast", "-profile:v", "high", "-bf", "2", "-x264-params", "nal-hrd=cbr:force-cfr=1"]
+            cmd += ["-preset", "veryfast", "-profile:v", "high", "-bf", "2", "-sc_threshold", "0",
+                    "-x264-params", "nal-hrd=cbr:force-cfr=1"]
         elif codec == "h264_nvenc":
             cmd += ["-preset", "p4", "-tune", "ll", "-rc", "cbr", "-profile:v", "high", "-bf", "2"]
         elif codec == "h264_qsv":
@@ -210,10 +433,27 @@ class OutputWorker(QThread):
         elif codec == "h264_amf":
             cmd += ["-quality", "balanced", "-rc", "cbr", "-profile:v", "high"]
         cmd += ["-c:a", "aac", "-b:a", f"{self.audio_bitrate}k", "-ar", "48000", "-ac", "2", "-af", "aresample=async=1:first_pts=0"]
+        if remaining_duration > 0:
+            # -t es una duración de salida: no corta el archivo fuente y
+            # hace efectivo el mark-out también para RTMP/SRT/UDP.
+            cmd += ["-t", f"{remaining_duration:.3f}"]
         if self.extra_args.strip():
             cmd += self.extra_args.split()
-        if low.startswith(("rtmp://", "rtmps://")):
-            cmd += ["-flvflags", "no_duration_filesize", "-f", "flv", self.url]
+        if self.protocol == "RTMP" or low.startswith(("rtmp://", "rtmps://")):
+            if self.monitor_feed_url:
+                # Tee después de los filtros/encoder: el monitor externo ve
+                # exactamente la señal de programa, no una segunda decodificación.
+                tee = (f"[f=flv:onfail=ignore]{self.url}|"
+                       f"[f=mpegts:onfail=ignore]{self.monitor_feed_url}")
+                cmd += ["-flvflags", "no_duration_filesize", "-f", "tee", tee]
+            else:
+                cmd += ["-flvflags", "no_duration_filesize", "-f", "flv", self.url]
+        elif self.protocol == "NDI":
+            ndi_name = self.url.removeprefix("ndi://") or "TVPlayout PRO"
+            cmd += ["-f", "libndi_newtek", ndi_name]
+        elif self.monitor_feed_url:
+            tee = f"[f=mpegts:onfail=ignore]{self.url}|[f=mpegts:onfail=ignore]{self.monitor_feed_url}"
+            cmd += ["-f", "tee", tee]
         else:
             cmd += ["-f", "mpegts", self.url]
         return cmd, label, aid, sid
@@ -251,7 +491,7 @@ class OutputWorker(QThread):
             self._jump.set()
             proc = self.proc
         self._terminate(proc)
-        self.log.emit(f"RTMP → evento {idx + 1}: {os.path.basename(new_items[idx]['path'])}")
+        self.log.emit(f"{self.protocol} → evento {idx + 1}: {os.path.basename(new_items[idx]['path'])}")
         return True
 
     def replace_items(self, items, start_index=0):
@@ -295,13 +535,28 @@ class OutputWorker(QThread):
         with self._lock:
             self.logo = logo
 
+    def set_program_overlay(self, path, interval_seconds=1080.0, duration_seconds=15.0):
+        with self._lock:
+            self.program_overlay = str(path or "")
+            self.program_interval = max(1.0, float(interval_seconds or 1080.0))
+            self.program_duration = max(0.0, float(duration_seconds or 15.0))
+
     @staticmethod
     def _terminate(proc):
-        if proc and proc.poll() is None:
-            try:
-                proc.terminate()
-            except Exception:  # noqa: BLE001
-                pass
+        """Cierra FFmpeg de forma acotada para que un cambio en vivo no cuelgue RTMP."""
+        if not proc or proc.poll() is not None:
+            return
+        try:
+            proc.terminate()
+            proc.wait(timeout=2.5)
+            return
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            proc.kill()
+            proc.wait(timeout=2.0)
+        except Exception:  # noqa: BLE001
+            pass
 
     @property
     def current_index(self):
@@ -317,23 +572,172 @@ class OutputWorker(QThread):
 
     @property
     def current_position(self):
-        """v22.2.2: posición estimada actual del FFmpeg (en segundos dentro
-        del clip que se está emitiendo). Se calcula como
-        current_offset + (now - clip_emit_started).
+        """v24.0.2.35: posición REAL del FFmpeg (segundos dentro del clip).
 
-        Esto es lo que el watcher de drift del playout local debe comparar
-        contra self.player._time (la posición actual de mpv local).
+        Se lee de la línea ``time=`` que FFmpeg reporta con ``-stats``:
+        ``current_offset + out_time``. Mientras el proceso está calentando
+        (todavía no emitió su primer frame medible — abrir el archivo por
+        red y conectar al RTMP puede tardar varios segundos) devuelve
+        **-1.0** para que el watcher de drift NO compare contra una
+        estimación inflada: la versión anterior usaba el reloj de pared y
+        contaba esa latencia de arranque como drift, reiniciando FFmpeg en
+        bucle cada ~13 s en VPS con almacenamiento lento.
 
-        Si el FFmpeg no está corriendo, devuelve current_offset sin
-        acumular tiempo (no tiene sentido).
+        Si el FFmpeg no está corriendo, devuelve current_offset.
         """
         with self._lock:
             offset = float(getattr(self, "_current_offset", 0.0) or 0.0)
-            started = float(getattr(self, "_clip_emit_started", 0.0) or 0.0)
+            out_time = float(getattr(self, "_out_time", -1.0))
+            measured_at = float(getattr(self, "_out_time_at", 0.0) or 0.0)
             proc = getattr(self, "proc", None)
-        if not proc or proc.poll() is not None or started <= 0:
+        if not proc or proc.poll() is not None:
             return offset
-        return offset + max(0.0, time.time() - started)
+        if measured_at <= 0 or out_time < 0:
+            return -1.0  # calentando: sin medición real todavía
+        return offset + max(0.0, out_time)
+
+    # v24.0.2.38: si con subtítulos FFmpeg no emitió nada en este tiempo, se
+    # retiran y se reinicia: la señal va antes que los subtítulos.
+    STARTUP_WATCHDOG = 25.0
+    # v24.0.2.44: intentos de extracción de subtítulos por archivo y pista.
+    SUBS_MAX_ATTEMPTS = 2
+
+    def _subs_key(self, source, sid):
+        try:
+            st = os.stat(source)
+            seed = f"{source}|{st.st_mtime}|{sid}"
+        except OSError:
+            seed = f"{source}|{sid}"
+        return hashlib.md5(seed.encode("utf-8", "replace")).hexdigest()
+
+    def _local_subtitles(self, source, sid, offset):
+        """SRT local para quemar subtítulos sin reabrir el vídeo por red.
+
+        Orden de resolución: caché local → sidecar .srt junto al vídeo (pesa
+        KBs, leerlo de red es barato) → extracción en segundo plano (se activa
+        con un reinicio breve al terminar). Devuelve la ruta del SRT alineado
+        al offset actual, o "" si todavía no hay uno disponible (la emisión
+        continúa sin subtítulos mientras tanto).
+        """
+        try:
+            key = self._subs_key(source, sid)
+            base = os.path.join(SUBS_DIR, f"{key}.srt")
+            if not self._subtitle_base(source, sid, key, base):
+                return ""
+            off = max(0.0, float(offset or 0.0))
+            if off < 0.5:
+                return base
+            os.makedirs(SUBS_DIR, exist_ok=True)
+            shifted = os.path.join(SUBS_DIR, f"{key}.{int(off * 1000)}.off.srt")
+            for old in glob.glob(os.path.join(SUBS_DIR, f"{key}.*.off.srt")):
+                try:
+                    os.remove(old)
+                except OSError:
+                    pass
+            with open(base, encoding="utf-8-sig", errors="replace") as handle:
+                text = handle.read()
+            with open(shifted + ".tmp", "w", encoding="utf-8") as handle:
+                handle.write(_srt_shift(text, off))
+            os.replace(shifted + ".tmp", shifted)
+            return shifted
+        except Exception as exc:  # noqa: BLE001
+            log.warning("subtítulos locales no disponibles (%s): %s", source, exc)
+            return ""
+
+    def _subtitle_base(self, source, sid, key, base):
+        """SRT completo (caché o sidecar); si no existe, lanza la extracción."""
+        if os.path.isfile(base) and os.path.getsize(base) > 0:
+            return base
+        sidecar = os.path.splitext(source)[0] + ".srt"
+        if os.path.isfile(sidecar):
+            try:
+                size = os.path.getsize(sidecar)
+                if 0 < size <= 4 * 1024 * 1024:
+                    with open(sidecar, "rb") as handle:
+                        data = handle.read()
+                    os.makedirs(SUBS_DIR, exist_ok=True)
+                    text = data.decode("utf-8-sig", errors="replace")
+                    with open(base + ".tmp", "w", encoding="utf-8") as handle:
+                        handle.write(text)
+                    os.replace(base + ".tmp", base)
+                    self.log.emit("Subtítulos: usando el .srt junto al vídeo")
+                    return base
+            except OSError:
+                pass
+        if self._subs_failed.get(key, 0) >= self.SUBS_MAX_ATTEMPTS or key in self._subs_extracting:
+            return ""
+        self._start_subtitle_extraction(source, sid, key, base)
+        return ""
+
+    def _start_subtitle_extraction(self, source, sid, key, base):
+        """Extrae la pista de subtítulos a un SRT local EN SEGUNDO PLANO.
+
+        La extracción lee el archivo completo (los subtítulos van intercalados
+        con el vídeo), por eso nunca se hace en el hilo de la emisión: la señal
+        arranca sin subtítulos y los adquiere con un único reinicio breve.
+        """
+        self._subs_extracting.add(key)
+
+        def _extract():
+            try:
+                os.makedirs(SUBS_DIR, exist_ok=True)
+                tmp = f"{base}.{os.getpid()}.tmp"
+                cmd = [self.ffmpeg, "-hide_banner", "-nostdin", "-loglevel", "error",
+                       "-y", "-i", source, "-map", f"0:s:{sid}", "-c:s", "srt", tmp]
+                proc = subprocess.run(cmd, capture_output=True, timeout=1800,
+                                      creationflags=CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY)
+                if proc.returncode == 0 and os.path.isfile(tmp) and os.path.getsize(tmp) > 0:
+                    os.replace(tmp, base)
+                    self._subs_failed.pop(key, None)
+                    self.log.emit("Subtítulos extraídos • reinicio breve para activarlos en la emisión")
+                    log.info("Subtítulos extraídos a %s", base)
+                    self._restart_current()
+                else:
+                    attempts = self._subs_failed.get(key, 0) + 1
+                    self._subs_failed[key] = attempts
+                    if attempts >= self.SUBS_MAX_ATTEMPTS:
+                        self.log.emit("Subtítulos no disponibles en este archivo • la señal continúa sin ellos")
+                    log.warning("extracción de subtítulos vacía o con error (código %s, intento %d/%d)",
+                                proc.returncode, attempts, self.SUBS_MAX_ATTEMPTS)
+            except Exception as exc:  # noqa: BLE001
+                attempts = self._subs_failed.get(key, 0) + 1
+                self._subs_failed[key] = attempts
+                log.warning("extracción de subtítulos falló (intento %d/%d): %s",
+                            attempts, self.SUBS_MAX_ATTEMPTS, exc)
+            finally:
+                self._subs_extracting.discard(key)
+
+        threading.Thread(target=_extract, daemon=True, name="subs-extract").start()
+
+    def _restart_current(self):
+        """Reinicio breve del clip actual conservando índice y offset."""
+        with self._lock:
+            proc = self.proc
+            if proc is None or proc.poll() is not None:
+                return
+            self._jump_index = self._current_index
+            self._jump_offset = max(0.0, float(getattr(self, "_current_offset", 0.0) or 0.0))
+            self._jump.set()
+        self._terminate(proc)
+
+    def _startup_watchdog(self, proc):
+        """v24.0.2.38: si los subtítulos dejan la señal sin frames, se retiran."""
+        try:
+            time.sleep(self.STARTUP_WATCHDOG)
+            if self.stop_requested or proc.poll() is not None:
+                return
+            with self._lock:
+                out_time = float(getattr(self, "_out_time", -1.0))
+            if out_time >= 0:
+                return          # arranque normal: ya está emitiendo
+            if getattr(self, "_cmd_has_subs", False) and not self._subs_dropped:
+                self._subs_dropped = True
+                self.log.emit("Subtítulos bloqueaban el arranque • se retiran para no perder la señal")
+                log.warning("FFmpeg sin frames tras %.0fs con subtítulos: se retiran y se reinicia",
+                            self.STARTUP_WATCHDOG)
+                self._restart_current()
+        except Exception:  # noqa: BLE001
+            pass
 
     NOISE = ("Immediate exit requested", "Last message repeated", "Error muxing a packet", "Error writing trailer",
              "Error closing file", "Terminating thread", "Error submitting a packet")
@@ -343,6 +747,23 @@ class OutputWorker(QThread):
             for line in proc.stderr:
                 line = line.rstrip()
                 if not line:
+                    continue
+                # v24.0.2.35: la línea de progreso (-stats) aporta la posición
+                # real; se registra y no se repite en el log de la interfaz.
+                m = _PROGRESS_RE.search(line)
+                if m and ("frame=" in line or "speed=" in line):
+                    try:
+                        self._out_time = (int(m.group(1)) * 3600.0 + int(m.group(2)) * 60.0
+                                          + float(m.group(3)))
+                        self._out_time_at = time.time()
+                    except (ValueError, IndexError):
+                        pass
+                    continue
+                if "Resumed reading" in line:
+                    # v24.0.2.44: el hilo de entrada se retrasó un instante
+                    # (red compartida) y se recuperó solo («rate 1.050»):
+                    # benigno — no inundar el log de la interfaz.
+                    log.debug("ffmpeg: %s", line)
                     continue
                 if any(n in line for n in self.NOISE):     # ruido normal al cortar FFmpeg para saltar de evento
                     continue
@@ -359,7 +780,7 @@ class OutputWorker(QThread):
             with self._lock:
                 items = list(self.items)
             if not items:
-                raise RuntimeError("No hay eventos para emitir por RTMP.")
+                raise RuntimeError(f"No hay eventos para emitir por {self.protocol}.")
             self.stop_requested = False
             index = max(0, min(self.start_index, len(items) - 1))
             offset = self.start_offset
@@ -402,7 +823,7 @@ class OutputWorker(QThread):
                 self.now_playing.emit(index, item["path"])
                 self.log.emit(("FFmpeg iniciado" if first else "FFmpeg siguiente") +
                               f" • {label} • {os.path.basename(item['path'])} • audio #{aid if aid is not None else 'auto'} • offset {self._current_offset:.2f}s")
-                log.info("RTMP %s: %s", label, subprocess.list2cmdline(cmd))
+                log.info("%s %s: %s", self.protocol, label, subprocess.list2cmdline(cmd))
                 with self._lock:
                     self.proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL,
                                                  text=True, encoding="utf-8", errors="replace", creationflags=CREATE_NO_WINDOW)
@@ -411,13 +832,18 @@ class OutputWorker(QThread):
                     # de posición usa este timestamp (no _clip_started) para
                     # descontar el tiempo de arranque de FFmpeg.
                     self._clip_emit_started = time.time()
+                    # v24.0.2.35: nueva medición real para este proceso.
+                    self._out_time = -1.0
+                    self._out_time_at = 0.0
                     proc = self.proc
                 if first:
-                    self.state.emit(True, f"RTMP ON AIR • {label} • {self.resolution}@{self.fps} • {self.bitrate} kbps")
+                    self.state.emit(True, f"{self.protocol} ON AIR • {label} • {self.resolution}@{self.fps} • {self.bitrate} kbps")
                     first = False
                 started = time.time()
                 last_lines = []
                 threading.Thread(target=self._drain_stderr, args=(proc, last_lines), name="ffmpeg-stderr", daemon=True).start()
+                # v24.0.2.38: vigilante de arranque (subtítulos que no dejan emitir).
+                threading.Thread(target=self._startup_watchdog, args=(proc,), name="ffmpeg-watchdog", daemon=True).start()
                 # Espera activa: reacciona a STOP o a un salto aunque FFmpeg no escriba nada en stderr.
                 while proc.poll() is None:
                     if self.stop_requested or self._jump.is_set():
@@ -435,22 +861,67 @@ class OutputWorker(QThread):
                 if code not in (0, 255, -15):
                     self.log.emit(f"FFmpeg terminó con código {code} tras {elapsed:.0f}s")
                     if elapsed < 5:
+                        # Un encoder de hardware puede pasar la prueba de
+                        # disponibilidad y aun así fallar al abrir el
+                        # stream real (por ejemplo, `Cannot load nvcuda.dll`).
+                        # Cambiar a x264 y repetir el mismo evento evita el
+                        # loop de drift que relanzaba NVENC cada pocos segundos.
+                        active_codec = self._resolved[1] if self._resolved else ""
+                        if self.protocol != "NDI" and active_codec != "libx264":
+                            old_label = self._resolved[0] if self._resolved else active_codec
+                            self._resolved = ("CPU/x264", "libx264")
+                            retry_offset = float(self._current_offset or 0.0)
+                            offset = retry_offset
+                            consecutive_errors = 0
+                            self.log.emit(
+                                f"Fallback encoder • {old_label} no pudo iniciar; reintentando con CPU/x264"
+                            )
+                            log.warning(
+                                "RTMP encoder %s falló al iniciar; fallback a CPU/x264 en offset %.3fs",
+                                old_label, retry_offset,
+                            )
+                            time.sleep(0.2)
+                            continue
                         consecutive_errors += 1
                         if consecutive_errors >= max(3, len(items)):
                             raise RuntimeError("FFmpeg falla repetidamente: " + (last_lines[-1] if last_lines else f"código {code}"))
                         time.sleep(1.0)
                     else:
-                        consecutive_errors = 0
+                        # v24.0.2.39: error tras un rato emitiendo (p. ej. la
+                        # conexión RTMP se cortó: "Error number -10053").
+                        # Reintentar el MISMO evento en la última posición
+                        # emitida — antes se hacía index += 1 y la señal pasaba
+                        # a OTRA película que la del playout (log 00:18:28).
+                        if elapsed >= 60:
+                            consecutive_errors = 0  # corrió bien un buen tramo
+                        consecutive_errors += 1
+                        if consecutive_errors >= 3:
+                            consecutive_errors = 0
+                            self.log.emit("Reintentos agotados • pasa al siguiente evento")
+                            log.warning("%s: 3 reintentos del evento fallaron; avanza al siguiente",
+                                        self.protocol)
+                        else:
+                            with self._lock:
+                                base_off = float(getattr(self, "_current_offset", 0.0) or 0.0)
+                                emitted = float(getattr(self, "_out_time", -1.0))
+                            retry_offset = base_off + emitted if emitted >= 0 else base_off
+                            retry_offset = max(0.0, retry_offset - 1.0)
+                            offset = retry_offset
+                            self.log.emit(f"Reconectando el mismo evento en {retry_offset:.1f}s")
+                            log.warning("%s terminó con código %s tras %.0fs; reintenta el evento en %.1fs",
+                                        self.protocol, code, elapsed, retry_offset)
+                            time.sleep(0.5)
+                            continue
                 else:
                     consecutive_errors = 0
                 # Periodo de gracia: el master (mpv) suele ordenar el salto al mismo evento en este momento.
                 if self._jump.wait(self.GRACE_SECONDS):
                     continue
                 index += 1
-            self.state.emit(False, "RTMP detenido")
+            self.state.emit(False, f"{self.protocol} detenido")
         except Exception as e:  # noqa: BLE001
-            log.error("RTMP error: %s", e)
-            self.state.emit(False, f"RTMP ERROR • {e}")
+            log.error("%s error: %s", self.protocol, e)
+            self.state.emit(False, f"{self.protocol} ERROR • {e}")
         finally:
             with self._lock:
                 proc = self.proc
@@ -472,3 +943,252 @@ class OutputWorker(QThread):
                     proc.kill()
                 except Exception:  # noqa: BLE001
                     pass
+
+
+class MultiOutputManager(QObject):
+    """Coordina destinos RTMP, SRT y NDI independientes.
+
+    Cada destino RTMP/SRT tiene su propio FFmpeg y cada NDI su propio sender
+    ctypes, para aislar credenciales, reconexiones y fallos de red. La interfaz
+    conserva una sola API de sincronización para que todos sigan al playout local.
+    """
+
+    state = Signal(bool, str)
+    log = Signal(str)
+    ended = Signal()
+
+    def __init__(self, ffmpeg, profiles, items, resolution, fps, encoder, bitrate,
+                 audio_preference="AUTO", subtitle_preference="OFF", subtitle_burn=False,
+                 audio_bitrate=192, loop=True, start_index=0, start_offset=0.0,
+                 extra_args="", logo=None, program_overlay=None, program_interval=1080.0,
+                 program_duration=15.0, ndi_ffmpeg=None, ndi_source=None,
+                 monitor_feed_url="", parent=None):
+        super().__init__(parent)
+        self.ffmpeg = ffmpeg
+        self.ndi_ffmpeg = ndi_ffmpeg or ffmpeg
+        self.ndi_source = ndi_source
+        self.profiles = [dict(p) for p in (profiles or []) if p.get("enabled", True)]
+        self.items = items or []
+        self.current_item = (self.items[int(start_index)]
+                             if 0 <= int(start_index or 0) < len(self.items) else None)
+        self.common = dict(resolution=resolution, fps=fps, encoder=encoder, bitrate=bitrate,
+                           audio_preference=audio_preference, subtitle_preference=subtitle_preference,
+                           subtitle_burn=subtitle_burn, audio_bitrate=audio_bitrate, loop=loop,
+                           start_index=start_index, start_offset=start_offset, extra_args=extra_args, logo=logo,
+                           program_overlay=program_overlay, program_interval=program_interval,
+                           program_duration=program_duration)
+        self.monitor_feed_url = str(monitor_feed_url or "").strip()
+        self.workers = []
+        self._ended_workers = set()
+        self.ndi_senders = []
+        self._ndi_connections = []
+
+    @staticmethod
+    def _supports_ndi(ffmpeg):
+        try:
+            proc = subprocess.run([ffmpeg, "-hide_banner", "-muxers"], capture_output=True,
+                                  text=True, encoding="utf-8", errors="replace", timeout=15,
+                                  creationflags=CREATE_NO_WINDOW)
+            return bool(re.search(r"(?:^|\s)libndi_newtek(?:\s|$)", (proc.stdout or "") + (proc.stderr or "")))
+        except (OSError, subprocess.SubprocessError):
+            return False
+
+    def _make_worker(self, profile, monitor_feed_url=""):
+        protocol = str(profile.get("protocol", "RTMP")).upper()
+        target = str(profile.get("target") or profile.get("url") or "").strip()
+        name = str(profile.get("name") or protocol)
+        binary = self.ndi_ffmpeg if protocol == "NDI" else self.ffmpeg
+        worker = OutputWorker(binary, self.items, target, protocol=protocol,
+                              monitor_feed_url=monitor_feed_url, **self.common)
+        worker._profile_name = name
+        worker.state.connect(lambda ok, msg, n=name: self._state_from_worker(ok, msg, n))
+        worker.log.connect(lambda msg, n=name: self.log.emit(f"[{n}] {msg}"))
+        worker.ended.connect(lambda n=name, w=worker: self._worker_ended(n, w))
+        return worker
+
+    def _current_category(self):
+        return (self.current_item or {}).get("category", "")
+
+    def _set_current_item(self, item):
+        self.current_item = item or None
+        category = self._current_category()
+        for sender in self.ndi_senders:
+            sender.set_content_category(category)
+
+    def start(self):
+        self._stop_ndi()
+        self._set_current_item(self.current_item)
+        self.workers = []
+        self._ended_workers = set()
+        self.ndi_senders = []
+        self._ndi_connections = []
+        monitor_assigned = False
+        for profile in self.profiles:
+            protocol = str(profile.get("protocol", "RTMP")).upper()
+            name = str(profile.get("name") or protocol)
+            target = str(profile.get("target") or profile.get("url") or "").strip()
+            if protocol == "NDI":
+                # NDI ya no pasa por FFmpeg: se crea un emisor independiente
+                # contra el Runtime x64 instalado en Windows.
+                sender = NDISender(target or name, self.common.get("logo"), self.common.get("fps", "29.97"))
+                if not sender.start():
+                    self.state.emit(False, f"{name}: NDI no disponible • {sender.error} "
+                                            f"• instala el NDI Runtime x64 desde ndi.video/tools")
+                    continue
+                sender.set_content_category(self._current_category())
+                self.ndi_senders.append(sender)
+                if self.ndi_source is not None:
+                    frame_slot = lambda image, position, duration, s=sender: s.send_frame(image, position, duration)
+                    audio_slot = lambda pcm, s=sender: s.send_audio(pcm)
+                    self.ndi_source.ndi_frame.connect(frame_slot)
+                    self.ndi_source.ndi_audio.connect(audio_slot)
+                    self._ndi_connections.append((sender, frame_slot, audio_slot))
+                self.state.emit(True, f"{name}: NDI directo activo")
+                self.log.emit(f"[{name}] NDI Runtime directo activo; FFmpeg no se utiliza")
+                continue
+            feed = self.monitor_feed_url if (self.monitor_feed_url and not monitor_assigned) else ""
+            worker = self._make_worker(profile, feed)
+            monitor_assigned = monitor_assigned or bool(feed)
+            self.workers.append(worker)
+            worker.start()
+        if not self.workers and not self.ndi_senders:
+            self.state.emit(False, "No hay destinos IP habilitados o NDI no disponible")
+
+    def _disconnect_ndi(self):
+        source = self.ndi_source
+        if source is not None:
+            for _sender, frame_slot, audio_slot in self._ndi_connections:
+                try:
+                    source.ndi_frame.disconnect(frame_slot)
+                except (TypeError, RuntimeError):
+                    pass
+                try:
+                    source.ndi_audio.disconnect(audio_slot)
+                except (TypeError, RuntimeError):
+                    pass
+        self._ndi_connections = []
+
+    def _stop_ndi(self):
+        self._disconnect_ndi()
+        for sender in self.ndi_senders:
+            sender.stop()
+        self.ndi_senders = []
+
+    def ndi_stats(self):
+        """v24.0.2.33: estado en vivo de cada emisor NDI.
+
+        Devuelve (nombre, frames enviados, muestras de audio, segundos desde
+        el último frame, enviando_tarjeta_de_prueba) para el monitor de salidas.
+        """
+        stats = []
+        for sender in self.ndi_senders:
+            try:
+                last = float(getattr(sender, "_last_frame_at", 0.0) or 0.0)
+                age = max(0.0, time.time() - last) if last > 0 else -1.0
+                stats.append((str(sender.name), int(getattr(sender, "frames_sent", 0) or 0),
+                              int(getattr(sender, "audio_samples", 0) or 0), age,
+                              bool(getattr(sender, "test_active", False))))
+            except Exception:  # noqa: BLE001
+                continue
+        return stats
+
+    def _state_from_worker(self, ok, msg, name):
+        self.state.emit(bool(ok), f"{name}: {msg}")
+
+    def _worker_ended(self, name, worker):
+        self._ended_workers.add(id(worker))
+        self.log.emit(f"[{name}] salida finalizada")
+        if self.workers and all(id(w) in self._ended_workers for w in self.workers):
+            self.ended.emit()
+
+    def isRunning(self):
+        return any(w.isRunning() for w in self.workers) or any(s.running for s in self.ndi_senders)
+
+    def stop(self):
+        self._stop_ndi()
+        for worker in self.workers:
+            worker.stop()
+
+    def wait(self, timeout=4000):
+        deadline = time.monotonic() + max(0, timeout) / 1000.0
+        for worker in self.workers:
+            remaining = max(0, int((deadline - time.monotonic()) * 1000))
+            worker.wait(remaining)
+        return not self.isRunning()
+
+    def set_track_preferences(self, audio_preference, subtitle_preference):
+        """Actualiza idioma/subtítulos sin reconstruir la salida todavía.
+
+        El siguiente ``sync_items(..., force_jump=True)`` reinicia cada
+        worker en el offset actual y usa estas preferencias si el evento no
+        lleva una selección en vivo más específica.
+        """
+        self.common["audio_preference"] = str(audio_preference or "AUTO / Español latino preferido")
+        self.common["subtitle_preference"] = str(subtitle_preference or "OFF")
+        if self.common["subtitle_preference"].upper() != "OFF":
+            self.common["subtitle_burn"] = True
+        for worker in self.workers:
+            worker.set_track_preferences(audio_preference, subtitle_preference)
+
+    def sync_items(self, items, current_index, force_jump=False, start_offset=0.0):
+        self.items = items or []
+        if 0 <= int(current_index) < len(self.items):
+            self._set_current_item(self.items[int(current_index)])
+        for worker in self.workers:
+            worker.sync_items(items, current_index, force_jump=force_jump, start_offset=start_offset)
+
+    def replace_items(self, items, start_index=0):
+        self.sync_items(items, start_index, force_jump=True)
+
+    def pause_here(self, paused):
+        for worker in self.workers:
+            worker.pause_here(paused)
+
+    def seek_to(self, index, offset):
+        for worker in self.workers:
+            worker.seek_to(index, offset)
+
+    def set_logo(self, logo):
+        for worker in self.workers:
+            worker.set_logo(logo)
+        for sender in self.ndi_senders:
+            sender.set_logo(logo)
+
+    def set_program_overlay(self, path, interval_seconds=1080.0, duration_seconds=15.0):
+        for worker in self.workers:
+            worker.set_program_overlay(path, interval_seconds, duration_seconds)
+        self.common["program_overlay"] = str(path or "")
+        self.common["program_interval"] = float(interval_seconds or 1080.0)
+        self.common["program_duration"] = float(duration_seconds or 15.0)
+
+    @property
+    def has_active_process(self):
+        """Indica que al menos un FFmpeg está realmente abierto.
+
+        El QThread puede seguir vivo durante la ventana entre un FFmpeg que
+        termina y el siguiente intento. El watcher de drift no debe iniciar
+        otro seek durante esa ventana: en v24.0.2.13 el proceso RTMP era el
+        único dueño de la reconexión.
+        """
+        for worker in self.workers:
+            proc = getattr(worker, "proc", None)
+            if proc is not None and proc.poll() is None:
+                return True
+        return False
+
+    @property
+    def current_position(self):
+        # v24.0.2.35: -1 mientras todos los workers calientan (arranque).
+        for worker in self.workers:
+            if worker.isRunning():
+                position = worker.current_position
+                if position >= 0:
+                    return position
+        return -1.0 if self.workers else 0.0
+
+    @property
+    def current_index(self):
+        for worker in self.workers:
+            if worker.isRunning():
+                return worker.current_index
+        return -1

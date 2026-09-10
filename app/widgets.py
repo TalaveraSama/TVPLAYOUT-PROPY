@@ -3,7 +3,7 @@ import math
 import time
 
 from PySide6.QtCore import Qt, QTimer, QRectF, QPointF, Signal, QSize
-from PySide6.QtGui import QPainter, QColor, QPen, QBrush, QFont, QLinearGradient, QRadialGradient, QPainterPath
+from PySide6.QtGui import QPainter, QColor, QPen, QBrush, QFont, QLinearGradient, QRadialGradient, QPainterPath, QImage
 from PySide6.QtWidgets import QWidget, QLabel, QSizePolicy
 
 
@@ -197,26 +197,48 @@ class VUMeter(QWidget):
 
 
 class VideoSurface(QWidget):
-    """Superficie nativa donde mpv dibuja (--wid). Muestra un fondo mientras no hay video."""
+    """Superficie de vídeo pintada por frames RGB entregados por PyAV.
+
+    No depende de una ventana hija, IPC, named pipe ni de un ejecutable
+    reproductor externo. El frame se recibe mediante una señal Qt y se pinta
+    en el hilo de la interfaz, que es el único hilo permitido para tocar
+    widgets.
+    """
 
     double_clicked = Signal()
     resized = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setAttribute(Qt.WA_NativeWindow, True)
-        self.setAttribute(Qt.WA_DontCreateNativeAncestors, True)
         self.setAttribute(Qt.WA_OpaquePaintEvent, True)
-        self.setAttribute(Qt.WA_NoSystemBackground, True)
         self.setMinimumSize(160, 90)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self._text = "SIN SEÑAL"
         self._active = False
+        self._frame = QImage()
+        self._aspect_mode = "auto"
 
     def set_active(self, active, text=None):
-        self._active = active
+        self._active = bool(active)
         if text is not None:
             self._text = text
+        self.update()
+
+    def set_frame(self, frame):
+        """Recibe un QImage ya desacoplado de la memoria de PyAV."""
+        if frame is None or frame.isNull():
+            return
+        self._frame = frame
+        self._active = True
+        self.update()
+
+    def clear_frame(self):
+        self._frame = QImage()
+        self._active = False
+        self.update()
+
+    def set_aspect_mode(self, mode):
+        self._aspect_mode = str(mode or "auto")
         self.update()
 
     def mouseDoubleClickEvent(self, _event):
@@ -227,10 +249,16 @@ class VideoSurface(QWidget):
         self.resized.emit()
 
     def paintEvent(self, _event):
-        if self._active:
-            return  # mpv pinta encima
         p = QPainter(self)
         p.fillRect(self.rect(), QColor("#000000"))
+        if self._active and not self._frame.isNull():
+            mode = Qt.IgnoreAspectRatio if self._aspect_mode == "stretch" else Qt.KeepAspectRatio
+            scaled = self._frame.scaled(self.size(), mode, Qt.SmoothTransformation)
+            x = (self.width() - scaled.width()) // 2
+            y = (self.height() - scaled.height()) // 2
+            p.drawImage(x, y, scaled)
+            p.end()
+            return
         g = QLinearGradient(0, 0, 0, self.height())
         g.setColorAt(0, QColor("#0b0b0b"))
         g.setColorAt(1, QColor("#050505"))

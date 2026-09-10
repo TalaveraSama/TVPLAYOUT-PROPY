@@ -139,11 +139,12 @@ class ProbeWorker(QThread):
     updated = Signal(str)              # path actualizado
     finished_all = Signal(int)         # total analizados
 
-    def __init__(self, db, make_thumbs=True, batch=100):
+    def __init__(self, db, make_thumbs=True, batch=100, paths=None):
         super().__init__()
         self.db = db
         self.make_thumbs = make_thumbs
         self.batch = batch
+        self.paths = [str(p) for p in (paths or []) if p] or None
         self.stop_requested = False
 
     def stop(self):
@@ -155,7 +156,7 @@ class ProbeWorker(QThread):
             self.finished_all.emit(0)
             return
         while not self.stop_requested:
-            rows = self.db.unprobed_media(self.batch)
+            rows = self.db.unprobed_media(self.batch, paths=self.paths)
             if not rows:
                 break
             for r in rows:

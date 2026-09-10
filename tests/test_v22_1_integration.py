@@ -9,8 +9,10 @@ Ejecutar: python tests/test_v22_1_integration.py
 import os
 import re
 import sys
+from unittest.mock import patch
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, REPO)
 MPV = os.path.join(REPO, "app", "mpv_player.py")
 OUT = os.path.join(REPO, "app", "output.py")
 WIN = os.path.join(REPO, "app", "main_window.py")
@@ -97,6 +99,16 @@ def test_output_has_pause_and_seek_api():
     assert "_jump_offset" in rb, "el loop de run() debe consumir _jump_offset"
 
 
+def test_output_falls_back_from_unavailable_hardware_encoder():
+    """NVENC/QSV/AMF listados sin GPU no deben tumbar la salida RTMP."""
+    src = _read(OUT)
+    requested = src[src.find("codec = self.ENCODERS.get(requested)"):src.find("def _encoder_works", src.find("codec = self.ENCODERS.get(requested)"))]
+    assert "self._encoder_works(codec)" in requested
+    assert 'self._resolved = ("CPU/x264", "libx264")' in requested
+    assert "Fallback encoder" in src
+    assert "Cannot load nvcuda.dll" in src
+
+
 def test_sync_items_accepts_start_offset():
     src = _read(OUT)
     sig = re.search(r"def sync_items\(self.*?\):", src)
@@ -135,8 +147,11 @@ def test_main_window_has_drift_watcher():
     assert "_rtmp_drift_threshold" in src, "MainWindow debe tener un umbral de drift configurable"
     idx = src.find("def _rtmp_check_drift(self")
     assert idx > 0
-    # Leer 1500 caracteres (cubre cualquier implementación razonable)
-    block = src[idx:idx + 2500]
+    # Leer una ventana amplia: el guard de proceso activo se documenta antes
+    # de la realineación y puede desplazar el seek dentro de la función.
+    # (v24.0.2.40 amplía la ventana: el seek_to vive en el helper
+    # _realign_rtmp, tras el guard direccional y el aviso de minutos.)
+    block = src[idx:idx + 9000]
     # v22.2.2: el watcher lee current_position (estimación dinámica), no
     # current_offset (estático).
     assert "self.output.current_position" in block, \
@@ -214,7 +229,7 @@ def test_rtmp_mode_radios_in_ui():
     assert "QButtonGroup" in src, "main_window.py debe usar QButtonGroup para los radios"
     assert "self.rtmp_mode_local" in src, "debe existir self.rtmp_mode_local"
     assert "self.rtmp_mode_remote" in src, "debe existir self.rtmp_mode_remote"
-    assert "self.rtmp_mode_ndi" in src, "debe existir self.rtmp_mode_ndi (placeholder para futuro)"
+    assert "OutputProfilesDialog" in _read(os.path.join(REPO, "app", "dialogs_extra.py")), "la configuración IP debe incluir el diálogo de destinos"
     assert "def _rtmp_mode_changed" in src, "debe existir el handler _rtmp_mode_changed"
     assert "def _rtmp_start" in src, "debe existir el método _rtmp_start"
     assert "def _rtmp_stop" in src, "debe existir el método _rtmp_stop"
@@ -226,12 +241,6 @@ def test_rtmp_mode_persisted_in_settings():
     assert 'self._save_setting("rtmp_mode"' in src, "_rtmp_mode_changed debe persistir el modo en la BD"
     # _rtmp_state debe volver a modo local si hay error
     assert "self.rtmp_mode_local.setChecked(True)" in src, "fallo de RTMP debe volver a modo local"
-
-
-def test_ndi_radio_disabled_placeholder():
-    src = _read(WIN)
-    # El radio de NDI debe estar deshabilitado
-    assert "self.rtmp_mode_ndi.setEnabled(False)" in src, "RTMP Local (NDI) debe estar deshabilitado como placeholder"
 
 
 # --- v22.2.2 hotfix: bug del NameError en _build_right ---
@@ -308,80 +317,16 @@ def test_mpv_player_disables_watch_later():
         "_purge_watch_later debe usar os.remove/unlink o shutil.rmtree para borrar"
 
 
-# --- v23.0: crossfade de audio entre clips ---
+# --- monitor audio: sin crossfade ---
 
-def test_mpv_player_supports_crossfade():
-    """v23.0: MPVPlayer expone crossfade_enabled, crossfade_duration,
-    set_crossfade() y fade_out(). play() aplica el filtro afade de
-    fade-in al cargar el clip.
-    """
-    src = _read(MPV)
-    # Atributos de instancia
-    assert "self.crossfade_enabled" in src, "MPVPlayer debe tener self.crossfade_enabled"
-    assert "self.crossfade_duration" in src, "MPVPlayer debe tener self.crossfade_duration"
-    # Método set_crossfade para configurar
-    assert "def set_crossfade" in src, "MPVPlayer debe tener set_crossfade() para configurar desde la UI"
-    # Método fade_out para triggerear desde playout._tick()
-    fade_out = re.search(r"def fade_out\(self.*?\n(?:        .*\n)+", src, re.S)
-    assert fade_out, "no encontré el método fade_out()"
-    fb = fade_out.group(0)
-    assert "af" in fb and "afade" in fb, "fade_out debe agregar el filtro lavfi=afade a mpv"
-    # Flag de no-duplicar
-    assert "_fade_out_applied" in src, "MPVPlayer debe tener _fade_out_applied para no aplicar fade_out dos veces"
-    # play() debe aplicar el fade-in si está habilitado
-    play_block = re.search(r"def play\(self.*?\n(?:        .*\n)+", src, re.S)
-    assert play_block, "no encontré el método play()"
-    pb = play_block.group(0)
-    assert "afade" in pb, "play() debe aplicar el filtro afade de fade-in cuando crossfade_enabled es True"
-
-
-def test_playout_triggers_fade_out():
-    """v23.0: playout._tick() invoca player.fade_out() cuando quedan
-    crossfade_duration segundos para terminar el clip al aire.
-    """
-    src = _read(OUT)  # historical: OUT is the playout module path
-    # En este test suite OUT apunta a app/output.py, no app/playout.py.
-    # Necesitamos leer playout.py directamente.
-    playout_src = _read(os.path.join(REPO, "app", "playout.py"))
-    tick_block = re.search(r"def _tick\(self.*?\n(?:        .*\n)+", playout_src, re.S)
-    assert tick_block, "no encontré _tick() en playout.py"
-    tb = tick_block.group(0)
-    assert "self.player.fade_out" in tb, \
-        "playout._tick() debe invocar self.player.fade_out() cuando quedan crossfade_duration segundos"
-    assert "crossfade_enabled" in tb or "crossfade" in tb.lower(), \
-        "playout._tick() debe chequear el flag de crossfade del player antes de triggerear el fade-out"
-    assert "self.player.crossfade_duration" in tb or "crossfade_duration" in tb, \
-        "playout._tick() debe usar la duración configurada en el player"
-
-
-def test_main_window_has_crossfade_controls():
-    """v23.0: la UI tiene un toggle de crossfade y un slider de duración,
-    con sus handlers que invocan self.player.set_crossfade() y persisten
-    en settings.
-    """
-    src = _read(WIN)
-    # Toggle
-    assert "self.crossfade_btn" in src, "main_window debe tener self.crossfade_btn (toggle de crossfade)"
-    assert "_crossfade_toggle_changed" in src, \
-        "main_window debe tener el handler _crossfade_toggle_changed"
-    # Slider
-    assert "self.crossfade_duration" in src, "main_window debe tener el slider self.crossfade_duration"
-    assert "_crossfade_duration_changed" in src, \
-        "main_window debe tener el handler _crossfade_duration_changed"
-    # Persistencia en settings
-    assert 'crossfade_enabled' in src, \
-        "main_window debe persistir 'crossfade_enabled' en settings"
-    assert 'crossfade_duration' in src, \
-        "main_window debe persistir 'crossfade_duration' en settings"
-    # Handlers deben llamar al player
-    assert "self.player.set_crossfade" in src, \
-        "los handlers deben invocar self.player.set_crossfade()"
-    # apply_settings debe aplicar el estado desde settings
-    apply = re.search(r"def apply_settings\(self.*?self\._modes_changed\(\)", src, re.S)
-    assert apply, "no encontré el cuerpo de apply_settings"
-    ab = apply.group(0)
-    assert "crossfade_enabled" in ab and "crossfade_duration" in ab, \
-        "apply_settings debe aplicar el estado del crossfade desde settings (crossfade_enabled + crossfade_duration)"
+def test_crossfade_removed_from_active_playout():
+    """El monitor usa cortes directos; el crossfade no debe alterar el audio."""
+    main = _read(WIN)
+    playout = _read(os.path.join(REPO, "app", "playout.py"))
+    pyav = _read(os.path.join(REPO, "app", "pyav_player.py"))
+    assert "crossfade" not in main.lower()
+    assert "crossfade" not in playout.lower()
+    assert "crossfade" not in pyav.lower()
 
 
 # --- v23.3: filler automático + slate fallback ---
@@ -472,18 +417,15 @@ def test_playout_filler_slate_retry_has_limit():
         "_on_loaded debe resetear _filler_fail_count cuando mpv confirma que cargó un archivo"
 
 
-def test_playout_slate_uses_font_on_both_drawtext_filters():
-    """v23.3.1: el segundo filtro drawtext ('PROXIMAMENTE') no llevaba
-    font_path, así que en builds de mpv sin fontconfig ese filtro fallaba
-    solo (aunque el primero, con fontfile explícito, cargara bien) y
-    tumbaba el loadfile completo del slate.
-    """
+def test_playout_slate_is_native():
+    """El fallback de continuidad ya no depende de lavfi, fuentes ni mpv."""
     src = _read(os.path.join(REPO, "app", "playout.py"))
-    slate = re.search(r"slate_url = \((.*?)\n        \)", src, re.S)
-    assert slate, "no encontré la construcción de slate_url en _play_slate"
+    slate = re.search(r"def _play_slate\(self\):(.*?)(?=\n    def fill)", src, re.S)
+    assert slate, "no encontré _play_slate"
     body = slate.group(1)
-    assert body.count("drawtext{font_path}") == 2, \
-        "ambos filtros drawtext del slate deben usar font_path (si no, uno de los dos puede fallar sin fuente)"
+    assert "av://slate:native" in body
+    assert "lavfi" not in body
+    assert "drawtext" not in body
 
 
 def test_main_window_has_filler_setting():
@@ -497,6 +439,242 @@ def test_main_window_has_filler_setting():
     assert apply, "no encontré apply_settings"
     ab = apply.group(0)
     assert "filler_path" in ab, "apply_settings debe cargar filler_path en self.ctrl.filler_path"
+
+
+def test_local_player_is_pyav_not_mpv_ipc():
+    """El aire local debe decodificar con PyAV y no depender de IPC de mpv."""
+    main = _read(WIN)
+    player = _read(os.path.join(REPO, "app", "pyav_player.py"))
+    assert "from .pyav_player import PyAVPlayer" in main
+    assert "self.player = PyAVPlayer" in main
+    assert "import av" in player
+    assert "class PyAVPlayer" in player
+    assert "QVideoWidget" not in player
+    assert "input-ipc-server" not in player
+
+
+def test_pyav_dependencies_and_surface_frame_api():
+    requirements = _read(os.path.join(REPO, "requirements.txt"))
+    widgets = _read(os.path.join(REPO, "app", "widgets.py"))
+    assert "av>=" in requirements, "PyAV debe instalarse como dependencia de runtime"
+    assert "def set_frame" in widgets, "VideoSurface debe aceptar frames decodificados"
+    assert "QImage" in widgets, "VideoSurface debe pintar QImage"
+
+
+def test_pyav_audio_discards_ffmpeg_alignment_padding():
+    """El PCM local no debe enviar al altavoz el padding de alineación de FFmpeg."""
+    player = _read(os.path.join(REPO, "app", "pyav_player.py"))
+    assert "def _pcm_bytes(frame)" in player
+    assert "useful = samples * 2 * 2" in player
+    assert "return raw[:useful]" in player
+    assert "raw = self._pcm_bytes(out)" in player
+
+
+def test_playlist_trim_is_persisted_and_applied_to_both_outputs():
+    """El corte es metadato de playlist: no reescribe el archivo y afecta PyAV/FFmpeg."""
+    db = _read(os.path.join(REPO, "app", "db.py"))
+    playout = _read(os.path.join(REPO, "app", "playout.py"))
+    player = _read(os.path.join(REPO, "app", "pyav_player.py"))
+    output = _read(OUT)
+    dialog = _read(os.path.join(REPO, "app", "dialogs.py"))
+    assert '"mark_in"' in db and '"mark_out"' in db
+    assert "source_duration" in db
+    assert "trim_bounds" in playout and "start=trim_start, end=trim_end" in playout
+    assert "start_at=self._trim_start" in player and "self.end_at" in player
+    assert '"-t", f"{remaining_duration:.3f}"' in output
+    assert "MultiOutputManager" in output and "libndi_newtek" in output
+    assert "NDISender" in output and "NDI directo activo" in output
+    assert "ndi_source" in output and "NDI Runtime directo activo; FFmpeg no se utiliza" in output
+    assert "QDoubleSpinBox" in dialog and "Restablecer corte" in dialog
+    assert "trim_end" in dialog and "source_duration - trim_end" in dialog
+
+
+def test_portable_build_keeps_runtime_root_and_external_tools_at_exe_level():
+    """La distribución portable debe conservar datos y descubrir FFmpeg junto al EXE."""
+    config = _read(os.path.join(REPO, "app", "config.py"))
+    build = _read(os.path.join(REPO, "build_exe.bat"))
+    spec = _read(os.path.join(REPO, "tvplayout.spec"))
+    launcher = _read(os.path.join(REPO, "INICIAR_EXE.bat"))
+    assert "frozen" in config and "sys.executable" in config
+    assert "TVPlayoutPRO.exe" in build and "ffmpeg.exe" in build and "ffprobe.exe" in build
+    assert "assets\\logo.png" in build and "assets\\logo.ico" in build
+    assert "rmdir /s /q \"%~dp0build\"" in build
+    assert "collect_all(\"av\")" in spec and "COLLECT(" in spec
+    assert "APP_EXE_ICON" in spec and "TVPlayoutPRO.exe" in launcher
+
+
+def test_output_profiles_cover_rtmp_srt_ndi():
+    """La configuración permite varios destinos independientes y los tres protocolos."""
+    dialog = _read(os.path.join(REPO, "app", "dialogs_extra.py"))
+    main = _read(WIN)
+    assert "class OutputProfilesDialog" in dialog
+    assert '["RTMP", "SRT", "NDI"]' in dialog
+    assert '"outputs": []' in main
+    assert "MultiOutputManager" in main
+    assert "open_outputs" in main
+
+
+def test_logo_uses_professional_safe_area_guides():
+    """El logo se previsualiza y se calcula dentro del margen 4:3."""
+    output = _read(OUT)
+    dialog = _read(os.path.join(REPO, "app", "dialogs_extra.py"))
+    window = _read(WIN)
+    assert "def logo_safe_area_43" in output
+    assert "def logo_overlay_position" in output
+    assert "logo_overlay_position" in output
+    assert "class LogoSafeAreaPreview" in dialog
+    assert "12.5%" in dialog and "87.5%" in dialog and "16:9" in dialog
+    assert '"logo_scale": 10' in window and '"logo_margin": 48' in window
+
+
+def test_direct_ndi_bridge_declares_runtime_api_and_layouts():
+    """El puente ctypes debe probar Runtime, sender, vídeo BGRA/BGRX y audio FLTP."""
+    ndi = _read(os.path.join(REPO, "app", "ndi_sender.py"))
+    assert "Processing.NDI.Lib.x64.dll" in ndi
+    assert "NDI_RUNTIME_DIR_V6" in ndi and "NDI_RUNTIME_DIR_V5" in ndi
+    assert "ProgramFiles" in ndi and "ProgramW6432" in ndi
+    assert "NDI 6 Tools" in ndi and "Runtime" in ndi
+    assert "NDIlib_initialize" in ndi and "NDIlib_send_create" in ndi
+    assert "NDIlib_send_send_video_v2_async" in ndi
+    assert "NDIlib_send_send_audio_v3" in ndi
+    assert "FOURCC_BGRX" in ndi and "FOURCC_FLTP" in ndi
+    assert "ctypes.c_float" in ndi and "sample_count * ctypes.sizeof(ctypes.c_float)" in ndi
+    assert "self._send_video_async(sender, empty)" in ndi
+    assert "NDIlib_send_send_video_async_v2" in ndi
+
+
+def test_ndi_is_not_advertised_from_dll_path_only():
+    """La disponibilidad debe pasar por probe completo, no solo por find_library."""
+    ndi = _read(os.path.join(REPO, "app", "ndi_sender.py"))
+    dialog = _read(os.path.join(REPO, "app", "dialogs_extra.py"))
+    assert "def probe(cls" in ndi
+    assert "if not sender.start()" in ndi and "sender.stop()" in ndi
+    assert "NDISender.probe()" in dialog
+    assert "NDI DIRECTO (RUNTIME x64)" in dialog
+
+
+def test_ndi_video_api_accepts_sdk_symbol_order():
+    """NDI 6 Runtime puede exportar async_v2 en vez de v2_async."""
+    from app import ndi_sender
+
+    class OnlyLegacyOrder:
+        NDIlib_send_send_video_async_v2 = object()
+
+    fn, name = ndi_sender.NDISender._api_function(
+        OnlyLegacyOrder(),
+        "NDIlib_send_send_video_v2_async",
+        "NDIlib_send_send_video_async_v2",
+    )
+    assert fn is not None and name == "NDIlib_send_send_video_async_v2"
+
+
+def test_ndi_mock_probe_runs_initialize_create_destroy():
+    """Mock multiplataforma: verifica el ciclo C sin exigir la DLL en Linux."""
+    from app import ndi_sender
+
+    class FakeFunction:
+        def __init__(self, result=None):
+            self.result = result
+            self.restype = None
+            self.argtypes = None
+            self.calls = 0
+
+        def __call__(self, *args):
+            self.calls += 1
+            return self.result
+
+    class FakeDLL:
+        def __init__(self):
+            self.NDIlib_initialize = FakeFunction(True)
+            self.NDIlib_destroy = FakeFunction()
+            self.NDIlib_send_create = FakeFunction(123)
+            self.NDIlib_send_destroy = FakeFunction()
+            # Es el nombre exportado por varios Runtime NDI 6.
+            self.NDIlib_send_send_video_async_v2 = FakeFunction()
+            self.NDIlib_send_send_audio_v3 = FakeFunction()
+
+    fake = FakeDLL()
+    old_runtime, old_users = ndi_sender.NDISender._runtime, ndi_sender.NDISender._runtime_users
+    try:
+        ndi_sender.NDISender._runtime = None
+        ndi_sender.NDISender._runtime_users = 0
+        with (
+            patch.object(ndi_sender.NDISender, "find_library", classmethod(lambda cls: "fake/Processing.NDI.Lib.x64.dll")),
+            patch.object(ndi_sender.ctypes, "WinDLL", return_value=fake, create=True),
+        ):
+            ok, detail, path = ndi_sender.NDISender.probe()
+        assert ok and "listo" in detail and path.endswith("Processing.NDI.Lib.x64.dll")
+        assert fake.NDIlib_initialize.calls == 1
+        assert fake.NDIlib_send_create.calls == 1
+        assert fake.NDIlib_send_send_video_async_v2.calls == 1
+        assert fake.NDIlib_send_destroy.calls == 1
+        assert fake.NDIlib_destroy.calls == 1
+    finally:
+        ndi_sender.NDISender._runtime = old_runtime
+        ndi_sender.NDISender._runtime_users = old_users
+
+
+def test_ndi_profiles_use_independent_direct_senders_and_pyav_signals():
+    """Cada perfil NDI conecta su propio emisor a las señales públicas de PyAV."""
+    output = _read(OUT)
+    player = _read(os.path.join(REPO, "app", "pyav_player.py"))
+    main = _read(WIN)
+    assert "ndi_frame = Signal(object, float, float)" in player
+    assert "ndi_audio = Signal(object)" in player
+    assert "self.ndi_frame.emit" in player and "self.ndi_audio.emit" in player
+    assert "self.ndi_senders = []" in output
+    assert "self.ndi_source.ndi_frame.connect(frame_slot)" in output
+    assert "self.ndi_source.ndi_audio.connect(audio_slot)" in output
+    assert "self._stop_ndi()" in output and "self._disconnect_ndi()" in output
+    assert "ndi_source=self.player" in main
+
+
+def test_output_dialog_controls_activation_and_main_is_monitor_only():
+    """La activación queda en perfiles; la pantalla principal solo monitorea."""
+    dialog = _read(os.path.join(REPO, "app", "dialogs_extra.py"))
+    main = _read(WIN)
+    assert 'self.enabled = QCheckBox("Destino activo")' in dialog
+    assert 'self.rtmp_url.setVisible(False)' in main
+    assert 'self.rtmp_destinations = _lbl' in main
+    assert 'self._refresh_output_monitor()' in main
+    assert 'enabled = any(bool(p.get("enabled", True)) for p in profiles)' in main
+    assert 'QTimer.singleShot(250, self._rtmp_start)' in main
+    assert 'elif self.settings.get("rtmp_mode") == "remote" and self._output_profiles()' in main
+
+
+def test_logo_is_hidden_for_publicidad_in_ffmpeg_and_ndi():
+    """Publicidad no debe recibir logo en FFmpeg ni en el sender NDI."""
+    output = _read(OUT)
+    ndi = _read(os.path.join(REPO, "app", "ndi_sender.py"))
+    window = _read(WIN)
+    assert "logo_suppressed_for_category" in output
+    assert "item.get(\"category\", \"\")" in output
+    assert "set_content_category" in output and "self.content_category" in ndi
+    assert "show_logo = not logo_suppressed_for_category" in ndi
+    assert "hide_categories" in window
+
+    from app.ndi_sender import logo_suppressed_for_category
+    assert logo_suppressed_for_category("Publicidad")
+    assert logo_suppressed_for_category(" publicidad ")
+    assert not logo_suppressed_for_category("Películas")
+
+
+def test_ndi_audio_waits_for_local_prebuffer():
+    """El prebuffer de seis segundos alimenta el monitor, no adelanta el NDI."""
+    player = _read(os.path.join(REPO, "app", "pyav_player.py"))
+    assert "self._ndi_audio_enabled = False" in player
+    assert "self._ndi_audio_enabled = True" in player
+    assert "if self._ndi_audio_enabled:" in player
+    assert "AUDIO_PREBUFFER_SECONDS = 6.0" in player
+
+
+def test_ndi_documentation_no_longer_requires_ffmpeg_muxer():
+    build = _read(os.path.join(REPO, "BUILD.md"))
+    readme = _read(os.path.join(REPO, "README.md"))
+    bat = _read(os.path.join(REPO, "build_exe.bat"))
+    assert "no necesita `ffmpeg-ndi.exe`" in build
+    assert "no se necesita" in readme and "libndi_newtek" in readme
+    assert "no es necesario para NDI directo" in bat
 
 
 if __name__ == "__main__":
