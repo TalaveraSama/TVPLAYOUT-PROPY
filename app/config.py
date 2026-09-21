@@ -19,8 +19,12 @@ def _runtime_root():
 
 
 ROOT = _runtime_root()
-APP_NAME = "TVPlayout PRO"
-APP_VERSION = "V24.0.2.45"
+# V25 estrena una identidad propia. Estos nombres también centralizan el
+# empaquetado para que la UI, las salidas y el instalador no vuelvan a divergir.
+APP_NAME = "Nexora Air"
+APP_VERSION = "V25.0.0"
+APP_SLUG = "NexoraAir"
+APP_ID = "io.nexora.air"
 IS_WINDOWS = os.name == "nt"
 
 
@@ -62,7 +66,17 @@ def _load_env_file():
 
 _load_env_file()
 
-DB_PATH = Path(os.environ.get("TVPLAYOUT_DB") or (ROOT / "tvplayout.db"))
+# ``TVPLAYOUT_DB`` y ``tvplayout.db`` siguen admitidos para actualizar sin
+# perder la biblioteca de TVPlayout PRO. Las instalaciones nuevas usan el
+# nombre de Nexora Air; el instalador V25 se encarga además de copiar los datos
+# desde la carpeta antigua cuando cambia el directorio del programa.
+_legacy_db = ROOT / "tvplayout.db"
+_default_db = ROOT / "nexora-air.db"
+DB_PATH = Path(
+    os.environ.get("NEXORA_AIR_DB")
+    or os.environ.get("TVPLAYOUT_DB")
+    or (_legacy_db if _legacy_db.is_file() and not _default_db.is_file() else _default_db)
+)
 CACHE_DIR = ROOT / "cache"
 THUMB_DIR = CACHE_DIR / "thumbs"
 LOG_DIR = ROOT / "logs"

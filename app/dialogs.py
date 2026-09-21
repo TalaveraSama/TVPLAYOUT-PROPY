@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (QApplication, QDialog, QVBoxLayout, QHBoxLayout, 
 
 from . import logger
 from .config import (MPV_PATH, VLC_PATH, FFMPEG_PATH, FFPROBE_PATH, ROOT, RESOLUTIONS, FPS_LIST, ENCODERS, AUDIO_PREFS, SUB_PREFS,
-                     category_color, DB_PATH, APP_VERSION)
+                     category_color, DB_PATH, APP_NAME, APP_VERSION)
 from .scheduler import MODE_LABELS, DAY_LABELS
 from .widgets import fmt_tc
 
@@ -38,7 +38,7 @@ def _note(text):
 class BaseDialog(QDialog):
     def __init__(self, parent, title, w=900, h=600):
         super().__init__(parent)
-        self.setWindowTitle(f"{title} — TVPlayout PRO {APP_VERSION}")
+        self.setWindowTitle(f"{title} — {APP_NAME} {APP_VERSION}")
         screen = (parent.screen() if parent is not None else None) or QApplication.primaryScreen()
         available = screen.availableGeometry() if screen is not None else None
         if available is not None:

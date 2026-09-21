@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (QApplication, QDialog, QVBoxLayout, QHBoxLayout, 
                                QSpinBox, QCheckBox, QFileDialog, QPlainTextEdit, QMessageBox, QWidget,
                                QTableWidget, QTableWidgetItem, QAbstractItemView, QHeaderView)
 
-from .config import MPV_PATH, VLC_PATH, FFMPEG_PATH, FFMPEG_NDI_PATH, FFPROBE_PATH, ROOT, APP_VERSION, DEFAULT_LOGO_PATH
+from .config import MPV_PATH, VLC_PATH, FFMPEG_PATH, FFMPEG_NDI_PATH, FFPROBE_PATH, ROOT, APP_NAME, APP_VERSION, DEFAULT_LOGO_PATH
 from .ndi_sender import NDISender
 
 CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -271,7 +271,7 @@ class OutputProfilesDialog(QDialog):
         hints = {
             "RTMP": "rtmp://host/app/clave  o  rtmps://host/app/clave",
             "SRT": "srt://host:9000?mode=caller&latency=200000",
-            "NDI": "Nombre NDI visible en la red, por ejemplo TVPlayout PRO",
+            "NDI": "Nombre NDI visible en la red, por ejemplo Nexora Air",
         }
         self.target.setPlaceholderText(hints.get(protocol, "Destino"))
 
@@ -338,7 +338,7 @@ class DevicesDialog(QDialog):
 
     def __init__(self, parent):
         super().__init__(parent)
-        self.setWindowTitle(f"Dispositivos y motores — TVPlayout PRO {APP_VERSION}")
+        self.setWindowTitle(f"Dispositivos y motores — {APP_NAME} {APP_VERSION}")
         _prepare_resizable_dialog(self, 760, 520, 560, 380)
         v = QVBoxLayout(self)
         self.text = QPlainTextEdit()

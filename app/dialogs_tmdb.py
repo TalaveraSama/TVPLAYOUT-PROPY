@@ -7,7 +7,7 @@ from PySide6.QtGui import QColor, QFont, QIcon, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget,
                                QListWidgetItem, QMessageBox, QPushButton, QSpinBox, QSplitter, QVBoxLayout, QWidget)
 
-from .config import APP_VERSION
+from .config import APP_NAME, APP_VERSION
 from .tmdb import TMDBImagesWorker, TMDBSearchWorker, render_movie_overlay
 
 
@@ -23,7 +23,7 @@ class TMDBEditDialog(QDialog):
 
     def __init__(self, parent, media, api_key):
         super().__init__(parent)
-        self.setWindowTitle(f"Editar imágenes TMDB — TVPlayout PRO {APP_VERSION}")
+        self.setWindowTitle(f"Editar imágenes TMDB — {APP_NAME} {APP_VERSION}")
         screen = (parent.screen() if parent is not None else None) or QApplication.primaryScreen()
         available = screen.availableGeometry() if screen is not None else None
         width, height = 940, 600
@@ -454,7 +454,7 @@ class TMDBCardDialog(QDialog):
 
     def __init__(self, parent, settings, db=None):
         super().__init__(parent)
-        self.setWindowTitle(f"Tarjeta TMDB al aire — TVPlayout PRO {APP_VERSION}")
+        self.setWindowTitle(f"Tarjeta TMDB al aire — {APP_NAME} {APP_VERSION}")
         screen = (parent.screen() if parent is not None else None) or QApplication.primaryScreen()
         available = screen.availableGeometry() if screen is not None else None
         width, height = 880, 600

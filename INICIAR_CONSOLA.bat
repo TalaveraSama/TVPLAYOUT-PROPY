@@ -1,7 +1,7 @@
 @echo off
 setlocal
 cd /d "%~dp0"
-title TVPlayout PRO V24.0.2.9 (consola de depuracion)
+title Nexora Air V25.0.0 (consola de depuracion)
 if not exist ".venv\Scripts\python.exe" (
   echo No existe el entorno virtual. Ejecuta INSTALL.bat primero.
   pause
@@ -10,6 +10,6 @@ if not exist ".venv\Scripts\python.exe" (
 .venv\Scripts\python.exe main.py
 if errorlevel 1 (
   echo.
-  echo TVPlayout PRO se cerro con error. Revisa logs\tvplayout.log
+  echo Nexora Air se cerro con error. Revisa logs\nexora-air.log
   pause
 )

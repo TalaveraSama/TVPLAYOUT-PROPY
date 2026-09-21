@@ -17,6 +17,7 @@ import time
 from PySide6.QtCore import QThread, Signal, QObject
 
 from . import logger
+from .config import APP_NAME, APP_SLUG
 from .prober import pick_audio, pick_subtitle
 from .ndi_sender import NDISender, logo_suppressed_for_category
 
@@ -72,7 +73,7 @@ def _ffmpeg_filter_path(path):
 # biblioteca de red (Z:) eso detenía la señal en silencio: FFmpeg corría sin
 # error pero sin emitir un solo frame (log 2026-09-10 00:05). Ahora el subtítulo
 # se sirve desde un SRT local alineado al offset de la emisión.
-SUBS_DIR = os.path.join(tempfile.gettempdir(), "TVPlayoutPRO_subs")
+SUBS_DIR = os.path.join(tempfile.gettempdir(), f"{APP_SLUG}_subs")
 
 _SRT_TS_RE = re.compile(r"\s*(\d+):(\d+):(\d+)[,.](\d+)\s*-->\s*(\d+):(\d+):(\d+)[,.](\d+)")
 
@@ -113,8 +114,10 @@ def _srt_shift(text, offset):
 
 class OutputWorker(QThread):
     log = Signal(str)
-    state = Signal(bool, str)       # on_air, mensaje
-    now_playing = Signal(int, str)  # índice, ruta
+    state = Signal(bool, str)          # on_air, mensaje
+    now_playing = Signal(int, str)     # índice, ruta
+    progress = Signal(int, float)      # índice, posición REAL dentro del clip
+    clip_finished = Signal(int, bool)  # índice, terminó correctamente
     ended = Signal()
 
     ENCODERS = {
@@ -128,7 +131,8 @@ class OutputWorker(QThread):
     def __init__(self, ffmpeg, items, url, resolution, fps, encoder, bitrate,
                  audio_preference="AUTO", subtitle_preference="OFF", subtitle_burn=False,
                  audio_bitrate=192, loop=True, start_index=0, start_offset=0.0, extra_args="", logo=None,
-                 program_overlay=None, program_interval=1080.0, program_duration=15.0, protocol="", monitor_feed_url=""):
+                 program_overlay=None, program_interval=1080.0, program_duration=15.0, protocol="",
+                 monitor_feed_url="", externally_controlled=False):
         super().__init__()
         self.ffmpeg = ffmpeg
         self.items = self._norm_items(items)
@@ -154,6 +158,11 @@ class OutputWorker(QThread):
         # ya procesado que se envía al destino, incluido el subtítulo quemado.
         # Un reproductor externo puede usarlo como monitor real del programa.
         self.monitor_feed_url = str(monitor_feed_url or "").strip()
+        # V25: en modo «Reloj» la salida es el único player y, por tanto, el
+        # master de continuidad. El worker termina un clip y espera a que el
+        # controlador decida el siguiente (tandas, modo manual, loop, etc.).
+        # Ya no existe un segundo reloj que pueda saltarse contenido.
+        self.externally_controlled = bool(externally_controlled)
         self.proc = None
         self.stop_requested = False
         self._lock = threading.RLock()
@@ -329,7 +338,7 @@ class OutputWorker(QThread):
         if self.protocol == "NDI":
             if not self.url or "://" in self.url and not low.startswith("ndi://"):
                 # El destino NDI es un nombre visible en la red, no una URL.
-                raise RuntimeError("El destino NDI debe tener un nombre, por ejemplo TVPlayout PRO")
+                raise RuntimeError("El destino NDI debe tener un nombre, por ejemplo Nexora Air")
         elif not low.startswith(("rtmp://", "rtmps://", "srt://", "udp://")):
             raise RuntimeError("La salida debe comenzar por rtmp://, rtmps://, srt:// o udp://")
         try:
@@ -449,7 +458,7 @@ class OutputWorker(QThread):
             else:
                 cmd += ["-flvflags", "no_duration_filesize", "-f", "flv", self.url]
         elif self.protocol == "NDI":
-            ndi_name = self.url.removeprefix("ndi://") or "TVPlayout PRO"
+            ndi_name = self.url.removeprefix("ndi://") or APP_NAME
             cmd += ["-f", "libndi_newtek", ndi_name]
         elif self.monitor_feed_url:
             tee = f"[f=mpegts:onfail=ignore]{self.url}|[f=mpegts:onfail=ignore]{self.monitor_feed_url}"
@@ -742,7 +751,14 @@ class OutputWorker(QThread):
     NOISE = ("Immediate exit requested", "Last message repeated", "Error muxing a packet", "Error writing trailer",
              "Error closing file", "Terminating thread", "Error submitting a packet")
 
-    def _drain_stderr(self, proc, last_lines):
+    def _drain_stderr(self, proc, last_lines, clip_index=None, clip_offset=None):
+        # Congelar la identidad del proceso evita que las últimas líneas de un
+        # FFmpeg ya cortado se atribuyan al evento nuevo. ``proc is self.proc``
+        # protege además el caso de loop que reutiliza el mismo índice.
+        if clip_index is None:
+            clip_index = self._current_index
+        if clip_offset is None:
+            clip_offset = float(self._current_offset or 0.0)
         try:
             for line in proc.stderr:
                 line = line.rstrip()
@@ -753,10 +769,18 @@ class OutputWorker(QThread):
                 m = _PROGRESS_RE.search(line)
                 if m and ("frame=" in line or "speed=" in line):
                     try:
-                        self._out_time = (int(m.group(1)) * 3600.0 + int(m.group(2)) * 60.0
-                                          + float(m.group(3)))
-                        self._out_time_at = time.time()
-                    except (ValueError, IndexError):
+                        out_time = (int(m.group(1)) * 3600.0 + int(m.group(2)) * 60.0
+                                    + float(m.group(3)))
+                        with self._lock:
+                            if proc is not self.proc or clip_index != self._current_index:
+                                continue
+                            self._out_time = out_time
+                            self._out_time_at = time.time()
+                            position = float(clip_offset) + out_time
+                        # V25: esta medición (no el reloj de pared) mueve la
+                        # playlist cuando FFmpeg es el player master.
+                        self.progress.emit(int(clip_index), max(0.0, position))
+                    except (TypeError, ValueError, IndexError):
                         pass
                     continue
                 if "Resumed reading" in line:
@@ -773,6 +797,19 @@ class OutputWorker(QThread):
                 log.warning("ffmpeg: %s", line)
         except Exception:  # noqa: BLE001
             pass
+
+    def _await_controller(self, index, success):
+        """V25: notifica fin y espera la decisión del controlador master.
+
+        La espera mantiene el worker vivo pero sin avanzar por su cuenta. El
+        callback normal de ``play_index`` enviará ``sync_items(force_jump)``
+        con el siguiente evento, también cuando haya tandas o loop.
+        """
+        self.clip_finished.emit(int(index), bool(success))
+        while not self.stop_requested:
+            if self._jump.wait(0.15):
+                return True
+        return False
 
     # -------------------------------------------------------------- loop
     def run(self):
@@ -810,6 +847,14 @@ class OutputWorker(QThread):
                 except RuntimeError as e:
                     self.log.emit(f"OMITIDO • {os.path.basename(item.get('path', ''))} • {e}")
                     consecutive_errors += 1
+                    if self.externally_controlled:
+                        # El player master nunca decide otro índice por su
+                        # cuenta: notifica el error y espera la transición del
+                        # controlador (auto/manual, tandas, loop o filler).
+                        consecutive_errors = 0
+                        if not self._await_controller(index, False):
+                            break
+                        continue
                     if consecutive_errors >= max(3, len(items)):
                         raise RuntimeError("Ningún evento de la playlist se pudo emitir: " + str(e))
                     index += 1
@@ -841,7 +886,11 @@ class OutputWorker(QThread):
                     first = False
                 started = time.time()
                 last_lines = []
-                threading.Thread(target=self._drain_stderr, args=(proc, last_lines), name="ffmpeg-stderr", daemon=True).start()
+                threading.Thread(
+                    target=self._drain_stderr,
+                    args=(proc, last_lines, index, float(self._current_offset or 0.0)),
+                    name="ffmpeg-stderr", daemon=True,
+                ).start()
                 # v24.0.2.38: vigilante de arranque (subtítulos que no dejan emitir).
                 threading.Thread(target=self._startup_watchdog, args=(proc,), name="ffmpeg-watchdog", daemon=True).start()
                 # Espera activa: reacciona a STOP o a un salto aunque FFmpeg no escriba nada en stderr.
@@ -884,8 +933,18 @@ class OutputWorker(QThread):
                             continue
                         consecutive_errors += 1
                         if consecutive_errors >= max(3, len(items)):
+                            if self.externally_controlled:
+                                consecutive_errors = 0
+                                if not self._await_controller(index, False):
+                                    break
+                                continue
                             raise RuntimeError("FFmpeg falla repetidamente: " + (last_lines[-1] if last_lines else f"código {code}"))
                         time.sleep(1.0)
+                        # En modo master se reintenta el MISMO evento; nunca
+                        # se adelanta la playlist debido a un fallo de salida.
+                        if self.externally_controlled:
+                            offset = float(self._current_offset or 0.0)
+                            continue
                     else:
                         # v24.0.2.39: error tras un rato emitiendo (p. ej. la
                         # conexión RTMP se cortó: "Error number -10053").
@@ -897,6 +956,13 @@ class OutputWorker(QThread):
                         consecutive_errors += 1
                         if consecutive_errors >= 3:
                             consecutive_errors = 0
+                            if self.externally_controlled:
+                                self.log.emit("Reintentos agotados • el controlador decide la continuidad")
+                                log.warning("%s: 3 reintentos del evento fallaron; notifica al master",
+                                            self.protocol)
+                                if not self._await_controller(index, False):
+                                    break
+                                continue
                             self.log.emit("Reintentos agotados • pasa al siguiente evento")
                             log.warning("%s: 3 reintentos del evento fallaron; avanza al siguiente",
                                         self.protocol)
@@ -914,7 +980,14 @@ class OutputWorker(QThread):
                             continue
                 else:
                     consecutive_errors = 0
-                # Periodo de gracia: el master (mpv) suele ordenar el salto al mismo evento en este momento.
+                if self.externally_controlled:
+                    # Fin natural: la salida acaba de emitir el último frame.
+                    # Sólo ahora se marca el evento y se calcula el siguiente.
+                    if not self._await_controller(index, code in (0, 255, -15)):
+                        break
+                    continue
+                # Periodo de gracia: el master local suele ordenar el salto al
+                # mismo evento en este momento (modo PyAV tradicional).
                 if self._jump.wait(self.GRACE_SECONDS):
                     continue
                 index += 1
@@ -955,6 +1028,8 @@ class MultiOutputManager(QObject):
 
     state = Signal(bool, str)
     log = Signal(str)
+    master_progress = Signal(int, float)
+    master_finished = Signal(int, bool)
     ended = Signal()
 
     def __init__(self, ffmpeg, profiles, items, resolution, fps, encoder, bitrate,
@@ -962,7 +1037,7 @@ class MultiOutputManager(QObject):
                  audio_bitrate=192, loop=True, start_index=0, start_offset=0.0,
                  extra_args="", logo=None, program_overlay=None, program_interval=1080.0,
                  program_duration=15.0, ndi_ffmpeg=None, ndi_source=None,
-                 monitor_feed_url="", parent=None):
+                 monitor_feed_url="", externally_controlled=False, parent=None):
         super().__init__(parent)
         self.ffmpeg = ffmpeg
         self.ndi_ffmpeg = ndi_ffmpeg or ffmpeg
@@ -976,9 +1051,12 @@ class MultiOutputManager(QObject):
                            subtitle_burn=subtitle_burn, audio_bitrate=audio_bitrate, loop=loop,
                            start_index=start_index, start_offset=start_offset, extra_args=extra_args, logo=logo,
                            program_overlay=program_overlay, program_interval=program_interval,
-                           program_duration=program_duration)
+                           program_duration=program_duration,
+                           externally_controlled=bool(externally_controlled))
+        self.externally_controlled = bool(externally_controlled)
         self.monitor_feed_url = str(monitor_feed_url or "").strip()
         self.workers = []
+        self.master_worker = None
         self._ended_workers = set()
         self.ndi_senders = []
         self._ndi_connections = []
@@ -1019,6 +1097,7 @@ class MultiOutputManager(QObject):
         self._stop_ndi()
         self._set_current_item(self.current_item)
         self.workers = []
+        self.master_worker = None
         self._ended_workers = set()
         self.ndi_senders = []
         self._ndi_connections = []
@@ -1050,6 +1129,13 @@ class MultiOutputManager(QObject):
             worker = self._make_worker(profile, feed)
             monitor_assigned = monitor_assigned or bool(feed)
             self.workers.append(worker)
+            if self.master_worker is None:
+                # El primer destino FFmpeg activo es la referencia canónica.
+                # Los demás siguen los saltos, pero una salida secundaria lenta
+                # no puede mover la playlist ni duplicar eventos.
+                self.master_worker = worker
+                worker.progress.connect(self.master_progress.emit)
+                worker.clip_finished.connect(self.master_finished.emit)
             worker.start()
         if not self.workers and not self.ndi_senders:
             self.state.emit(False, "No hay destinos IP habilitados o NDI no disponible")
@@ -1178,17 +1264,16 @@ class MultiOutputManager(QObject):
 
     @property
     def current_position(self):
-        # v24.0.2.35: -1 mientras todos los workers calientan (arranque).
-        for worker in self.workers:
-            if worker.isRunning():
-                position = worker.current_position
-                if position >= 0:
-                    return position
+        # V25: siempre consultar el mismo destino master; alternar entre
+        # workers según quién respondió primero haría oscilar el reloj.
+        worker = self.master_worker
+        if worker is not None and worker.isRunning():
+            return worker.current_position
         return -1.0 if self.workers else 0.0
 
     @property
     def current_index(self):
-        for worker in self.workers:
-            if worker.isRunning():
-                return worker.current_index
+        worker = self.master_worker
+        if worker is not None and worker.isRunning():
+            return worker.current_index
         return -1

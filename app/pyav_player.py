@@ -23,6 +23,7 @@ from PySide6.QtGui import QImage, QPainter, QColor, QFont, QFontMetrics
 from PySide6.QtMultimedia import QAudioFormat, QAudioSink
 
 from . import logger
+from .config import APP_NAME
 
 log = logger.get("pyav-player")
 AUDIO_RATE = 48000
@@ -720,7 +721,7 @@ class PyAVPlayer(QObject):
             self._running = True
             self._loop = True
             self.widget.clear_frame()
-            self.widget.set_active(False, "TVPlayout PRO\nPROXIMAMENTE")
+            self.widget.set_active(False, f"{APP_NAME}\nPROXIMAMENTE")
             self.status.emit("PyAV ▶ slate nativo")
             log.info("slate nativo PyAV path=%s", path)
             return True

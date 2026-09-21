@@ -1,8 +1,8 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller spec para TVPlayout PRO.
+"""PyInstaller spec para Nexora Air.
 
 Produce una distribución onedir portable:
-    dist/TVPlayoutPRO/TVPlayoutPRO.exe
+    dist/NexoraAir/NexoraAir.exe
 
 Las DLL de PySide6/PyAV quedan en _internal junto al ejecutable. El BAT de
 build copia ffmpeg.exe y ffprobe.exe al nivel del EXE, porque son herramientas
@@ -57,7 +57,7 @@ exe = EXE(
     analysis.scripts,
     [],
     exclude_binaries=True,
-    name="TVPlayoutPRO",
+    name="NexoraAir",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -78,5 +78,5 @@ coll = COLLECT(
     analysis.datas,
     strip=False,
     upx=False,
-    name="TVPlayoutPRO",
+    name="NexoraAir",
 )

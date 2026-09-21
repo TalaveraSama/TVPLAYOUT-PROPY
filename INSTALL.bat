@@ -6,7 +6,7 @@ set "VENV=.venv"
 set "PYTHON_EXE=%VENV%\Scripts\python.exe"
 
 echo ================================================
-echo   TVPlayout PRO V24.0.2.9 - INSTALADOR
+echo   Nexora Air V25.0.0 - INSTALADOR
 echo ================================================
 echo.
 
