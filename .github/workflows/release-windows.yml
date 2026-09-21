@@ -7,7 +7,7 @@ on:
   # can use workflow_dispatch from the default branch.
   push:
     branches:
-      - arena/01a0c4c1-tvplayout-propy
+      - arena/01a0c5f1-tvplayout-propy
     paths:
       - .github/workflows/release-windows.yml
 
@@ -40,7 +40,7 @@ jobs:
       - name: Verify generated checksum
         shell: powershell
         run: |
-          $setup = "dist/Setup_NexoraAir_V25.0.0.exe"
+          $setup = "dist/Setup_NexoraAir_V25.0.1.exe"
           $checksum = "$setup.sha256"
           if (-not (Test-Path $setup) -or -not (Test-Path $checksum)) {
             throw "El builder no produjo el Setup y su checksum"
@@ -57,7 +57,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release upload v25.0.0 `
-            dist/Setup_NexoraAir_V25.0.0.exe `
-            dist/Setup_NexoraAir_V25.0.0.exe.sha256 `
+          gh release upload v25.0.1 `
+            dist/Setup_NexoraAir_V25.0.1.exe `
+            dist/Setup_NexoraAir_V25.0.1.exe.sha256 `
             --clobber --repo $env:GITHUB_REPOSITORY

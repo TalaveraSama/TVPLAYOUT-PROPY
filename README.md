@@ -1,4 +1,4 @@
-# Nexora Air V25.0.0 — continuidad broadcast 24/7
+# Nexora Air V25.0.1 — continuidad broadcast 24/7
 
 <p align="center">
   <img src="assets/logo.png" alt="Nexora Air" width="180">
@@ -7,6 +7,13 @@
 **Nexora Air** es la nueva identidad de la consola: una plataforma de continuidad
 broadcast para Windows que une programación, biblioteca y salidas IP en un solo
 flujo. V25 conserva y migra las bibliotecas de TVPlayout PRO.
+
+## Novedades de V25.0.1
+
+- **Sincronización RTMP y protección de drift:** corrección progresiva sin rebobinado ni saltos hacia atrás, evitando cortes de emisión en enlaces de red y reconexiones en bucle.
+- **Importación M3U8 y auto-categorización Musical:** soporte completo para listas de reproducción M3U/M3U8 con categorización automática en la base de datos y propagación inmediata a la lista activa.
+- **Identificadores de estación:** activación y control de identificadores de entrada/salida para transiciones fluidas.
+- **Actualización dinámica de metadatos:** los cambios en la base de datos tras escaneos de biblioteca se reflejan en vivo en los elementos de la lista en emisión.
 
 ## Novedades de V25.0.0
 
@@ -94,7 +101,7 @@ se mantiene dentro de ese margen con un tamaño profesional predeterminado del 1
 
 ### Setup todo-en-uno (recomendado)
 
-Descarga y abre **`Setup_NexoraAir_V25.0.0.exe`** desde la release V25. No
+Descarga y abre **`Setup_NexoraAir_V25.0.1.exe`** desde la release V25. No
 requiere instalar Python, Qt, PyAV ni FFmpeg por separado. Se instala por usuario
 en `%LOCALAPPDATA%\Programs\NexoraAir`, crea accesos directos y migra los datos
 de una instalación anterior.

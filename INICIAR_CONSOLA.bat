@@ -1,7 +1,7 @@
 @echo off
 setlocal
 cd /d "%~dp0"
-title Nexora Air V25.0.0 (consola de depuracion)
+title Nexora Air V25.0.1 (consola de depuracion)
 if not exist ".venv\Scripts\python.exe" (
   echo No existe el entorno virtual. Ejecuta INSTALL.bat primero.
   pause
