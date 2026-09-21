@@ -222,3 +222,48 @@ def test_output_worker_audio_and_music_overlays():
         assert "between(t,30.000,42.000)" in cmd_str
         assert "between(t,170.000,180.000)" in cmd_str
         assert "format=yuv420p" in cmd_str
+
+
+def test_output_worker_live_stream_inputs():
+    """Verifica que OutputWorker maneje entradas en vivo por RTMP, SRT y HLS/M3U8 con reconexión."""
+    from app.output import OutputWorker
+
+    live_item = {
+        "path": "https://stream.server.com/live/channel.m3u8",
+        "title": "Transmisión Secular en Vivo",
+        "category": "En Vivo",
+        "duration": 3600.0,
+        "source_duration": 3600.0,
+    }
+
+    worker = OutputWorker(
+        ffmpeg=sys.executable,
+        items=[live_item],
+        url="rtmp://localhost/live",
+        resolution="1920x1080",
+        fps="29.97",
+        encoder="CPU/x264",
+        bitrate=4000,
+    )
+
+    cmd, _label, _aid, _sid = worker._build_command(live_item, offset=0.0)
+    cmd_str = " ".join(cmd)
+
+    # Entradas HTTP/M3U8 no deben llevar -re y sí flags de reconexión
+    assert "-reconnect 1" in cmd_str
+    assert "-reconnect_at_eof 1" in cmd_str
+    assert "https://stream.server.com/live/channel.m3u8" in cmd_str
+
+
+def test_live_stream_dialog_and_wiring():
+    """Comprueba el diálogo de inserción de transmisiones en vivo y su integración."""
+    with open(REPO / "app" / "dialogs.py", encoding="utf-8") as f:
+        dialogs_src = f.read()
+    with open(REPO / "app" / "main_window.py", encoding="utf-8") as f:
+        main_src = f.read()
+
+    assert "class LiveStreamDialog(QDialog):" in dialogs_src
+    assert "LiveStreamDialog" in main_src
+    assert "insert_live_stream" in main_src
+    assert "Stream en Vivo…" in main_src
+

@@ -40,7 +40,7 @@ jobs:
       - name: Verify generated checksum
         shell: powershell
         run: |
-          $setup = "dist/Setup_NexoraAir_V25.0.1.exe"
+          $setup = "dist/Setup_NexoraAir_V25.1.0.exe"
           $checksum = "$setup.sha256"
           if (-not (Test-Path $setup) -or -not (Test-Path $checksum)) {
             throw "El builder no produjo el Setup y su checksum"
@@ -57,7 +57,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release upload v25.0.1 `
-            dist/Setup_NexoraAir_V25.0.1.exe `
-            dist/Setup_NexoraAir_V25.0.1.exe.sha256 `
+          gh release upload v25.1.0 `
+            dist/Setup_NexoraAir_V25.1.0.exe `
+            dist/Setup_NexoraAir_V25.1.0.exe.sha256 `
             --clobber --repo $env:GITHUB_REPOSITORY

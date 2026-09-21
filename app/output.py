@@ -375,9 +375,10 @@ class OutputWorker(QThread):
 
     def _build_command(self, item, offset=0.0):
         source = item["path"]
+        is_url = bool(re.match(r"^(https?|rtmp|rtmps|srt|udp|rtsp)://", str(source), re.IGNORECASE))
         if not self.ffmpeg or not os.path.isfile(self.ffmpeg):
             raise RuntimeError("FFmpeg no encontrado. Coloca ffmpeg.exe en la raíz del proyecto o define FFMPEG_PATH.")
-        if not source or not os.path.isfile(source):
+        if not is_url and (not source or not os.path.isfile(source)):
             raise RuntimeError("Archivo no encontrado: " + str(source))
         low = self.url.lower()
         if self.protocol == "NDI":
@@ -434,11 +435,18 @@ class OutputWorker(QThread):
         # v24.0.2.35: -stats hace que FFmpeg reporte su posición real
         # ("time=") aunque el loglevel sea warning; el watcher de drift la
         # usa en lugar de estimar por reloj de pared.
-        cmd = [self.ffmpeg, "-hide_banner", "-loglevel", "warning", "-stats", "-nostdin", "-re"]
-        if source_offset > 0:
-            # offset es relativo al corte de playlist; FFmpeg debe buscar en
-            # la posición absoluta mark-in + offset dentro del archivo.
-            cmd += ["-ss", f"{source_offset:.3f}"]
+        cmd = [self.ffmpeg, "-hide_banner", "-loglevel", "warning", "-stats", "-nostdin"]
+        if is_url:
+            if str(source).lower().startswith(("http://", "https://")):
+                cmd += ["-reconnect", "1", "-reconnect_at_eof", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5"]
+            elif str(source).lower().startswith("rtmp"):
+                cmd += ["-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5"]
+        else:
+            cmd += ["-re"]
+            if source_offset > 0:
+                # offset es relativo al corte de playlist; FFmpeg debe buscar en
+                # la posición absoluta mark-in + offset dentro del archivo.
+                cmd += ["-ss", f"{source_offset:.3f}"]
         cmd += ["-i", source]
         logo = (self.logo if (self.logo and os.path.isfile(self.logo.get("path", ""))
                  and not logo_suppressed_for_category(item.get("category", ""), self.logo)) else None)

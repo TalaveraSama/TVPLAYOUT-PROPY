@@ -34,7 +34,7 @@ from .playout import (PlayoutController, make_item, ST_ONAIR, ST_READY, ST_AIRED
                       ST_PENDING, DONE_STATES)
 from .widgets import StationClock, VUMeter, VideoSurface, LedLabel, ProgressBarThin, fmt_tc
 from .dialogs import (PlaylistManagerDialog, SourcesDialog, SchedulerDialog, LogsDialog, SettingsDialog, EditClipDialog,
-                        LibraryClipDialog)
+                        LibraryClipDialog, LiveStreamDialog)
 from .dialogs_tmdb import TMDBEditDialog, TMDBCardDialog
 from .dialogs_audio import AudioProcessorDialog
 from .dialogs_music import MusicTitlingDialog
@@ -539,6 +539,7 @@ class MainWindow(QMainWindow):
         g.setHorizontalSpacing(5)
         g.setVerticalSpacing(4)
         row1 = [("📄 Insertar archivo…", self.insert_files, "Añade archivos de vídeo directamente (también puedes arrastrarlos a la grid)"),
+                ("📡 Stream en Vivo…", self.insert_live_stream, "Inserta una señal en vivo (RTMP / SRT / M3U8 / UDP) para eventos seculares o programas en directo"),
                 ("📚 Biblioteca", lambda: self.tabs.setCurrentIndex(2), "Abrir la biblioteca para añadir medios"),
                 ("⏏ Preparar", self.on_cue, "Marcar como siguiente (F5)"),
                 ("✎ Editar clip", self.edit_selected, "Título, categoría, hora fija, pistas"),
@@ -621,6 +622,7 @@ class MainWindow(QMainWindow):
                 ("⤵ Insertar tras el aire", lambda: self.add_library_selected("after_onair"), "Se emitirá a continuación del evento actual"),
                 ("⤵ Insertar en selección", lambda: self.add_library_selected("at_selection"), "Antes de la fila seleccionada en la grid"),
                 ("▶ Emitir ahora", lambda: self.add_library_selected("now"), "Corta lo que esté al aire y emite este medio"),
+                ("📡 Stream en Vivo…", self.insert_live_stream, "Añade una señal en vivo (RTMP / SRT / M3U8) para eventos seculares o programas"),
                 ("👁 Previsualizar", self.preview_library, "Ventana aparte con mpv o VLC, sin afectar el aire"),
                 ("✎ Editar clip", self.edit_library_clip, "Título, categoría y recorte de inicio/fin del medio (se aplica siempre que se use en playlist)"),
                 ("↩ Volver a la playlist", lambda: self.tabs.setCurrentIndex(0), None)]
@@ -1023,6 +1025,7 @@ class MainWindow(QMainWindow):
         m.addAction("➕ Añadir al final", lambda: self.add_library_selected("end"))
         m.addAction("⤵ Insertar tras el aire", lambda: self.add_library_selected("after_onair"))
         m.addAction("▶ Emitir ahora", lambda: self.add_library_selected("now"))
+        m.addAction("📡 Stream en vivo / RTMP / SRT…", self.insert_live_stream)
         m.addSeparator()
         m.addAction("👁 Previsualizar", self.preview_library)
         m.addSeparator()
@@ -1529,9 +1532,36 @@ class MainWindow(QMainWindow):
             m.addSeparator()
             m.addAction("🗑 Quitar", self.remove_selected)
         m.addAction("📄 Insertar archivo…", self.insert_files)
+        m.addAction("📡 Stream en vivo (RTMP/SRT/M3U8)…", self.insert_live_stream)
         m.addAction("🧹 Limpiar emitidos", self.clear_aired)
         m.addAction("🗑 Vaciar playlist", self.clear_playlist)
         m.exec(self.grid.viewport().mapToGlobal(pos))
+
+    def insert_live_stream(self):
+        if self._locked:
+            return
+        dlg = LiveStreamDialog(self, self.db.categories())
+        if dlg.exec() == QDialog.Accepted:
+            v = dlg.values()
+            item = make_item({
+                "path": v["url"],
+                "title": v["title"],
+                "category": v["category"],
+                "duration": v["duration"],
+                "source_duration": v["duration"],
+                "fixed_time": v["fixed_time"],
+                "is_live": True,
+            })
+            if v["save_to_library"]:
+                self.db.upsert_media(v["url"], v["title"], v["category"])
+                self.db.update_media_meta(v["url"], duration=v["duration"], metadata_ok=1)
+                self.refresh_library()
+
+            if v["fixed_time"]:
+                self.ctrl.append_items([item])
+                self._status(f"Transmisión en vivo programada para {v['fixed_time']}")
+            else:
+                self._insert_items([item], v["where"])
 
     def _files_dropped(self, paths, row):
         items = []

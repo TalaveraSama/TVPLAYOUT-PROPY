@@ -527,7 +527,7 @@ def test_full_windows_installer_bundles_runtime_and_migrates_previous_data():
     gitignore = _read(".gitignore")
     docs = _read("BUILD.md")
     version = re.search(r'APP_VERSION = "([^"]+)"', cfg).group(1)
-    assert version == "V25.0.1"
+    assert version == "V25.1.0"
     assert f'APP_VERSION = "{version}"' in builder
     assert 'SETUP_NAME = f"Setup_{APP_SLUG}_{APP_VERSION}.exe"' in builder
     assert f"Setup_NexoraAir_{version}.exe" in docs
@@ -1120,7 +1120,7 @@ def test_v25_installer_wrapper_uses_reproducible_pypi_builder():
     assert 'set "PY_CMD=py -3"' in bat and 'set "PY_CMD=python"' in bat
     assert "%PY_CMD% installer\\build_windows_setup.py all" in bat
     assert "if errorlevel 1" in bat and "Instala NSIS 3" in bat
-    assert "Setup_NexoraAir_V25.0.1.exe" in bat
+    assert "Setup_NexoraAir_V25.1.0.exe" in bat
     assert 'PYTHON_EMBED_PACKAGE = "3.13.0"' in builder
     assert 'FFMPEG_PACKAGE_VERSION = "1.1.0"' in builder
     assert 'pypi_wheel("ffmpeg-binaries", FFMPEG_PACKAGE_VERSION)' in builder

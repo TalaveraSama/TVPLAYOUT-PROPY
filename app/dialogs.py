@@ -1333,3 +1333,118 @@ class LibraryClipDialog(QDialog):
                 "category": self.cat.currentText().strip() or "Otros",
                 "mark_in": trim_start,
                 "mark_out": mark_out}
+
+
+class LiveStreamDialog(QDialog):
+    """Diálogo para insertar o programar transmisiones en vivo (RTMP, SRT, M3U8, UDP, RTSP)."""
+
+    def __init__(self, parent, categories, default_category="En Vivo"):
+        super().__init__(parent)
+        self.setWindowTitle("Insertar Transmisión en Vivo (RTMP / SRT / M3U8 / UDP)")
+        self.resize(650, 420)
+        root = QVBoxLayout(self)
+
+        note = QLabel(
+            "Inserta señales en vivo por red (RTMP, SRT, HLS/M3U8, UDP o RTSP) para intercalar "
+            "programas en vivo, eventos seculares o retransmisiones dentro de la continuidad de "
+            "películas y videoclips musicales."
+        )
+        note.setWordWrap(True)
+        note.setStyleSheet("color:#b0b8c4; margin-bottom: 8px;")
+        root.addWidget(note)
+
+        form = QFormLayout()
+
+        self.url = QLineEdit()
+        self.url.setPlaceholderText("rtmp://servidor/live/stream  ó  https://sitio.com/live.m3u8  ó  srt://ip:puerto")
+        form.addRow("URL / Entrada:", self.url)
+
+        self.title = QLineEdit("Programa Secular en Vivo")
+        form.addRow("Título del evento:", self.title)
+
+        self.cat = QComboBox()
+        cats = list(categories)
+        if "En Vivo" not in cats:
+            cats.insert(0, "En Vivo")
+        if "Programas" not in cats:
+            cats.insert(1, "Programas")
+        self.cat.addItems(cats)
+        idx = self.cat.findText(default_category)
+        if idx >= 0:
+            self.cat.setCurrentIndex(idx)
+        form.addRow("Categoría:", self.cat)
+
+        self.duration_edit = QTimeEdit()
+        self.duration_edit.setDisplayFormat("HH:mm:ss")
+        self.duration_edit.setTime(QTime(1, 0, 0))
+        form.addRow("Duración estimada:", self.duration_edit)
+
+        self.insertion_mode = QComboBox()
+        self.insertion_mode.addItem("Al final de la playlist", "end")
+        self.insertion_mode.addItem("A continuación del evento al aire", "after_onair")
+        self.insertion_mode.addItem("Emitir inmediatamente (Take Live)", "now")
+        self.insertion_mode.addItem("Programar a Hora Fija (corte automático)", "fixed_time")
+        self.insertion_mode.currentIndexChanged.connect(self._mode_changed)
+        form.addRow("Acción / Inserción:", self.insertion_mode)
+
+        self.fixed_time_edit = QTimeEdit()
+        self.fixed_time_edit.setDisplayFormat("HH:mm:ss")
+        self.fixed_time_edit.setTime(QTime.currentTime())
+        self.fixed_time_edit.setEnabled(False)
+        form.addRow("Hora Fija de inicio:", self.fixed_time_edit)
+
+        self.save_to_library = QCheckBox("Guardar también en la biblioteca para programar con el Scheduler")
+        self.save_to_library.setChecked(True)
+        form.addRow("", self.save_to_library)
+
+        root.addLayout(form)
+        root.addStretch()
+
+        btns = QHBoxLayout()
+        btns.addStretch()
+        cancel = QPushButton("Cancelar")
+        cancel.clicked.connect(self.reject)
+        btns.addWidget(cancel)
+
+        ok = QPushButton("📡 Insertar Transmisión")
+        ok.setObjectName("primary")
+        ok.clicked.connect(self._validate_and_accept)
+        btns.addWidget(ok)
+        root.addLayout(btns)
+
+    def _mode_changed(self, _idx=0):
+        mode = self.insertion_mode.currentData()
+        self.fixed_time_edit.setEnabled(mode == "fixed_time")
+
+    def _validate_and_accept(self):
+        url = self.url.text().strip()
+        if not url:
+            QMessageBox.warning(self, "URL requerida", "Introduce una URL o dirección válida (ej. rtmp://, srt://, https://...m3u8, udp://).")
+            return
+        if not re.match(r"^(https?|rtmp|rtmps|srt|udp|rtsp)://", url, re.IGNORECASE):
+            res = QMessageBox.question(
+                self, "Protocolo de red",
+                f"La dirección '{url}' no parece comenzar con un protocolo estándar de streaming.\n\n¿Deseas continuar de todos modos?",
+                QMessageBox.Yes | QMessageBox.No
+            )
+            if res != QMessageBox.Yes:
+                return
+        self.accept()
+
+    def values(self):
+        t = self.duration_edit.time()
+        dur_sec = t.hour() * 3600 + t.minute() * 60 + t.second()
+        mode = self.insertion_mode.currentData()
+        fixed_str = ""
+        if mode == "fixed_time":
+            ft = self.fixed_time_edit.time()
+            fixed_str = f"{ft.hour():02d}:{ft.minute():02d}:{ft.second():02d}"
+        return {
+            "url": self.url.text().strip(),
+            "title": self.title.text().strip() or "Transmisión en Vivo",
+            "category": self.cat.currentText().strip() or "En Vivo",
+            "duration": float(dur_sec if dur_sec > 0 else 3600.0),
+            "where": mode if mode != "fixed_time" else "end",
+            "fixed_time": fixed_str,
+            "save_to_library": self.save_to_library.isChecked(),
+        }

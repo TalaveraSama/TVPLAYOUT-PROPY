@@ -332,7 +332,8 @@ class _DecodeJob(QObject):
             self.error.emit("PyAV no está instalado", self.generation)
             self.finished.emit("error", self.generation)
             return
-        if not os.path.isfile(self.path):
+        is_url = bool(re.match(r"^(https?|rtmp|rtmps|srt|udp|rtsp)://", str(self.path), re.IGNORECASE))
+        if not is_url and not os.path.isfile(self.path):
             self.error.emit(f"archivo no encontrado: {self.path}", self.generation)
             self.finished.emit("error", self.generation)
             return
@@ -342,7 +343,10 @@ class _DecodeJob(QObject):
             while not self.stop_event.is_set():
                 container = None
                 try:
-                    container = av.open(self.path)
+                    open_kwargs = {}
+                    if is_url:
+                        open_kwargs = {"timeout": "10000000"}
+                    container = av.open(self.path, **open_kwargs)
                     videos = list(container.streams.video)
                     audios = list(container.streams.audio)
                     subtitles = list(container.streams.subtitles)
@@ -681,8 +685,9 @@ class PyAVPlayer(QObject):
         return True
 
     def _begin(self, path, loop=False, audio_id=None, sub_id=None, start=0.0, end=0.0):
-        absolute = os.path.abspath(path)
-        if not os.path.isfile(absolute):
+        is_url = bool(re.match(r"^(https?|rtmp|rtmps|srt|udp|rtsp)://", str(path), re.IGNORECASE))
+        absolute = str(path) if is_url else os.path.abspath(path)
+        if not is_url and not os.path.isfile(absolute):
             log.error("PyAV source missing path=%s", absolute)
             self.status.emit("PyAV: archivo no encontrado")
             return False
@@ -712,8 +717,9 @@ class PyAVPlayer(QObject):
         self.widget.set_active(True, "")
         self.widget.clear_frame()
         self._thread.start()
-        log.info("PyAV play request gen=%d loop=%s path=%s size=%d bytes", generation, loop, absolute, os.path.getsize(absolute))
-        self.status.emit("PyAV ▶ " + os.path.basename(absolute))
+        file_size = 0 if is_url else os.path.getsize(absolute)
+        log.info("PyAV play request gen=%d loop=%s path=%s size=%d bytes", generation, loop, absolute, file_size)
+        self.status.emit("PyAV ▶ " + (os.path.basename(absolute) if not is_url else absolute))
         return True
 
     def play(self, path, audio_id=None, sub_id=None, start=0.0, end=0.0, loop=False):
