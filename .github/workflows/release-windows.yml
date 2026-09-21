@@ -2,6 +2,14 @@ name: Build Windows release installer
 
 on:
   workflow_dispatch:
+  # Arena's GitHub integration cannot dispatch workflows through the API.
+  # This branch-scoped push trigger publishes the asset once; normal releases
+  # can use workflow_dispatch from the default branch.
+  push:
+    branches:
+      - arena/01a0c4c1-tvplayout-propy
+    paths:
+      - .github/workflows/release-windows.yml
 
 permissions:
   contents: write
