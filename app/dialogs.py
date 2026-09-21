@@ -1,6 +1,7 @@
 """Diálogos de funciones: Playlist Manager, Fuentes/Categorías, Programador, Registros, Ajustes, Editar clip."""
 import json
 import os
+import re
 from datetime import datetime
 
 from PySide6.QtCore import Qt, QTime, QDate, Signal
@@ -188,6 +189,8 @@ class PlaylistManagerDialog(BaseDialog):
                     f.write("#EXTM3U\n")
                     for it in self.ctrl.items:
                         f.write(f"#EXTINF:{int(it['duration'] or -1)},{it['title']}\n")
+                        if it.get("category"):
+                            f.write(f"#EXT-X-TVPLAYOUT-CATEGORY:{it['category']}\n")
                         if it.get("fixed_time"):
                             f.write(f"#EXT-X-TVPLAYOUT-FIXED:{it['fixed_time']}\n")
                         if float(it.get("mark_in") or 0) > 0:
@@ -223,6 +226,7 @@ class PlaylistManagerDialog(BaseDialog):
             else:
                 title = ""
                 fixed = ""
+                category = ""
                 m3u_duration = 0.0
                 mark_in = 0.0
                 mark_out = 0.0
@@ -233,12 +237,18 @@ class PlaylistManagerDialog(BaseDialog):
                             continue
                         if line.startswith("#EXTINF"):
                             head, title = (line.split(",", 1) + [""])[:2] if "," in line else (line, "")
+                            gt_match = re.search(r'group-title="([^"]+)"', head, re.IGNORECASE)
+                            if gt_match:
+                                category = gt_match.group(1).strip()
                             try:
-                                m3u_duration = max(0.0, float(head.split(":", 1)[1]))
+                                dur_part = head.split(":", 1)[1].split()[0]
+                                m3u_duration = max(0.0, float(dur_part))
                             except (ValueError, IndexError):
                                 m3u_duration = 0.0
+                        elif line.startswith(("#EXT-X-TVPLAYOUT-CATEGORY:", "#EXT-X-CATEGORY:")):
+                            category = line.split(":", 1)[1].strip()
                         elif line.startswith("#EXT-X-TVPLAYOUT-FIXED:"):
-                            fixed = line.split(":", 1)[1]
+                            fixed = line.split(":", 1)[1].strip()
                         elif line.startswith("#EXT-X-TVPLAYOUT-MARKIN:"):
                             try:
                                 mark_in = max(0.0, float(line.split(":", 1)[1]))
@@ -253,12 +263,23 @@ class PlaylistManagerDialog(BaseDialog):
                             continue
                         else:
                             row = self.db.media_by_path(line)
-                            it = make_item(row) if row else make_item({
-                                "path": line,
-                                "title": title or os.path.splitext(os.path.basename(line))[0],
-                                "duration": m3u_duration,
-                                "source_duration": m3u_duration,
-                            })
+                            if row:
+                                it = make_item(row)
+                            else:
+                                item_cat = category or "Otros"
+                                if item_cat == "Otros":
+                                    for src in self.db.sources():
+                                        sp = src.get("path", "")
+                                        if sp and os.path.normcase(os.path.abspath(line)).startswith(os.path.normcase(os.path.abspath(sp))):
+                                            item_cat = src.get("category") or "Otros"
+                                            break
+                                it = make_item({
+                                    "path": line,
+                                    "title": title or os.path.splitext(os.path.basename(line))[0],
+                                    "category": item_cat,
+                                    "duration": m3u_duration,
+                                    "source_duration": m3u_duration,
+                                })
                             it["fixed_time"] = fixed
                             it["mark_in"] = mark_in
                             it["mark_out"] = mark_out
@@ -267,7 +288,7 @@ class PlaylistManagerDialog(BaseDialog):
                                 start, end, effective = trim_bounds(it)
                                 it["mark_in"], it["mark_out"], it["duration"] = start, (end if end < it["source_duration"] else 0.0), effective
                             items.append(it)
-                            title, fixed, m3u_duration, mark_in, mark_out = "", "", 0.0, 0.0, 0.0
+                            title, fixed, category, m3u_duration, mark_in, mark_out = "", "", "", 0.0, 0.0, 0.0
         except (OSError, ValueError) as e:
             QMessageBox.critical(self, "Importar", str(e))
             return

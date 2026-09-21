@@ -223,7 +223,7 @@ class PlayoutController(QObject):
         # salida. Si FFmpeg se congela, la playlist se congela con él. Antes
         # de recibir el primer frame se conserva el fallback de pared para que
         # un arranque sin salida válida no bloquee la automatización.
-        if self.clock_only and self.output_master_active and self._output_master_measured:
+        if getattr(self, "clock_only", False) and getattr(self, "output_master_active", False) and getattr(self, "_output_master_measured", False):
             return max(0.0, self._pos)
         if self.clock_only and self._started_at > 0 and not self.paused:
             return max(0.0, self._pos + (time.time() - self._started_at))
@@ -393,7 +393,7 @@ class PlayoutController(QObject):
                 it["source_duration"] = meta.get("source_duration") or meta.get("duration") or 0
                 start, end, effective = trim_bounds(it)
                 it["mark_in"], it["mark_out"], it["duration"] = start, (end if end < it["source_duration"] else 0.0), effective
-                for k in ("width", "height", "fps", "video_codec", "audio_codec", "tracks", "thumb",
+                for k in ("category", "width", "height", "fps", "video_codec", "audio_codec", "tracks", "thumb",
                           "tmdb_poster", "tmdb_backdrop", "tmdb_title", "tmdb_year", "tmdb_overview"):
                     it[k] = meta[k]
                 # v24.0.2.30: los recortes guardados en la biblioteca (Editar clip
@@ -638,7 +638,21 @@ class PlayoutController(QObject):
         return True
 
     def _identifier_eligible(self, item):
-        return bool(item and item.get("category") in self.identifier_categories)
+        if not item or item.get("_transient_identifier"):
+            return False
+        cat = str(item.get("category") or "").strip()
+        excluded = {
+            "Publicidad", "Tanda", "Identificador", "Filler", "Slate",
+            str(getattr(self, "tandas_category", "Publicidad") or "Publicidad"),
+            str(getattr(self, "midroll_category", "Publicidad") or "Publicidad"),
+        }
+        if cat in excluded:
+            return False
+        if cat in self.identifier_categories:
+            return True
+        if cat.lower() in {c.lower() for c in self.identifier_categories}:
+            return True
+        return True
 
     def _start_identifier(self, index, phase):
         """Inserta un identificador temporal justo antes/después del evento.
@@ -981,7 +995,7 @@ class PlayoutController(QObject):
             return False
         if self.onair == -2:   # el filler tiene su propio ciclo de recarga
             return False
-        if self.output_master_active and self._output_master_measured:
+        if getattr(self, "output_master_active", False) and getattr(self, "_output_master_measured", False):
             # La señal progress dispara tandas y clip_finished hace el cambio.
             # No hay watchdog/reloj paralelo capaz de adelantarse.
             return False

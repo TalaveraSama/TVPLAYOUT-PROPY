@@ -490,7 +490,7 @@ class OutputWorker(QThread):
                     else:
                         self._current_index = min(self._current_index, len(new_items) - 1)
                 return True
-            recently_started = time.time() - self._clip_started < 4.0
+            recently_started = time.time() - self._clip_started < 15.0
             if idx == self._current_index and self.proc is not None and self.proc.poll() is None and recently_started and not start_offset:
                 return True
             self._jump_index = idx

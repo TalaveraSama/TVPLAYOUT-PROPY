@@ -98,6 +98,8 @@ class _DecodeJob(QObject):
                     continue
             delay = clock_origin + position - time.monotonic()
             if delay <= 0:
+                if delay < -1.0:
+                    clock_origin = time.monotonic() - position
                 return clock_origin
             self.stop_event.wait(min(0.02, delay))
         return clock_origin
@@ -474,6 +476,11 @@ class _DecodeJob(QObject):
                             clock_origin = self._wait_until(position, clock_origin)
                             if self.stop_event.is_set():
                                 break
+                            delay = clock_origin + position - time.monotonic()
+                            if delay < -0.06:
+                                # Descarte de renderizado de frames retrasados para mantener
+                                # la reproducción y el reloj de continuidad en tiempo real (1x)
+                                continue
                             image = self._frame_image(frame)
                             image = self._paint_subtitle(image, self._subtitle_for_position(position))
                             self.frame.emit(image, position, duration, self.generation)

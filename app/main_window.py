@@ -1053,6 +1053,10 @@ class MainWindow(QMainWindow):
 
     def _scan_done(self, files, media):
         self.refresh_library()
+        for it in self.ctrl.items:
+            p = it.get("path")
+            if p:
+                self.ctrl.refresh_meta_from_db(p)
         self._status(f"Escaneo finalizado • {files} archivos • {media} medios")
         log.info("Escaneo finalizado: %d archivos, %d medios", files, media)
         if self.settings.get("probe_on_scan", True) and FFPROBE_PATH:
@@ -1508,7 +1512,13 @@ class MainWindow(QMainWindow):
         row = self.db.media_by_path(path)
         if row:
             return make_item(row)
-        item = make_item({"path": path, "title": Path(path).stem, "category": "Otros"})
+        category = "Otros"
+        for src in self.db.sources():
+            sp = src.get("path", "")
+            if sp and os.path.normcase(os.path.abspath(path)).startswith(os.path.normcase(os.path.abspath(sp))):
+                category = src.get("category") or "Otros"
+                break
+        item = make_item({"path": path, "title": Path(path).stem, "category": category})
         if FFPROBE_PATH:
             try:
                 from .prober import probe_file
@@ -2296,10 +2306,11 @@ class MainWindow(QMainWindow):
         # y termina realineando mediante self.output.seek_to en el helper.
         if not self.output or not self.output.isRunning():
             return
-        if self.ctrl.clock_only and self.ctrl.output_master_active:
-            # V25: comparar la salida consigo misma no tiene sentido; su
-            # progreso ya es el reloj del controlador y nunca se realinea.
-            return
+        if hasattr(self.ctrl, "clock_only") and hasattr(self.ctrl, "output_master_active"):
+            if self.ctrl.clock_only and self.ctrl.output_master_active:
+                # V25: comparar la salida consigo misma no tiene sentido; su
+                # progreso ya es el reloj del controlador y nunca se realinea.
+                return
         # MultiOutputManager puede mantener su QThread vivo mientras el
         # proceso FFmpeg está entre reintentos. No convertir esa ventana en
         # un seek adicional: RTMP debe conservar el comportamiento estable de
@@ -2363,6 +2374,7 @@ class MainWindow(QMainWindow):
                     "modo Reloj del sistema (Ajustes → Monitor de programa).", clip, onair)
             # No se reinicia: al final de cada evento un reinicio en bucle
             # cortaría la señal.
+            return
         if self._rtmp_drift_baseline is None:
             # Primer frame medido del clip: el gap frente al monitor local
             # (latencia de arranque) es CONSTANTE y saludable; se descuenta
