@@ -831,6 +831,14 @@ class SettingsDialog(BaseDialog):
         self.extra.setPlaceholderText("argumentos extra de FFmpeg (avanzado)")
         self.autostart_rtmp = QCheckBox("Iniciar salidas IP automáticamente al abrir la aplicación si hay playlist")
         self.autostart_rtmp.setChecked(bool(self.settings.get("rtmp_autostart", False)))
+        self.output_seamless = QCheckBox("Emisión continua sin cortes (Concat Demuxer / Single Process)")
+        self.output_seamless.setChecked(bool(self.settings.get("output_seamless", True)))
+        self.output_fallback = QComboBox()
+        self.output_fallback.addItem("Barras de color SMPTE (tono suave 1kHz)", "bars")
+        self.output_fallback.addItem("Pantalla negra (silencio)", "black")
+        fb_idx = self.output_fallback.findData(self.settings.get("output_fallback", "bars"))
+        if fb_idx >= 0:
+            self.output_fallback.setCurrentIndex(fb_idx)
         self.outputs_btn = QPushButton("Configurar destinos RTMP / SRT / NDI…")
         self.outputs_btn.clicked.connect(parent.open_outputs)
         f.addRow("Destinos", self.outputs_btn)
@@ -840,6 +848,8 @@ class SettingsDialog(BaseDialog):
         f.addRow("Encoder", self.encoder)
         f.addRow("Bitrate vídeo", self.bitrate)
         f.addRow("Bitrate audio (kbps)", self.abitrate)
+        f.addRow("Señal en espera (sin lista)", self.output_fallback)
+        f.addRow("", self.output_seamless)
         f.addRow("", self.burn)
         f.addRow("FFmpeg extra", self.extra)
         f.addRow("", self.autostart_rtmp)
@@ -1061,6 +1071,8 @@ class SettingsDialog(BaseDialog):
             "autoplay": self.autoplay.isChecked(),
             "probe_on_scan": self.probe_on_scan.isChecked(),
             "ndi_disabled": self.ndi_disabled.isChecked(),
+            "output_seamless": self.output_seamless.isChecked(),
+            "output_fallback": self.output_fallback.currentData() or "bars",
         }
 
 

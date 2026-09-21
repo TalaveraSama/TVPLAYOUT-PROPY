@@ -2142,6 +2142,8 @@ class MainWindow(QMainWindow):
                                           music_intro_start=float(s.get("music_titling_intro_start", 30.0)),
                                           music_intro_duration=float(s.get("music_titling_intro_duration", 12.0)),
                                           music_outro_duration=float(s.get("music_titling_outro_duration", 10.0)),
+                                          fallback_mode=str(s.get("output_fallback", "bars")),
+                                          seamless_concat=bool(s.get("output_seamless", True)),
                                           monitor_feed_url=monitor_feed_url)
         # V25: en modo Reloj, FFmpeg deja de «seguir» a un segundo reloj y se
         # convierte en el player master. Su progreso y EOF gobiernan la lista.

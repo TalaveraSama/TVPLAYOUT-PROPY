@@ -267,3 +267,50 @@ def test_live_stream_dialog_and_wiring():
     assert "insert_live_stream" in main_src
     assert "Stream en Vivo…" in main_src
 
+
+def test_concat_manifest_and_fallback_slates():
+    """Verifica la generación del manifiesto concat y el comando único FFmpeg sin cortes."""
+    from app.output import OutputWorker, write_concat_manifest, get_or_create_fallback_slate
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        manifest_path = os.path.join(tmpdir, "concat_test.txt")
+        items = [
+            {"path": "/media/peli1.mp4", "mark_in": 10.0, "mark_out": 120.0},
+            {"path": "/media/clip2.mp4", "mark_in": 0.0, "mark_out": 180.0},
+        ]
+        write_concat_manifest(manifest_path, items, fallback_path="/media/slate.mp4")
+        content = open(manifest_path, encoding="utf-8").read()
+        assert "ffconcat version 1.0" in content
+        assert "file '/media/peli1.mp4'" in content
+        assert "inpoint 10.000" in content
+        assert "outpoint 120.000" in content
+        assert "file '/media/clip2.mp4'" in content
+        assert "outpoint 180.000" in content
+
+        # Con lista vacía: debe usar fallback de barras o pantalla negra
+        manifest_empty = os.path.join(tmpdir, "concat_empty.txt")
+        slate_dummy = os.path.join(tmpdir, "slate_bars.mp4")
+        Path(slate_dummy).write_bytes(b"dummy")
+        write_concat_manifest(manifest_empty, [], fallback_path=slate_dummy, fallback_count=3)
+        content_empty = open(manifest_empty, encoding="utf-8").read()
+        assert f"file '{slate_dummy}'" in content_empty
+        assert content_empty.count(f"file '{slate_dummy}'") == 3
+
+        worker = OutputWorker(
+            ffmpeg=sys.executable,
+            items=[],
+            url="rtmp://localhost/live",
+            resolution="1920x1080",
+            fps="29.97",
+            encoder="CPU/x264",
+            bitrate=4000,
+            fallback_mode="bars",
+        )
+        cmd, label = worker._build_concat_command(manifest_path)
+        cmd_str = " ".join(cmd)
+        assert "-f concat" in cmd_str
+        assert "-safe 0" in cmd_str
+        assert manifest_path in cmd_str
+        assert "scale=1920:1080:force_original_aspect_ratio=decrease" in cmd_str
+
+

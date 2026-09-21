@@ -113,6 +113,83 @@ def _srt_shift(text, offset):
     return ("\n".join(out) + "\n") if out else ""
 
 
+FALLBACK_DIR = os.path.join(tempfile.gettempdir(), f"{APP_SLUG}_fallback")
+
+
+def get_or_create_fallback_slate(ffmpeg_path, mode="bars", resolution="1920x1080", fps="29.97"):
+    """Genera o recupera un clip de relleno en bucle (barras SMPTE o pantalla negra)."""
+    os.makedirs(FALLBACK_DIR, exist_ok=True)
+    slug = "bars" if mode == "bars" else "black"
+    out_file = os.path.join(FALLBACK_DIR, f"fallback_{slug}_{resolution}_{fps}.mp4")
+    if os.path.isfile(out_file) and os.path.getsize(out_file) > 1000:
+        return out_file
+
+    if not ffmpeg_path or not os.path.isfile(ffmpeg_path):
+        # Placeholder temporal si FFmpeg no está disponible en este momento
+        with open(out_file, "wb") as f:
+            f.write(b"\x00" * 1024)
+        return out_file
+
+    try:
+        if mode == "bars":
+            cmd = [
+                ffmpeg_path, "-hide_banner", "-loglevel", "error", "-y",
+                "-f", "lavfi", "-i", f"smptebars=size={resolution}:rate={fps}",
+                "-f", "lavfi", "-i", "sine=frequency=1000:sample_rate=48000:beep_factor=0",
+                "-t", "10", "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+                "-c:a", "aac", "-b:a", "128k", "-ar", "48000", "-ac", "2", out_file
+            ]
+        else:
+            cmd = [
+                ffmpeg_path, "-hide_banner", "-loglevel", "error", "-y",
+                "-f", "lavfi", "-i", f"color=c=black:size={resolution}:rate={fps}",
+                "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000",
+                "-t", "10", "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+                "-c:a", "aac", "-b:a", "128k", "-ar", "48000", "-ac", "2", out_file
+            ]
+        subprocess.run(cmd, capture_output=True, timeout=30, creationflags=CREATE_NO_WINDOW)
+        if os.path.isfile(out_file) and os.path.getsize(out_file) > 1000:
+            return out_file
+    except Exception as exc:  # noqa: BLE001
+        log.warning("no se pudo generar el slate de fallback con FFmpeg: %s", exc)
+
+    return out_file
+
+
+def write_concat_manifest(manifest_path, items, fallback_path=None, start_index=0, offset=0.0, fallback_count=10):
+    """Escribe el archivo de manifiesto FFmpeg concat demuxer con tiempos precisos."""
+    lines = ["ffconcat version 1.0"]
+    valid_items = [it for it in (items or []) if it.get("path")]
+
+    if not valid_items and fallback_path and os.path.isfile(fallback_path):
+        escaped = fallback_path.replace("\\", "/").replace("'", "'\\''")
+        for _ in range(max(1, fallback_count)):
+            lines.append(f"file '{escaped}'")
+            lines.append("inpoint 0.000")
+            lines.append("outpoint 10.000")
+    else:
+        start_idx = max(0, min(int(start_index or 0), len(valid_items) - 1)) if valid_items else 0
+        for i, it in enumerate(valid_items[start_idx:], start=start_idx):
+            path = it["path"]
+            escaped = path.replace("\\", "/").replace("'", "'\\''")
+            lines.append(f"file '{escaped}'")
+
+            mark_in = max(0.0, float(it.get("mark_in") or 0.0))
+            mark_out = max(0.0, float(it.get("mark_out") or 0.0))
+            if i == start_idx and offset > 0:
+                mark_in += float(offset)
+
+            if mark_in > 0:
+                lines.append(f"inpoint {mark_in:.3f}")
+            if mark_out > 0 and mark_out > mark_in:
+                lines.append(f"outpoint {mark_out:.3f}")
+
+    os.makedirs(os.path.dirname(os.path.abspath(manifest_path)), exist_ok=True)
+    with open(manifest_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+    return manifest_path
+
+
 class OutputWorker(QThread):
     log = Signal(str)
     state = Signal(bool, str)          # on_air, mensaje
@@ -134,7 +211,8 @@ class OutputWorker(QThread):
                  audio_bitrate=192, loop=True, start_index=0, start_offset=0.0, extra_args="", logo=None,
                  program_overlay=None, program_interval=1080.0, program_duration=15.0, protocol="",
                  monitor_feed_url="", externally_controlled=False, audio_processor_config=None,
-                 music_overlay=None, music_intro_start=30.0, music_intro_duration=12.0, music_outro_duration=10.0):
+                 music_overlay=None, music_intro_start=30.0, music_intro_duration=12.0, music_outro_duration=10.0,
+                 fallback_mode="bars", seamless_concat=True):
         super().__init__()
         self.ffmpeg = ffmpeg
         self.items = self._norm_items(items)
@@ -161,6 +239,8 @@ class OutputWorker(QThread):
         self.music_intro_start = max(0.0, float(music_intro_start or 30.0))
         self.music_intro_duration = max(1.0, float(music_intro_duration or 12.0))
         self.music_outro_duration = max(1.0, float(music_outro_duration or 10.0))
+        self.fallback_mode = str(fallback_mode or "bars")
+        self.seamless_concat = bool(seamless_concat)
         # Feed local MPEG-TS opcional: contiene exactamente el vídeo/audio
         # ya procesado que se envía al destino, incluido el subtítulo quemado.
         # Un reproductor externo puede usarlo como monitor real del programa.
@@ -540,6 +620,118 @@ class OutputWorker(QThread):
             cmd += ["-f", "mpegts", self.url]
         return cmd, label, aid, sid
 
+    def _build_concat_command(self, concat_manifest_path):
+        """Genera el comando FFmpeg para un único proceso continuo usando el concat demuxer."""
+        if not self.ffmpeg or not os.path.isfile(self.ffmpeg):
+            raise RuntimeError("FFmpeg no encontrado. Coloca ffmpeg.exe en la raíz del proyecto o define FFMPEG_PATH.")
+        if not os.path.isfile(concat_manifest_path):
+            raise RuntimeError("Lista de concatenación no encontrada: " + str(concat_manifest_path))
+
+        low = self.url.lower()
+        if self.protocol == "NDI":
+            if not self.url or "://" in self.url and not low.startswith("ndi://"):
+                raise RuntimeError("El destino NDI debe tener un nombre, por ejemplo Nexora Air")
+        elif not low.startswith(("rtmp://", "rtmps://", "srt://", "udp://")):
+            raise RuntimeError("La salida debe comenzar por rtmp://, rtmps://, srt:// o udp://")
+
+        try:
+            w, h = [int(x) for x in self.resolution.lower().split("x", 1)]
+        except Exception:
+            raise RuntimeError("Resolución inválida")
+
+        label, codec = self._resolve_encoder(self.encoder)
+
+        vf = [
+            f"scale={w}:{h}:force_original_aspect_ratio=decrease",
+            f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2",
+            f"fps={self.fps}",
+            "format=yuv420p"
+        ]
+
+        gop = int(round(float(self.fps) * 2))
+        cmd = [
+            self.ffmpeg, "-hide_banner", "-loglevel", "warning", "-stats", "-nostdin",
+            "-f", "concat", "-safe", "0", "-re", "-i", concat_manifest_path
+        ]
+
+        logo = (self.logo if (self.logo and os.path.isfile(self.logo.get("path", ""))) else None)
+        program = (self.program_overlay if (self.program_overlay and os.path.isfile(self.program_overlay)) else None)
+        music = (self.music_overlay if (self.music_overlay and os.path.isfile(self.music_overlay)) else None)
+
+        overlay_list = []
+        if logo:
+            overlay_list.append(("logo", logo["path"], None))
+        if program:
+            overlay_list.append(("program", program, "1"))
+        if music:
+            overlay_list.append(("music", music, "1"))
+
+        for item_op in overlay_list:
+            cmd += ["-loop", "1", "-framerate", "1", "-i", item_op[1]]
+
+        amap = "0:a:0?"
+        if overlay_list:
+            filters = [f"[0:v]{','.join(vf)}[base]"]
+            stage = "base"
+            for inp_idx, (lbl, _path, _expr) in enumerate(overlay_list, start=1):
+                if lbl == "logo":
+                    lw = max(16, int(w * int(logo.get("scale", 10)) / 100))
+                    op = max(0.05, min(1.0, int(logo.get("opacity", 90)) / 100))
+                    m = int(logo.get("margin", 48))
+                    xe, ye = logo_overlay_position(logo.get("position", "arriba-derecha"), w, h, m)
+                    filters.append(f"[{inp_idx}:v]scale={lw}:-1,format=rgba,colorchannelmixer=aa={op:.2f}[logo]")
+                    filters.append(f"[{stage}][logo]overlay={xe.format(m=m)}:{ye.format(m=m)}:shortest=1:format=auto[withlogo]")
+                    stage = "withlogo"
+                elif lbl in ("program", "music"):
+                    filters.append(f"[{inp_idx}:v]format=rgba[{lbl}]")
+                    filters.append(f"[{stage}][{lbl}]overlay=0:0:shortest=1:eof_action=repeat[with{lbl}]")
+                    stage = f"with{lbl}"
+            filters.append(f"[{stage}]format=yuv420p[out]")
+            fc = ";".join(filters)
+            cmd += ["-filter_complex", fc, "-map", "[out]", "-map", amap]
+        else:
+            cmd += ["-map", "0:v:0", "-map", amap, "-vf", ",".join(vf)]
+
+        cmd += [
+            "-sn", "-dn", "-map_metadata", "-1", "-map_chapters", "-1", "-c:v", codec,
+            "-b:v", f"{self.bitrate}k", "-maxrate", f"{self.bitrate}k", "-bufsize", f"{self.bitrate * 2}k",
+            "-g", str(gop), "-keyint_min", str(gop),
+            "-pix_fmt", "yuv420p", "-r", str(self.fps)
+        ]
+        if codec == "libx264":
+            cmd += ["-preset", "veryfast", "-profile:v", "high", "-bf", "2",
+                    "-x264-params", "nal-hrd=cbr:force-cfr=1:scenecut=0"]
+        elif codec == "h264_nvenc":
+            cmd += ["-preset", "p4", "-tune", "ll", "-rc", "cbr", "-profile:v", "high", "-bf", "2"]
+        elif codec == "h264_qsv":
+            cmd += ["-preset", "medium", "-profile:v", "high", "-look_ahead", "0"]
+        elif codec == "h264_amf":
+            cmd += ["-quality", "balanced", "-rc", "cbr", "-profile:v", "high"]
+
+        af = build_audio_filters(self.audio_processor_config)
+        cmd += ["-c:a", "aac", "-b:a", f"{self.audio_bitrate}k", "-ar", "48000", "-ac", "2", "-af", af]
+
+        if self.extra_args.strip():
+            cmd += self.extra_args.split()
+
+        if self.protocol == "RTMP" or low.startswith(("rtmp://", "rtmps://")):
+            if self.monitor_feed_url:
+                tee = (f"[f=flv:onfail=ignore]{self.url}|"
+                       f"[f=mpegts:onfail=ignore]{self.monitor_feed_url}")
+                cmd += ["-flvflags", "no_duration_filesize", "-f", "tee", tee]
+            else:
+                cmd += ["-flvflags", "no_duration_filesize", "-f", "flv", self.url]
+        elif self.protocol == "NDI":
+            ndi_name = self.url.removeprefix("ndi://") or APP_NAME
+            cmd += ["-f", "libndi_newtek", ndi_name]
+        elif self.monitor_feed_url:
+            tee = f"[f=mpegts:onfail=ignore]{self.url}|[f=mpegts:onfail=ignore]{self.monitor_feed_url}"
+            cmd += ["-f", "tee", tee]
+        else:
+            cmd += ["-f", "mpegts", self.url]
+
+        return cmd, label
+
     # ---------------------------------------------------------- control
     def sync_items(self, items, current_index, force_jump=False, start_offset=0.0):
         """Actualiza la lista de eventos y, si `force_jump`, salta al evento `current_index`.
@@ -900,10 +1092,8 @@ class OutputWorker(QThread):
         try:
             with self._lock:
                 items = list(self.items)
-            if not items:
-                raise RuntimeError(f"No hay eventos para emitir por {self.protocol}.")
             self.stop_requested = False
-            index = max(0, min(self.start_index, len(items) - 1))
+            index = max(0, min(self.start_index, len(items) - 1)) if items else 0
             offset = self.start_offset
             first = True
             consecutive_errors = 0
@@ -919,13 +1109,25 @@ class OutputWorker(QThread):
                             offset = getattr(self, "_jump_offset", 0.0) or 0.0
                             self._jump_offset = 0.0
                     if not items:
-                        break
-                    if index >= len(items):
-                        if not self.loop:
-                            break
-                        index = 0
-                    item = items[index]
-                    self._current_index = index
+                        # Modo de espera: barras o pantalla negra mientras se crea o carga una lista nueva
+                        fallback_path = get_or_create_fallback_slate(self.ffmpeg, getattr(self, "fallback_mode", "bars"), self.resolution, self.fps)
+                        item = {"path": fallback_path, "title": "SEÑAL DE AJUSTE / BARRAS", "category": "Ajuste", "duration": 10.0, "source_duration": 10.0}
+                        self._current_index = 0
+                        is_fallback = True
+                    else:
+                        is_fallback = False
+                        if index >= len(items):
+                            if not self.loop and not self.externally_controlled:
+                                # Si termina la lista sin loop, entra en señal de ajuste en vez de cortar la salida
+                                fallback_path = get_or_create_fallback_slate(self.ffmpeg, getattr(self, "fallback_mode", "bars"), self.resolution, self.fps)
+                                item = {"path": fallback_path, "title": "SEÑAL DE AJUSTE / BARRAS", "category": "Ajuste", "duration": 10.0, "source_duration": 10.0}
+                                is_fallback = True
+                            else:
+                                index = 0
+                                item = items[index]
+                        else:
+                            item = items[index]
+                        self._current_index = index
                 try:
                     cmd, label, aid, sid = self._build_command(item, offset)
                 except RuntimeError as e:
@@ -950,8 +1152,11 @@ class OutputWorker(QThread):
                     self._current_offset = float(offset)
                 offset = 0.0
                 self.now_playing.emit(index, item["path"])
-                self.log.emit(("FFmpeg iniciado" if first else "FFmpeg siguiente") +
-                              f" • {label} • {os.path.basename(item['path'])} • audio #{aid if aid is not None else 'auto'} • offset {self._current_offset:.2f}s")
+                if is_fallback:
+                    self.log.emit(f"Modo de espera activo • emitiendo {'Barras SMPTE' if getattr(self, 'fallback_mode', 'bars') == 'bars' else 'Pantalla Negra'}")
+                else:
+                    self.log.emit(("FFmpeg iniciado" if first else "FFmpeg siguiente") +
+                                  f" • {label} • {os.path.basename(item['path'])} • audio #{aid if aid is not None else 'auto'} • offset {self._current_offset:.2f}s")
                 log.info("%s %s: %s", self.protocol, label, subprocess.list2cmdline(cmd))
                 with self._lock:
                     self.proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL,
@@ -965,8 +1170,11 @@ class OutputWorker(QThread):
                     self._out_time = -1.0
                     self._out_time_at = 0.0
                     proc = self.proc
-                if first:
-                    self.state.emit(True, f"{self.protocol} ON AIR • {label} • {self.resolution}@{self.fps} • {self.bitrate} kbps")
+                if first or is_fallback:
+                    if is_fallback:
+                        self.state.emit(True, f"{self.protocol} ON AIR • Modo Espera ({'Barras SMPTE' if getattr(self, 'fallback_mode', 'bars') == 'bars' else 'Pantalla Negra'})")
+                    else:
+                        self.state.emit(True, f"{self.protocol} ON AIR • {label} • {self.resolution}@{self.fps} • {self.bitrate} kbps")
                     first = False
                 started = time.time()
                 last_lines = []
@@ -1123,7 +1331,8 @@ class MultiOutputManager(QObject):
                  program_duration=15.0, ndi_ffmpeg=None, ndi_source=None,
                  monitor_feed_url="", externally_controlled=False,
                  audio_processor_config=None, music_overlay=None,
-                 music_intro_start=30.0, music_intro_duration=12.0, music_outro_duration=10.0, parent=None):
+                 music_intro_start=30.0, music_intro_duration=12.0, music_outro_duration=10.0,
+                 fallback_mode="bars", seamless_concat=True, parent=None):
         super().__init__(parent)
         self.ffmpeg = ffmpeg
         self.ndi_ffmpeg = ndi_ffmpeg or ffmpeg
@@ -1143,7 +1352,9 @@ class MultiOutputManager(QObject):
                            music_overlay=str(music_overlay or ""),
                            music_intro_start=float(music_intro_start or 30.0),
                            music_intro_duration=float(music_intro_duration or 12.0),
-                           music_outro_duration=float(music_outro_duration or 10.0))
+                           music_outro_duration=float(music_outro_duration or 10.0),
+                           fallback_mode=str(fallback_mode or "bars"),
+                           seamless_concat=bool(seamless_concat))
         self.externally_controlled = bool(externally_controlled)
         self.monitor_feed_url = str(monitor_feed_url or "").strip()
         self.workers = []
