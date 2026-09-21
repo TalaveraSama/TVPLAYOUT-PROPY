@@ -36,6 +36,10 @@ from .widgets import StationClock, VUMeter, VideoSurface, LedLabel, ProgressBarT
 from .dialogs import (PlaylistManagerDialog, SourcesDialog, SchedulerDialog, LogsDialog, SettingsDialog, EditClipDialog,
                         LibraryClipDialog)
 from .dialogs_tmdb import TMDBEditDialog, TMDBCardDialog
+from .dialogs_audio import AudioProcessorDialog
+from .dialogs_music import MusicTitlingDialog
+from .music_titling import MusicLookupWorker, build_music_overlay, identify_music_track
+from .audio_processor import build_audio_filters
 from .theme import QSS
 
 log = logger.get("ui")
@@ -61,6 +65,21 @@ DEFAULT_SETTINGS = {
     "tmdb_card_opacity": 70, "tmdb_card_margin": 18, "tmdb_card_show_year": False,
     "tmdb_card_poster_size": 100, "tmdb_card_poster_shape": "cuadrado", "tmdb_card_text_scale": 100,
     "tmdb_card_backdrop_fill": False,
+    # Sonido profesional (EBU R128, DynAudNorm, Compresor, EQ, Limitador)
+    "audio_proc_enabled": False, "audio_proc_preset": "off", "audio_proc_norm_mode": "off",
+    "audio_proc_target_lufs": -23.0, "audio_proc_true_peak": -1.5, "audio_proc_lra": 7.0,
+    "audio_proc_highpass": 35, "audio_proc_compressor": False, "audio_proc_comp_threshold": -18.0,
+    "audio_proc_comp_ratio": 3.0, "audio_proc_comp_attack": 15.0, "audio_proc_comp_release": 200.0,
+    "audio_proc_comp_makeup": 2.0, "audio_proc_equalizer": False, "audio_proc_eq_bass": 0.0,
+    "audio_proc_eq_presence": 2.0, "audio_proc_eq_treble": 1.5, "audio_proc_stereo_enhance": False,
+    "audio_proc_limiter": True, "audio_proc_gain_db": 0.0,
+    # Titulación de videos musicales en vivo
+    "music_titling_enabled": True, "music_titling_service": "auto",
+    "music_titling_intro_start": 30.0, "music_titling_intro_duration": 12.0, "music_titling_outro_duration": 10.0,
+    "music_titling_style": "glass", "music_titling_position": "inferior-izquierda",
+    "music_titling_opacity": 90, "music_titling_text_scale": 100, "music_titling_accent_color": "#00e5ff",
+    "music_audd_api_token": "", "music_acoustid_api_key": "",
+    "music_acrcloud_host": "", "music_acrcloud_key": "", "music_acrcloud_secret": "",
     "monitor_mode": "pyav", "monitor_player": "VLC", "monitor_player_path": "", "monitor_feed_port": 39000,
     # v24.0.2.37: NDI deshabilitado temporalmente a petición del operador
     # (el VPS no tiene el NDI Runtime y el reintento llenaba el log). Se
@@ -210,6 +229,9 @@ class MainWindow(QMainWindow):
         self._tmdb_request_id = 0
         self._tmdb_overlay_path = ""
         self._tmdb_last_metadata = None
+        self._music_worker = None
+        self._music_overlay_path = ""
+        self._music_request_id = 0
 
         self._build()
         self.player = PyAVPlayer(self.video, MPV_PATH, self, vlc_path=VLC_PATH)
@@ -225,6 +247,7 @@ class MainWindow(QMainWindow):
         self.ctrl.playlist_end.connect(self._playlist_end)
         self.ctrl.on_start_callbacks.append(self._rtmp_follow)
         self.ctrl.on_start_callbacks.append(self._tmdb_follow)
+        self.ctrl.on_start_callbacks.append(self._music_follow)
         self.ctrl.items_changed.connect(self._rtmp_sync_structure)
         # v22.1: sincronizar pausa y seek del playout con el RTMP.
         self.ctrl.paused_changed = getattr(self.ctrl, "paused_changed", None)
@@ -672,7 +695,9 @@ class MainWindow(QMainWindow):
                  ("Programador", self.open_scheduler), ("Registros\nAs-Run", self.open_logs),
                  ("Fuentes /\nCategorías", self.open_sources), ("Ajustes del\nsistema", self.open_settings),
                  ("Salidas IP\nRTMP/SRT/NDI", self.open_outputs), ("Escanear\nbiblioteca", self.start_scan),
-                 ("Logo / CG\n(RTMP)", self.open_logo), ("Tarjeta\nTMDB", self.open_tmdb_card), ("Dispositivos", self.open_devices)]
+                 ("Logo / CG\n(RTMP)", self.open_logo), ("Tarjeta\nTMDB", self.open_tmdb_card),
+                 ("Sonido\nPRO", self.open_audio_processor), ("Titulación\nMusical", self.open_music_titling),
+                 ("Dispositivos", self.open_devices)]
         self._fn_buttons = []
         for i, (text, slot) in enumerate(funcs):
             b = _btn(text, slot, "funcBtn")
@@ -1003,6 +1028,7 @@ class MainWindow(QMainWindow):
         m.addSeparator()
         m.addAction("✎ Editar clip…", self.edit_library_clip)
         m.addAction("🧪 Escanear metadatos de selección", self.scan_selected_metadata)
+        m.addAction("🎵 Identificar y titular música…", self.identify_music_selected)
         m.addAction("✎ Editar ficha TMDB…", self.edit_tmdb_selected)
         m.addAction("🎬 Escanear esta película en TMDB…", self.scan_tmdb_manual)
         m.addSeparator()
@@ -1098,6 +1124,21 @@ class MainWindow(QMainWindow):
             self._status("Selecciona uno o más medios para analizar sus metadatos")
             return
         self.start_probe([item.get("path") for item in items])
+
+    def identify_music_selected(self):
+        """Acción contextual para identificar pistas musicales y generar sus metadatos."""
+        items = self._selected_library_items()
+        if not items:
+            self._status("Selecciona uno o más videos musicales para identificarlos")
+            return
+        for it in items:
+            path = it.get("path")
+            if not path:
+                continue
+            meta = identify_music_track(path, self.settings)
+            self.db.update_music_metadata(path, meta)
+        self.refresh_library()
+        self._status(f"🎵 Identificación musical completada: {len(items)} pista(s)")
 
     def edit_library_clip(self):
         """Editar clip de biblioteca: título, categoría y recortes (mark in/out)."""
@@ -2066,6 +2107,11 @@ class MainWindow(QMainWindow):
                                           program_duration=max(1, int(s.get("tmdb_duration_seconds", 15))),
                                           ndi_ffmpeg=FFMPEG_NDI_PATH, ndi_source=self.player, parent=self,
                                           externally_controlled=bool(self.ctrl.clock_only and needs_ffmpeg),
+                                          audio_processor_config=self._audio_processor_config(),
+                                          music_overlay=self._music_overlay_path,
+                                          music_intro_start=float(s.get("music_titling_intro_start", 30.0)),
+                                          music_intro_duration=float(s.get("music_titling_intro_duration", 12.0)),
+                                          music_outro_duration=float(s.get("music_titling_outro_duration", 10.0)),
                                           monitor_feed_url=monitor_feed_url)
         # V25: en modo Reloj, FFmpeg deja de «seguir» a un segundo reloj y se
         # convierte en el player master. Su progreso y EOF gobiernan la lista.
@@ -2261,6 +2307,53 @@ class MainWindow(QMainWindow):
             self.output.sync_items(self.ctrl.export_items(), self.ctrl.onair, force_jump=True,
                                    start_offset=float(self.ctrl.elapsed or 0.0))
         return True
+
+    def _music_follow(self, index, item):
+        """Identifica la pista musical si el clip pertenece a Música y activa el zócalo en tiempo real."""
+        self._music_request_id += 1
+        request_id = self._music_request_id
+        self._music_overlay_path = ""
+        self.player.set_music_overlay("")
+        if self.output and self.output.isRunning():
+            self.output.set_music_overlay("")
+
+        settings = self.settings
+        if (not settings.get("music_titling_enabled", True) or
+                item.get("category") not in {"Música", "Musical", "Music"}):
+            return
+
+        worker = MusicLookupWorker(item.get("path", ""), resolution=settings.get("resolution", "1920x1080"),
+                                   settings=settings, parent=self)
+        self._music_worker = worker
+        worker.result.connect(lambda p, meta, ov, rid=request_id, idx=index, it=item: self._music_ready(rid, idx, it, meta, ov))
+        worker.failed.connect(lambda p, err, rid=request_id: self._music_failed(rid, err))
+        worker.finished.connect(lambda w=worker: w.deleteLater())
+        worker.start()
+
+    def _music_failed(self, request_id, error):
+        if request_id == self._music_request_id:
+            log.info("Titulación musical: error o sin datos (%s)", error)
+
+    def _music_ready(self, request_id, index, item, metadata, overlay_path):
+        if request_id != self._music_request_id or self.ctrl.current is not item:
+            return
+        if metadata:
+            self.db.update_music_metadata(item.get("path"), metadata)
+        if overlay_path and os.path.isfile(overlay_path):
+            self._music_overlay_path = str(overlay_path)
+            intro_start = float(self.settings.get("music_titling_intro_start", 30.0))
+            intro_dur = float(self.settings.get("music_titling_intro_duration", 12.0))
+            outro_dur = float(self.settings.get("music_titling_outro_duration", 10.0))
+            dur = float(item.get("duration") or 0.0)
+
+            self.player.set_music_overlay(str(overlay_path), dur, intro_start, intro_dur, outro_dur)
+            if self.output and self.output.isRunning() and self.ctrl.is_on_air:
+                self.output.set_music_overlay(str(overlay_path), intro_start, intro_dur, outro_dur)
+
+            title_text = metadata.get("title") or item.get("title") or "Música"
+            artist_text = metadata.get("artist") or ""
+            disp = f"{artist_text} - {title_text}" if artist_text else title_text
+            self._status(f"🎵 Zócalo Musical • {disp} (Entrada 30s • Salida ult. 10s)")
 
     def _rtmp_sync_structure(self):
         if self.output and self.output.isRunning():
@@ -2568,6 +2661,56 @@ class MainWindow(QMainWindow):
             self._status("Tarjeta TMDB actualizada • aplicada al aire")
         else:
             self._status("Tarjeta TMDB guardada • se aplicará en la próxima película")
+
+    def _audio_processor_config(self):
+        """Devuelve el diccionario completo de configuración de audio profesional."""
+        s = self.settings
+        return {
+            "audio_proc_enabled": bool(s.get("audio_proc_enabled", False)),
+            "audio_proc_preset": str(s.get("audio_proc_preset", "off")),
+            "audio_proc_norm_mode": str(s.get("audio_proc_norm_mode", "off")),
+            "audio_proc_target_lufs": float(s.get("audio_proc_target_lufs", -23.0)),
+            "audio_proc_true_peak": float(s.get("audio_proc_true_peak", -1.5)),
+            "audio_proc_lra": float(s.get("audio_proc_lra", 7.0)),
+            "audio_proc_highpass": int(s.get("audio_proc_highpass", 35)),
+            "audio_proc_compressor": bool(s.get("audio_proc_compressor", False)),
+            "audio_proc_comp_threshold": float(s.get("audio_proc_comp_threshold", -18.0)),
+            "audio_proc_comp_ratio": float(s.get("audio_proc_comp_ratio", 3.0)),
+            "audio_proc_comp_attack": float(s.get("audio_proc_comp_attack", 15.0)),
+            "audio_proc_comp_release": float(s.get("audio_proc_comp_release", 200.0)),
+            "audio_proc_comp_makeup": float(s.get("audio_proc_comp_makeup", 2.0)),
+            "audio_proc_equalizer": bool(s.get("audio_proc_equalizer", False)),
+            "audio_proc_eq_bass": float(s.get("audio_proc_eq_bass", 0.0)),
+            "audio_proc_eq_presence": float(s.get("audio_proc_eq_presence", 2.0)),
+            "audio_proc_eq_treble": float(s.get("audio_proc_eq_treble", 1.5)),
+            "audio_proc_stereo_enhance": bool(s.get("audio_proc_stereo_enhance", False)),
+            "audio_proc_limiter": bool(s.get("audio_proc_limiter", True)),
+            "audio_proc_gain_db": float(s.get("audio_proc_gain_db", 0.0)),
+        }
+
+    def open_audio_processor(self):
+        """Abre el diálogo del Procesador de Audio Profesional y actualiza las salidas activas."""
+        d = AudioProcessorDialog(self, self.settings)
+        if d.exec() == QDialog.Accepted:
+            for k, v in d.values().items():
+                if self.settings.get(k) != v:
+                    self._save_setting(k, v)
+            if self.output and self.output.isRunning():
+                self.output.set_audio_processor(self._audio_processor_config())
+                self._status("Procesador de audio actualizado • se aplica en las salidas IP")
+            else:
+                self._status("Ajustes de sonido profesional guardados")
+
+    def open_music_titling(self):
+        """Abre el diálogo de configuración de Reconocimiento y Titulación Musical en vivo."""
+        d = MusicTitlingDialog(self, self.settings)
+        if d.exec() == QDialog.Accepted:
+            for k, v in d.values().items():
+                if self.settings.get(k) != v:
+                    self._save_setting(k, v)
+            self._status("Configuración de titulación musical guardada")
+            if self.ctrl.is_on_air and self.ctrl.current:
+                self._music_follow(self.ctrl.onair, self.ctrl.current)
 
     def open_devices(self):
         from .dialogs_extra import DevicesDialog

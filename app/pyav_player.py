@@ -544,6 +544,11 @@ class PyAVPlayer(QObject):
         self._program_overlay = QImage()
         self._program_overlay_interval = 1080.0
         self._program_overlay_duration = 15.0
+        self._music_overlay = QImage()
+        self._music_duration = 0.0
+        self._music_intro_start = 30.0
+        self._music_intro_duration = 12.0
+        self._music_outro_duration = 10.0
         self._generation = 0
         self._job = None
         self._thread = None
@@ -775,6 +780,14 @@ class PyAVPlayer(QObject):
         self._program_overlay_interval = max(1.0, float(interval_seconds or 1080.0))
         self._program_overlay_duration = max(0.0, float(duration_seconds or 15.0))
 
+    def set_music_overlay(self, path="", clip_duration=0.0, intro_start=30.0, intro_duration=12.0, outro_duration=10.0):
+        """Configura el zócalo musical con sus reglas de tiempo (30s tras inicio y últimos 10s)."""
+        self._music_overlay = QImage(str(path)) if path and os.path.isfile(str(path)) else QImage()
+        self._music_duration = float(clip_duration or 0.0)
+        self._music_intro_start = float(intro_start or 30.0)
+        self._music_intro_duration = float(intro_duration or 12.0)
+        self._music_outro_duration = float(outro_duration or 10.0)
+
     def _paint_program_overlay(self, image, position):
         overlay = self._program_overlay
         if overlay.isNull() or self._program_overlay_duration <= 0:
@@ -793,6 +806,35 @@ class PyAVPlayer(QObject):
             log.debug("program overlay paint: %s", exc)
         return image
 
+    def _paint_music_overlay(self, image, position, duration):
+        overlay = self._music_overlay
+        if overlay.isNull():
+            return image
+        pos = float(position or 0.0)
+        dur = float(duration or self._music_duration or 0.0)
+
+        # Regla: Visible tras 30s de la canción (intro) y durante los últimos 10s (outro)
+        in_intro = (self._music_intro_start <= pos < self._music_intro_start + self._music_intro_duration)
+        in_outro = False
+        if dur > (self._music_intro_start + self._music_intro_duration):
+            in_outro = (pos >= max(0.0, dur - self._music_outro_duration))
+        elif dur > self._music_outro_duration:
+            in_outro = (pos >= max(0.0, dur - self._music_outro_duration))
+
+        if not (in_intro or in_outro):
+            return image
+
+        if overlay.size() != image.size():
+            overlay = overlay.scaled(image.size(), Qt.AspectRatioMode.IgnoreAspectRatio,
+                                     Qt.TransformationMode.SmoothTransformation)
+        try:
+            painter = QPainter(image)
+            painter.drawImage(0, 0, overlay)
+            painter.end()
+        except Exception as exc:  # noqa: BLE001
+            log.debug("music overlay paint: %s", exc)
+        return image
+
     def _on_frame(self, image, position, duration, generation):
         if generation != self._generation:
             return
@@ -800,6 +842,7 @@ class PyAVPlayer(QObject):
         if duration > 0:
             self._duration = float(duration)
         image = self._paint_program_overlay(image, self._time)
+        image = self._paint_music_overlay(image, self._time, self._duration)
         self.widget.set_frame(image)
         self.ndi_frame.emit(image, self._time, self._duration)
         self.position.emit(self._time, self._duration)

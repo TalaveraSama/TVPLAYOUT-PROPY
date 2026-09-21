@@ -146,6 +146,9 @@ class DB:
             # v24.0.2.43: lo emitido sobrevive al reinicio (continuidad 24/7).
             ("status", "TEXT DEFAULT ''"),
             ("aired_at", "TEXT DEFAULT ''"),
+            ("music_artist", "TEXT DEFAULT ''"),
+            ("music_title", "TEXT DEFAULT ''"),
+            ("music_album", "TEXT DEFAULT ''"),
         ]:
             if name not in pi:
                 self.conn.execute(f"ALTER TABLE playlist_items ADD COLUMN {name} {ddl}")
@@ -161,6 +164,12 @@ class DB:
             ("tmdb_overview", "TEXT DEFAULT ''"),
             ("tmdb_poster", "TEXT DEFAULT ''"),
             ("tmdb_backdrop", "TEXT DEFAULT ''"),
+            ("music_artist", "TEXT DEFAULT ''"),
+            ("music_title", "TEXT DEFAULT ''"),
+            ("music_album", "TEXT DEFAULT ''"),
+            ("music_year", "TEXT DEFAULT ''"),
+            ("music_genre", "TEXT DEFAULT ''"),
+            ("music_label", "TEXT DEFAULT ''"),
             ("mark_in", "REAL DEFAULT 0"),
             ("mark_out", "REAL DEFAULT 0"),
             # v24.0.2.36: legado del auto-recorte (eliminado en v24.0.2.45).
@@ -371,6 +380,24 @@ class DB:
                                fields["tmdb_overview"], fields["tmdb_poster"], fields["tmdb_backdrop"], str(path)))
             self.conn.commit()
 
+    def update_music_metadata(self, path, metadata):
+        """Guarda metadatos de reconocimiento musical (artista, título, álbum, año, etc.)."""
+        metadata = metadata or {}
+        fields = {
+            "music_artist": str(metadata.get("artist") or ""),
+            "music_title": str(metadata.get("title") or ""),
+            "music_album": str(metadata.get("album") or ""),
+            "music_year": str(metadata.get("year") or ""),
+            "music_genre": str(metadata.get("genre") or ""),
+            "music_label": str(metadata.get("label") or ""),
+        }
+        with self._lock:
+            self.conn.execute("""UPDATE media SET music_artist=?, music_title=?, music_album=?,
+                               music_year=?, music_genre=?, music_label=? WHERE path=?""",
+                              (fields["music_artist"], fields["music_title"], fields["music_album"],
+                               fields["music_year"], fields["music_genre"], fields["music_label"], str(path)))
+            self.conn.commit()
+
     def set_media_category(self, path, category):
         with self._lock:
             self.conn.execute("UPDATE media SET category=? WHERE path=?", (category, str(path)))
@@ -473,7 +500,8 @@ class DB:
                 }
                 if media:
                     for k in ("width", "height", "fps", "video_codec", "audio_codec", "tracks", "thumb",
-                              "tmdb_poster", "tmdb_backdrop", "tmdb_title", "tmdb_year", "tmdb_overview"):
+                              "tmdb_poster", "tmdb_backdrop", "tmdb_title", "tmdb_year", "tmdb_overview",
+                              "music_artist", "music_title", "music_album", "music_year", "music_genre", "music_label"):
                         item[k] = media[k] if k in media.keys() else ""
                     # v24.0.2.30: los recortes de biblioteca (Editar clip)
                     # se heredan si el evento no tiene propios.

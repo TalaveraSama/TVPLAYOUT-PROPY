@@ -959,6 +959,16 @@ class SettingsDialog(BaseDialog):
         f2.addRow("Identificador de entrada", in_row)
         f2.addRow("Identificador de salida", out_row)
         f2.addRow("", _note("Los identificadores se usan sólo en Películas y Música; no se insertan en Publicidad, filler ni slate."))
+
+        # Sonido Profesional y Titulación Musical
+        self.audio_proc_btn = QPushButton("🎚️ Configurar Sonido Profesional (EBU R128 / DynAudNorm / Compresor / EQ)…")
+        self.audio_proc_btn.clicked.connect(lambda: parent.open_audio_processor() if hasattr(parent, "open_audio_processor") else None)
+        f2.addRow("Sonido PRO", self.audio_proc_btn)
+
+        self.music_titling_btn = QPushButton("🎵 Configurar Titulación Musical (Reconocimiento / Timing 30s-10s / Grafismo)…")
+        self.music_titling_btn.clicked.connect(lambda: parent.open_music_titling() if hasattr(parent, "open_music_titling") else None)
+        f2.addRow("Titulación Música", self.music_titling_btn)
+
         f2.addRow("", self.tmdb_enabled)
         f2.addRow("TMDB API key", self.tmdb_key)
         f2.addRow("TMDB: intervalo", self.tmdb_interval)

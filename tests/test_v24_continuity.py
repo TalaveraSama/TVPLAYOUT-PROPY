@@ -446,7 +446,7 @@ def test_open_external_preview_runtime_prefers_mpv_then_vlc():
     # Los procesos de prueba realmente arrancaron.
     deadline = time.time() + 5
     while time.time() < deadline:
-        if os.path.exists(witness):
+        if os.path.exists(witness) and "mpv" in open(witness).read() and "vlc" in open(witness).read():
             break
         time.sleep(0.1)
     content = open(witness).read() if os.path.exists(witness) else ""

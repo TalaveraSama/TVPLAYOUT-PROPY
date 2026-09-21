@@ -89,6 +89,12 @@ def make_item(row_or_dict, **extra):
         "tmdb_title": src.get("tmdb_title") or "",
         "tmdb_year": src.get("tmdb_year") or "",
         "tmdb_overview": src.get("tmdb_overview") or "",
+        "music_artist": src.get("music_artist") or "",
+        "music_title": src.get("music_title") or "",
+        "music_album": src.get("music_album") or "",
+        "music_year": src.get("music_year") or "",
+        "music_genre": src.get("music_genre") or "",
+        "music_label": src.get("music_label") or "",
         "audio_lang": src.get("audio_lang") or "",
         "subtitle_lang": src.get("subtitle_lang") or "",
         "fixed_time": src.get("fixed_time") or "",
@@ -394,7 +400,8 @@ class PlayoutController(QObject):
                 start, end, effective = trim_bounds(it)
                 it["mark_in"], it["mark_out"], it["duration"] = start, (end if end < it["source_duration"] else 0.0), effective
                 for k in ("category", "width", "height", "fps", "video_codec", "audio_codec", "tracks", "thumb",
-                          "tmdb_poster", "tmdb_backdrop", "tmdb_title", "tmdb_year", "tmdb_overview"):
+                          "tmdb_poster", "tmdb_backdrop", "tmdb_title", "tmdb_year", "tmdb_overview",
+                          "music_artist", "music_title", "music_album", "music_year", "music_genre", "music_label"):
                     it[k] = meta[k]
                 # v24.0.2.30: los recortes guardados en la biblioteca (Editar clip
                 # o Editar clip) llegan también a los eventos ya cargados, siempre

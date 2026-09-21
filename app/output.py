@@ -20,6 +20,7 @@ from . import logger
 from .config import APP_NAME, APP_SLUG
 from .prober import pick_audio, pick_subtitle
 from .ndi_sender import NDISender, logo_suppressed_for_category
+from .audio_processor import build_audio_filters
 
 log = logger.get("rtmp")
 CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -132,7 +133,8 @@ class OutputWorker(QThread):
                  audio_preference="AUTO", subtitle_preference="OFF", subtitle_burn=False,
                  audio_bitrate=192, loop=True, start_index=0, start_offset=0.0, extra_args="", logo=None,
                  program_overlay=None, program_interval=1080.0, program_duration=15.0, protocol="",
-                 monitor_feed_url="", externally_controlled=False):
+                 monitor_feed_url="", externally_controlled=False, audio_processor_config=None,
+                 music_overlay=None, music_intro_start=30.0, music_intro_duration=12.0, music_outro_duration=10.0):
         super().__init__()
         self.ffmpeg = ffmpeg
         self.items = self._norm_items(items)
@@ -154,6 +156,11 @@ class OutputWorker(QThread):
         self.program_overlay = program_overlay or ""
         self.program_interval = max(1.0, float(program_interval or 1080.0))
         self.program_duration = max(0.0, float(program_duration or 15.0))
+        self.audio_processor_config = dict(audio_processor_config or {})
+        self.music_overlay = str(music_overlay or "")
+        self.music_intro_start = max(0.0, float(music_intro_start or 30.0))
+        self.music_intro_duration = max(1.0, float(music_intro_duration or 12.0))
+        self.music_outro_duration = max(1.0, float(music_outro_duration or 10.0))
         # Feed local MPEG-TS opcional: contiene exactamente el vídeo/audio
         # ya procesado que se envía al destino, incluido el subtítulo quemado.
         # Un reproductor externo puede usarlo como monitor real del programa.
@@ -328,6 +335,44 @@ class OutputWorker(QThread):
             point += interval
         return "+".join(windows)
 
+    def _music_enable_expression(self, offset, duration):
+        """Ventanas de visualización del zócalo musical (30s tras inicio y últimos 10s)."""
+        if not self.music_overlay or not os.path.isfile(self.music_overlay):
+            return ""
+        try:
+            origin = max(0.0, float(offset or 0.0))
+            total = float(duration or 0.0)
+        except (TypeError, ValueError):
+            origin, total = 0.0, 0.0
+
+        windows = []
+        intro_start = self.music_intro_start
+        intro_dur = self.music_intro_duration
+        outro_dur = self.music_outro_duration
+
+        # Ventana 1: Entrada tras 30s
+        intro_in = max(0.0, intro_start - origin)
+        intro_out = max(0.0, (intro_start + intro_dur) - origin)
+        if intro_out > 0 and (total <= 0 or intro_in < total):
+            if origin < (intro_start + intro_dur):
+                windows.append(f"between(t,{intro_in:.3f},{intro_out:.3f})")
+
+        # Ventana 2: Salida en los últimos 10 segundos
+        if total > (intro_start + intro_dur):
+            outro_start = max(0.0, total - outro_dur)
+            outro_in = max(0.0, outro_start - origin)
+            outro_out = max(0.0, total - origin)
+            if outro_out > 0:
+                windows.append(f"between(t,{outro_in:.3f},{outro_out:.3f})")
+        elif total > outro_dur:
+            outro_start = max(0.0, total - outro_dur)
+            outro_in = max(0.0, outro_start - origin)
+            outro_out = max(0.0, total - origin)
+            if outro_out > 0:
+                windows.append(f"between(t,{outro_in:.3f},{outro_out:.3f})")
+
+        return "+".join(windows)
+
     def _build_command(self, item, offset=0.0):
         source = item["path"]
         if not self.ffmpeg or not os.path.isfile(self.ffmpeg):
@@ -402,27 +447,46 @@ class OutputWorker(QThread):
         program_expr = self._program_enable_expression(local_offset, trim_duration) if program else ""
         if not program_expr:
             program = None
+
+        music = (self.music_overlay if (self.music_overlay and os.path.isfile(self.music_overlay)
+                 and item.get("category") in {"Música", "Musical", "Music"}) else None)
+        music_expr = self._music_enable_expression(local_offset, trim_duration) if music else ""
+        if not music_expr:
+            music = None
+
         amap = f"0:a:{aid}?" if isinstance(aid, int) and aid >= 0 else "0:a:0?"
+
+        overlay_list = []
         if logo:
-            cmd += ["-loop", "1", "-framerate", "1", "-i", logo["path"]]
+            overlay_list.append(("logo", logo["path"], None))
         if program:
-            cmd += ["-loop", "1", "-framerate", "1", "-i", program]
-        if logo or program:
+            overlay_list.append(("program", program, program_expr))
+        if music:
+            overlay_list.append(("music", music, music_expr))
+
+        for item_op in overlay_list:
+            cmd += ["-loop", "1", "-framerate", "1", "-i", item_op[1]]
+
+        if overlay_list:
             filters = [f"[0:v]{','.join(vf)}[base]"]
             stage = "base"
-            if logo:
-                lw = max(16, int(w * int(logo.get("scale", 10)) / 100))
-                op = max(0.05, min(1.0, int(logo.get("opacity", 90)) / 100))
-                m = int(logo.get("margin", 48))
-                xe, ye = logo_overlay_position(logo.get("position", "arriba-derecha"), w, h, m)
-                filters.append(f"[1:v]scale={lw}:-1,format=rgba,colorchannelmixer=aa={op:.2f}[logo]")
-                filters.append(f"[{stage}][logo]overlay={xe.format(m=m)}:{ye.format(m=m)}:shortest=1:format=auto[withlogo]")
-                stage = "withlogo"
-            if program:
-                program_index = 2 if logo else 1
-                filters.append(f"[{program_index}:v]format=rgba[program]")
-                filters.append(f"[{stage}][program]overlay=0:0:enable='{program_expr}':eof_action=repeat[withprogram]")
-                stage = "withprogram"
+            for inp_idx, (label, _path, expr) in enumerate(overlay_list, start=1):
+                if label == "logo":
+                    lw = max(16, int(w * int(logo.get("scale", 10)) / 100))
+                    op = max(0.05, min(1.0, int(logo.get("opacity", 90)) / 100))
+                    m = int(logo.get("margin", 48))
+                    xe, ye = logo_overlay_position(logo.get("position", "arriba-derecha"), w, h, m)
+                    filters.append(f"[{inp_idx}:v]scale={lw}:-1,format=rgba,colorchannelmixer=aa={op:.2f}[logo]")
+                    filters.append(f"[{stage}][logo]overlay={xe.format(m=m)}:{ye.format(m=m)}:shortest=1:format=auto[withlogo]")
+                    stage = "withlogo"
+                elif label == "program":
+                    filters.append(f"[{inp_idx}:v]format=rgba[program]")
+                    filters.append(f"[{stage}][program]overlay=0:0:enable='{expr}':eof_action=repeat[withprogram]")
+                    stage = "withprogram"
+                elif label == "music":
+                    filters.append(f"[{inp_idx}:v]format=rgba[music]")
+                    filters.append(f"[{stage}][music]overlay=0:0:enable='{expr}':eof_action=repeat[withmusic]")
+                    stage = "withmusic"
             filters.append(f"[{stage}]format=yuv420p[out]")
             fc = ";".join(filters)
             cmd += ["-filter_complex", fc, "-map", "[out]", "-map", amap]
@@ -441,7 +505,8 @@ class OutputWorker(QThread):
             cmd += ["-preset", "medium", "-profile:v", "high", "-look_ahead", "0"]
         elif codec == "h264_amf":
             cmd += ["-quality", "balanced", "-rc", "cbr", "-profile:v", "high"]
-        cmd += ["-c:a", "aac", "-b:a", f"{self.audio_bitrate}k", "-ar", "48000", "-ac", "2", "-af", "aresample=async=1:first_pts=0"]
+        af = build_audio_filters(self.audio_processor_config)
+        cmd += ["-c:a", "aac", "-b:a", f"{self.audio_bitrate}k", "-ar", "48000", "-ac", "2", "-af", af]
         if remaining_duration > 0:
             # -t es una duración de salida: no corta el archivo fuente y
             # hace efectivo el mark-out también para RTMP/SRT/UDP.
@@ -549,6 +614,17 @@ class OutputWorker(QThread):
             self.program_overlay = str(path or "")
             self.program_interval = max(1.0, float(interval_seconds or 1080.0))
             self.program_duration = max(0.0, float(duration_seconds or 15.0))
+
+    def set_music_overlay(self, path, intro_start=30.0, intro_duration=12.0, outro_duration=10.0):
+        with self._lock:
+            self.music_overlay = str(path or "")
+            self.music_intro_start = max(0.0, float(intro_start or 30.0))
+            self.music_intro_duration = max(1.0, float(intro_duration or 12.0))
+            self.music_outro_duration = max(1.0, float(outro_duration or 10.0))
+
+    def set_audio_processor(self, config):
+        with self._lock:
+            self.audio_processor_config = dict(config or {})
 
     @staticmethod
     def _terminate(proc):
@@ -1037,7 +1113,9 @@ class MultiOutputManager(QObject):
                  audio_bitrate=192, loop=True, start_index=0, start_offset=0.0,
                  extra_args="", logo=None, program_overlay=None, program_interval=1080.0,
                  program_duration=15.0, ndi_ffmpeg=None, ndi_source=None,
-                 monitor_feed_url="", externally_controlled=False, parent=None):
+                 monitor_feed_url="", externally_controlled=False,
+                 audio_processor_config=None, music_overlay=None,
+                 music_intro_start=30.0, music_intro_duration=12.0, music_outro_duration=10.0, parent=None):
         super().__init__(parent)
         self.ffmpeg = ffmpeg
         self.ndi_ffmpeg = ndi_ffmpeg or ffmpeg
@@ -1052,7 +1130,12 @@ class MultiOutputManager(QObject):
                            start_index=start_index, start_offset=start_offset, extra_args=extra_args, logo=logo,
                            program_overlay=program_overlay, program_interval=program_interval,
                            program_duration=program_duration,
-                           externally_controlled=bool(externally_controlled))
+                           externally_controlled=bool(externally_controlled),
+                           audio_processor_config=dict(audio_processor_config or {}),
+                           music_overlay=str(music_overlay or ""),
+                           music_intro_start=float(music_intro_start or 30.0),
+                           music_intro_duration=float(music_intro_duration or 12.0),
+                           music_outro_duration=float(music_outro_duration or 10.0))
         self.externally_controlled = bool(externally_controlled)
         self.monitor_feed_url = str(monitor_feed_url or "").strip()
         self.workers = []
@@ -1246,6 +1329,19 @@ class MultiOutputManager(QObject):
         self.common["program_overlay"] = str(path or "")
         self.common["program_interval"] = float(interval_seconds or 1080.0)
         self.common["program_duration"] = float(duration_seconds or 15.0)
+
+    def set_music_overlay(self, path, intro_start=30.0, intro_duration=12.0, outro_duration=10.0):
+        for worker in self.workers:
+            worker.set_music_overlay(path, intro_start, intro_duration, outro_duration)
+        self.common["music_overlay"] = str(path or "")
+        self.common["music_intro_start"] = float(intro_start or 30.0)
+        self.common["music_intro_duration"] = float(intro_duration or 12.0)
+        self.common["music_outro_duration"] = float(outro_duration or 10.0)
+
+    def set_audio_processor(self, config):
+        for worker in self.workers:
+            worker.set_audio_processor(config)
+        self.common["audio_processor_config"] = dict(config or {})
 
     @property
     def has_active_process(self):
