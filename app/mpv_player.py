@@ -15,6 +15,7 @@ import uuid
 from PySide6.QtCore import QObject, Signal, QTimer
 
 from . import logger
+from .config import APP_SLUG
 
 log = logger.get("mpv")
 CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -207,9 +208,9 @@ class MPVPlayer(QObject):
             return False
         token = uuid.uuid4().hex[:10]
         if os.name == "nt":
-            self.ipc_path = r"\\.\pipe\TVPlayoutPRO_" + token
+            self.ipc_path = rf"\\.\pipe\{APP_SLUG}_" + token
         else:
-            self.ipc_path = f"/tmp/tvplayout_mpv_{token}.sock"
+            self.ipc_path = f"/tmp/nexora_air_mpv_{token}.sock"
         cmd = self._build_cmd()
         try:
             self.proc = subprocess.Popen(cmd, creationflags=CREATE_NO_WINDOW, stdin=subprocess.DEVNULL,

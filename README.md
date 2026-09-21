@@ -1,7 +1,25 @@
-# TVPlayout PRO V24.0.2.21 — Consola de playout
+# Nexora Air V25.0.0 — continuidad broadcast 24/7
 
-Playout de televisión 24/7 para Windows con interfaz inspirada en la distribución de **XPlayout** (Axel Technology),
-sin usar código ni recursos propietarios. Reproductor local **PyAV/libavcodec** + salida **RTMP/SRT/UDP** con **FFmpeg** + NDI nativo mediante el Runtime x64.
+<p align="center">
+  <img src="assets/logo.png" alt="Nexora Air" width="180">
+</p>
+
+**Nexora Air** es la nueva identidad de la consola: una plataforma de continuidad
+broadcast para Windows que une programación, biblioteca y salidas IP en un solo
+flujo. V25 conserva y migra las bibliotecas de TVPlayout PRO.
+
+## Novedades de V25.0.0
+
+- **Un solo player en modo Reloj:** la posición visible es el `time=` real del
+  FFmpeg que emite por RTMP/SRT. Si la salida se congela, la lista se congela;
+  el evento cambia únicamente después de emitir su último frame.
+- **Nexora Air:** nombre, ejecutable, instalador, icono, ventanas, señal NDI y
+  herramientas de diagnóstico comparten una identidad única.
+- **Instalador offline todo-en-uno:** el builder reproducible prepara Python,
+  PySide6, PyAV/libav, FFmpeg y la aplicación para Windows x64, con migración
+  automática de la base, `.env`, caché y logs anteriores.
+- Se mantienen las optimizaciones de continuidad V24: reanudación por reloj,
+  subtítulos locales, reconexión del mismo evento, TMDB y recorte manual.
 
 ![Panel principal](docs/panel.png)
 
@@ -62,8 +80,11 @@ sólo sobre los clips elegidos.
 
 ## Salida RTMP
 
-La salida sigue al playout local: cada vez que empieza un evento en PyAV, FFmpeg salta al mismo evento. Se emite clip por clip
-sobre la misma URL (el servidor ve una reconexión breve entre clips). Encoders: AUTO (prueba NVENC → QSV → AMF → x264),
+En modo PyAV la salida sigue al playout local: cada vez que empieza un evento,
+FFmpeg salta al mismo evento. En modo **Reloj**, la relación se invierte: la
+primera salida FFmpeg activa es el player master y su progreso real gobierna la
+playlist. Se emite clip por clip sobre la misma URL (el servidor ve una
+reconexión breve entre clips). Encoders: AUTO (prueba NVENC → QSV → AMF → x264),
 CPU/x264, NVIDIA NVENC, Intel QSV, AMD AMF. Audio AAC 48 kHz estéreo, pista de audio elegida por preferencia
 (es-MX / es-419 / Latino / spa / es…). Opcional: quemar subtítulos preferidos y superponer un **logo PNG** (posición, tamaño,
 opacidad). La vista previa muestra el marco 16:9 y el área segura 4:3 (12.5%–87.5%); la posición final
@@ -71,13 +92,23 @@ se mantiene dentro de ese margen con un tamaño profesional predeterminado del 1
 
 ## Instalación (Windows)
 
+### Setup todo-en-uno (recomendado)
+
+Descarga y abre **`Setup_NexoraAir_V25.0.0.exe`** desde la release V25. No
+requiere instalar Python, Qt, PyAV ni FFmpeg por separado. Se instala por usuario
+en `%LOCALAPPDATA%\Programs\NexoraAir`, crea accesos directos y migra los datos
+de una instalación anterior.
+
+### Ejecución desde el código fuente
+
 1. Instala **Python 3.13 x64** (o 3.11/3.12).
 2. Ejecuta `INSTALL.bat` (crea `.venv` e instala PySide6 y PyAV/libav).
 3. Copia `ffmpeg.exe` y `ffprobe.exe` en la raíz del proyecto (o en `ffmpeg\bin\`, `bin\`) para RTMP y análisis.
-4. Coloca opcionalmente `assets\logo.png` y `assets\logo.ico` para la identidad visual.
-5. Ejecuta `INICIAR.bat` (`INICIAR_CONSOLA.bat` para ver mensajes de depuración).
+4. Ejecuta `INICIAR.bat` (`INICIAR_CONSOLA.bat` para ver mensajes de depuración).
 
-Opcional: archivo `.env` con `FFMPEG_PATH=...`, `FFPROBE_PATH=...`, `TVPLAYOUT_DB=...`. El monitor local usa PyAV/libav y no necesita mpv.
+Opcional: archivo `.env` con `FFMPEG_PATH=...`, `FFPROBE_PATH=...`,
+`NEXORA_AIR_DB=...`. `TVPLAYOUT_DB` sigue admitido para migraciones. El monitor
+local usa PyAV/libav y no necesita mpv.
 
 Primer uso: **Fuentes / Categorías** → añadir carpetas (locales o UNC) → **Escanear biblioteca**. Con ffprobe se analizan
 duración, resolución, códecs, pistas de audio/subtítulos y se generan miniaturas (en `cache\thumbs`).
@@ -90,14 +121,14 @@ destino NDI su propio sender del Runtime; todos siguen el mismo evento, corte
 y reloj del playout local.
 
 - **OBS:** la cámara virtual de OBS es una salida de OBS hacia otras
-  aplicaciones; TVPlayout no puede enviar directamente a esa cámara virtual.
-  Para recibir TVPlayout en OBS, usa una entrada RTMP/SRT (normalmente mediante
+  aplicaciones; Nexora Air no puede enviar directamente a esa cámara virtual.
+  Para recibir Nexora Air en OBS, usa una entrada RTMP/SRT (normalmente mediante
   Media Source/VLC o un plugin SRT) o instala `obs-ndi` y recibe el nombre NDI.
   Después OBS puede publicar su propia cámara virtual.
 - **vMix:** añade una entrada Stream para RTMP/SRT o una entrada NDI si tienes
   NDI Runtime. Para un OBS y un vMix simultáneos, crea dos perfiles RTMP/SRT o
   un perfil NDI más otro perfil de red.
-- **NDI directo:** instala el **NDI Runtime x64** en Windows. TVPlayout busca
+- **NDI directo:** instala el **NDI Runtime x64** en Windows. Nexora Air busca
   `Processing.NDI.Lib.x64.dll`, la carga mediante ctypes, llama a
   `NDIlib_initialize` y crea un sender de prueba antes de mostrar NDI como
   disponible. El vídeo BGRA/BGRX y el audio PCM estéreo s16le convertido a
@@ -221,7 +252,7 @@ tests/                  pruebas estáticas y de continuidad del playout
 - Los eventos normales continúan mostrando el logo sin cambiar la configuración de identidad visual.
 
 ### V24.0.2.6
-- Se corrigió la compatibilidad con NDI Runtime 6: algunas DLL exportan `NDIlib_send_send_video_async_v2` y no `NDIlib_send_send_video_v2_async`; TVPlayout acepta ambos nombres.
+- Se corrigió la compatibilidad con NDI Runtime 6: algunas DLL exportan `NDIlib_send_send_video_async_v2` y no `NDIlib_send_send_video_v2_async`; Nexora Air acepta ambos nombres.
 - Se añadió la ruta `C:\Program Files\NDI\NDI 6 Tools\Runtime` a la detección de DLL.
 - El diagnóstico informa el símbolo de vídeo seleccionado y el sender ya puede crearse con el Runtime mostrado por Windows.
 

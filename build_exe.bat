@@ -1,9 +1,10 @@
 @echo off
 REM ============================================================================
-REM TVPlayout PRO V24.0.2.21 - Empaquetado portable para Windows x64
+REM Nexora Air V25.0.0 - Empaquetado portable para Windows x64
+REM Renombra el ejecutable heredado TVPlayoutPRO.exe como NexoraAir.exe.
 REM
 REM Genera una distribución onedir profesional en:
-REM   dist\TVPlayoutPRO\
+REM   dist\NexoraAir\
 REM
 REM El ejecutable y las librerías Python quedan dentro de esa carpeta. El
 REM script copia además ffmpeg/ffprobe y los recursos de identidad visual
@@ -13,15 +14,15 @@ REM ============================================================================
 setlocal EnableExtensions EnableDelayedExpansion
 cd /d "%~dp0"
 
-set "APP_VERSION=V24.0.2.45"
+set "APP_VERSION=V25.0.0"
 set "VENV=.venv-build"
 set "PYEXE=%VENV%\Scripts\python.exe"
-set "OUT=%~dp0dist\TVPlayoutPRO"
+set "OUT=%~dp0dist\NexoraAir"
 set "PY_CMD="
 
 echo.
 echo ============================================================
-echo   TVPlayout PRO %APP_VERSION% - BUILD PORTABLE
+echo   Nexora Air %APP_VERSION% - BUILD PORTABLE
 echo ============================================================
 echo.
 
@@ -71,8 +72,8 @@ REM DLL de Qt/PyAV a TEMP en cada arranque y permite diagnosticar librerías.
 echo [..] Empaquetando %APP_VERSION% ...
 "%PYEXE%" -m PyInstaller --noconfirm --clean "tvplayout.spec"
 if errorlevel 1 goto :build_error
-if not exist "%OUT%\TVPlayoutPRO.exe" (
-    echo [ERROR] PyInstaller terminó pero no creó %OUT%\TVPlayoutPRO.exe
+if not exist "%OUT%\NexoraAir.exe" (
+    echo [ERROR] PyInstaller terminó pero no creó %OUT%\NexoraAir.exe
     goto :build_error
 )
 echo [OK] Ejecutable y librerías Python generados.
@@ -153,19 +154,20 @@ if exist "%~dp0assets\logo.ico" (
 REM 8. Datos persistentes opcionales ------------------------------------------
 REM Se copia la base actual si existe; al iniciar, la aplicación usa siempre la
 REM carpeta del EXE como ROOT y conserva DB, cache y logs junto al programa.
-if exist "%~dp0tvplayout.db" copy /Y "%~dp0tvplayout.db" "%OUT%\tvplayout.db" >nul
+if exist "%~dp0nexora-air.db" copy /Y "%~dp0nexora-air.db" "%OUT%\nexora-air.db" >nul
+if not exist "%OUT%\nexora-air.db" if exist "%~dp0tvplayout.db" copy /Y "%~dp0tvplayout.db" "%OUT%\nexora-air.db" >nul
 if exist "%~dp0.env" copy /Y "%~dp0.env" "%OUT%\.env" >nul
 if exist "%~dp0INICIAR_EXE.bat" copy /Y "%~dp0INICIAR_EXE.bat" "%OUT%\INICIAR_EXE.bat" >nul
 
 >"%OUT%\LEEME_PORTABLE.txt" (
-    echo TVPlayout PRO %APP_VERSION%
+    echo Nexora Air %APP_VERSION%
     echo.
-    echo Ejecuta TVPlayoutPRO.exe o INICIAR_EXE.bat.
+    echo Ejecuta NexoraAir.exe o INICIAR_EXE.bat.
     echo ffmpeg.exe, ffprobe.exe y mpv.exe van empaquetados junto al EXE.
     echo Las vistas previas usan mpv.exe (raiz) o VLC si esta instalado.
     echo NDI directo requiere instalar el NDI Runtime x64 en Windows; ffmpeg-ndi.exe es solo compatibilidad heredada.
     echo assets\logo.png y assets\logo.ico son opcionales para identidad visual.
-    echo tvplayout.db, cache y logs se guardan junto al EXE.
+    echo nexora-air.db, cache y logs se guardan junto al EXE.
 )
 
 REM 9. Limpiar artefactos temporales de PyInstaller ---------------------------
@@ -181,9 +183,9 @@ echo ============================================================
 echo   BUILD COMPLETADO
 echo ============================================================
 echo Distribución portable: %OUT%
-echo Ejecutable:             %OUT%\TVPlayoutPRO.exe
+echo Ejecutable:             %OUT%\NexoraAir.exe
 echo.
-echo Copia la carpeta completa dist\TVPlayoutPRO a otro Windows 10/11 x64.
+echo Copia la carpeta completa dist\NexoraAir a otro Windows 10/11 x64.
 echo No copies solo el EXE: también necesita la carpeta _internal.
 echo.
 if /i not "%~1"=="--no-pause" pause

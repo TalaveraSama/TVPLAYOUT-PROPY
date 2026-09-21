@@ -22,6 +22,7 @@ except ImportError:  # permite py_compile/test estático sin PySide6
     Qt = QColor = QFont = QImage = QPainter = None
 
 from . import logger
+from .config import APP_NAME
 
 log = logger.get("ndi")
 
@@ -159,7 +160,7 @@ class NDISender:
         return cls.probe()[0]
 
     @classmethod
-    def probe(cls, name="TVPlayout PRO (prueba)"):
+    def probe(cls, name=f"{APP_NAME} (prueba)"):
         """Prueba la DLL completa: carga, initialize, create y destroy."""
         sender = cls(name)
         if not sender.start():
@@ -214,7 +215,7 @@ class NDISender:
                         cls._runtime_dir = None
 
     def __init__(self, name, logo=None, fps="29.97"):
-        self.name = str(name or "TVPlayout PRO").removeprefix("ndi://")
+        self.name = str(name or APP_NAME).removeprefix("ndi://")
         self.logo = logo
         self.content_category = ""
         self.frame_rate_N, self.frame_rate_D = self._fps_ratio(fps)
@@ -406,7 +407,7 @@ class NDISender:
             painter.setPen(QColor("#ffffff"))
             painter.setFont(QFont("Arial", 44, QFont.Weight.Black))
             painter.drawText(image.rect().adjusted(0, bar_h + 60, 0, 0), Qt.AlignmentFlag.AlignHCenter,
-                             "TVPlayout PRO — FUENTE DE PRUEBA NDI")
+                             f"{APP_NAME} — FUENTE DE PRUEBA NDI")
             painter.setFont(QFont("Arial", 26))
             painter.drawText(image.rect().adjusted(0, bar_h + 150, 0, 0), Qt.AlignmentFlag.AlignHCenter,
                              "Sin señal local: esta tarjeta confirma que el NDI está saliendo.")

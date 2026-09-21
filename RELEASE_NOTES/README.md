@@ -1,7 +1,7 @@
 # Archivo de notas de versión
 
 Cada archivo `vX.Y.Z(.N).md` contiene las notas tal como se publicaron en
-GitHub para esa versión (70 versiones, de la v22.0.0 a la v24.0.2.45).
+GitHub para esa versión (71 versiones, de la v22.0.0 a la v25.0.0).
 Las líneas con varios parches fueron consolidadas en una sola release por
 línea (v22.2, v24.0.0, v24.0.1, v24.0.2).
 
@@ -77,3 +77,4 @@ línea (v22.2, v24.0.0, v24.0.1, v24.0.2).
 | `v24.0.2.43` | V24.0.2.43 — Al reiniciar, lo emitido se conserva y la lista continúa por la HORA |
 | `v24.0.2.44` | V24.0.2.44 — El auto-recorte ya no compite con la emisión al aire |
 | `v24.0.2.45` | V24.0.2.45 — Auto-recorte ELIMINADO por completo |
+| `v25.0.0` | Nexora Air V25.0.0 — un solo player, nueva identidad |

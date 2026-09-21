@@ -1,12 +1,14 @@
-"""Punto de entrada de TVPlayout PRO."""
+"""Punto de entrada de Nexora Air."""
 import sys
 import traceback
+
+from app.config import APP_NAME
 
 
 def _fatal(msg):
     try:
         import ctypes
-        ctypes.windll.user32.MessageBoxW(0, msg, "TVPlayout PRO — error", 0x10)
+        ctypes.windll.user32.MessageBoxW(0, msg, f"{APP_NAME} — error", 0x10)
     except Exception:  # noqa: BLE001
         print(msg, file=sys.stderr)
 

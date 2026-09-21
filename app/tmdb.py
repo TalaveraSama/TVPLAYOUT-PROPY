@@ -19,7 +19,7 @@ TMDB_CACHE = CACHE_DIR / "tmdb"
 
 
 def _request_json(url):
-    req = urllib.request.Request(url, headers={"User-Agent": "TVPlayout-PRO/24"})
+    req = urllib.request.Request(url, headers={"User-Agent": "Nexora-Air/25"})
     with urllib.request.urlopen(req, timeout=8) as response:
         return json.loads(response.read().decode("utf-8", "replace"))
 
@@ -27,7 +27,7 @@ def _request_json(url):
 def _download(url, path):
     if path.is_file() and path.stat().st_size > 0:
         return True
-    req = urllib.request.Request(url, headers={"User-Agent": "TVPlayout-PRO/24"})
+    req = urllib.request.Request(url, headers={"User-Agent": "Nexora-Air/25"})
     with urllib.request.urlopen(req, timeout=12) as response:
         data = response.read()
     if not data:

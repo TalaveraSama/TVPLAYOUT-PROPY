@@ -517,37 +517,30 @@ def test_ndi_stats_shows_in_output_monitor_label():
     assert "Estudio [NDI] · 3210 frames · señal en vivo" in mw.rtmp_destinations.text, mw.rtmp_destinations.text
 
 
-def test_full_windows_installer_bundles_app_ffmpeg_mpv_and_optional_runtimes():
-    """v24.0.2.34: el instalador único empaqueta todo y usa la versión actual."""
+def test_full_windows_installer_bundles_runtime_and_migrates_previous_data():
+    """V25: Setup offline con Python/Qt/PyAV/FFmpeg y migración de datos."""
     import re
     cfg = _read("app", "config.py")
-    iss = _read("installer", "TVPLAYOUT-PROPY.iss")
+    builder = _read("installer", "build_windows_setup.py")
     build_installer = _read("installer", "BUILD_INSTALLER.bat")
     build_portable = _read("build_exe.bat")
     gitignore = _read(".gitignore")
     docs = _read("BUILD.md")
     version = re.search(r'APP_VERSION = "([^"]+)"', cfg).group(1)
-    # Versión sincronizada en todos los artefactos del instalador.
-    assert f'#define MyAppVersion "{version}"' in iss
-    assert f"set \"APP_VERSION={version}\"" in build_installer
-    assert f"set \"APP_VERSION={version}\"" in build_portable
-    assert f"Setup_TVPlayoutPRO_{{#MyAppVersion}}" in iss
-    # Instalación por usuario (carpeta con permisos de escritura para la BD).
-    assert "PrivilegesRequired=lowest" in iss and "DefaultDirName={autopf}\TVPlayoutPRO" in iss
-    # Empaqueta la app completa y los binarios en la raíz del programa.
-    assert "dist\\TVPlayoutPRO\\*" in iss and "recursesubdirs" in iss
-    assert "TVPlayoutPRO.exe" in iss
-    # Opcionales: NDI Runtime, VLC y regla de firewall mDNS.
-    assert 'Name: "ndi"' in iss and 'Name: "vlc"' in iss and 'Name: "firewall"' in iss
-    assert "UDP localport=5353" in iss and "Spanish.isl" in iss
-    # El orquestador descarga/vendoriza y compila con Inno Setup.
-    assert "vendor" in build_installer and "ISCC" in build_installer
-    assert "build_exe.bat --no-pause" in build_installer
-    assert "gyan.dev" in build_installer and "mpv" in build_installer
-    # El build portable ahora también empaqueta mpv.exe en la raíz.
-    assert "MPV_SRC" in build_portable and "mpv-x86_64\\mpv.exe" in build_portable
-    assert "vendor/" in gitignore
-    assert "BUILD_INSTALLER.bat" in docs
+    assert version == "V25.0.0"
+    assert f'APP_VERSION = "{version}"' in builder
+    assert 'SETUP_NAME = f"Setup_{APP_SLUG}_{APP_VERSION}.exe"' in builder
+    assert f"Setup_NexoraAir_{version}.exe" in docs
+    assert "build_windows_setup.py all" in build_installer
+    assert 'PYTHON_VERSION = "3.13.2"' in builder
+    assert 'PYSIDE_VERSION = "6.8.3"' in builder
+    assert "PySide6_Essentials" in builder and "PySide6_Addons" in builder
+    assert "pythonw.exe" in builder and "ffmpeg.exe" in builder and "ffprobe.exe" in builder
+    assert "SetCompressor /SOLID lzma" in builder and "RequestExecutionLevel user" in builder
+    assert "TVPlayoutPRO\\tvplayout.db" in builder and "nexora-air.db" in builder
+    assert "NexoraAir.exe" in build_portable and "mpv-x86_64\\mpv.exe" in build_portable
+    assert ".installer-build/" in gitignore and "vendor/" in gitignore
+    assert "build_windows_setup.py all" in docs
 
 
 def test_runtime_root_points_to_exe_dir_when_frozen():
@@ -1120,31 +1113,18 @@ def test_tmdb_queries_are_cleaned_before_searching():
     assert "result = _search(False)" in tmdb_src
 
 
-def test_installer_uses_local_mpv_before_downloading():
-    """v24.0.2.42: el instalador prefiere un mpv LOCAL (argumento o vendor)
-    antes de descargarlo de SourceForge (descarga que se quedaba colgada)."""
+def test_v25_installer_wrapper_uses_reproducible_pypi_builder():
+    """V25: el BAT sólo delega al builder fijado y no descarga de SourceForge."""
     bat = _read("installer", "BUILD_INSTALLER.bat")
-    lines = bat.splitlines()
-
-    def first_line(predicate, what):
-        for n, line in enumerate(lines):
-            if predicate(line):
-                return n
-        raise AssertionError("no se encontro en el .bat: " + what)
-
-    # Orden de prioridad: extraido -> argumento -> vendor -> descarga.
-    i_ready = first_line(lambda l: "goto :mpv_ready" in l, "mpv ya extraido")
-    i_arg = first_line(lambda l: "MPV_LOCAL=%~1" in l, "argumento local")
-    i_reuse = first_line(lambda l: "mpv*-installer.exe" in l and "for %%F" in l, "reuse de vendor")
-    i_download = first_line(lambda l: "Descargando mpv" in l and "echo" in l, "descarga")
-    assert i_ready < i_arg < i_reuse < i_download, \
-        "orden: extraido -> argumento -> vendor -> descarga"
-    # Acepta el instalador oficial o un mpv.exe portable (con sus DLL).
-    assert 'if /i "!MPV_NAME!"=="mpv.exe"' in bat
-    assert "copy /Y" in bat and "/VERYSILENT" in bat and ":mpv_extract" in bat
-    # Sin mpv no aborta el build (solo aviso) y la cabecera documenta el uso.
-    assert "coloca mpv.exe en vendor" in bat
-    assert "mpv-x86_64-installer.exe" in bat
+    builder = _read("installer", "build_windows_setup.py")
+    assert 'set "PY_CMD=py -3"' in bat and 'set "PY_CMD=python"' in bat
+    assert "%PY_CMD% installer\\build_windows_setup.py all" in bat
+    assert "if errorlevel 1" in bat and "Instala NSIS 3" in bat
+    assert "Setup_NexoraAir_V25.0.0.exe" in bat
+    assert 'PYTHON_EMBED_PACKAGE = "3.13.0"' in builder
+    assert 'FFMPEG_PACKAGE_VERSION = "1.1.0"' in builder
+    assert 'pypi_wheel("ffmpeg-binaries", FFMPEG_PACKAGE_VERSION)' in builder
+    assert "SourceForge" not in bat and "SourceForge" not in builder
 
 
 def test_playlist_resumes_by_clock_after_restart():

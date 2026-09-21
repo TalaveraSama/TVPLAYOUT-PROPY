@@ -1,13 +1,13 @@
 ﻿; ============================================================================
-; TVPlayout PRO V24.0.2.45 — Instalador completo para Windows
+; Nexora Air V25.0.0 — Instalador completo para Windows
 ;
-; Genera UN SOLO Setup_TVPlayoutPRO_V24.0.2.45.exe que instala:
-;   • TVPlayoutPRO.exe  (aplicación PySide6 + PyAV congelada, carpeta _internal)
+; Genera UN SOLO Setup_NexoraAir_V25.0.0.exe que instala:
+;   • NexoraAir.exe  (aplicación PySide6 + PyAV congelada, carpeta _internal)
 ;   • ffmpeg.exe, ffprobe.exe y mpv.exe en la RAÍZ del programa
 ;   • Opcional: NDI Runtime x64 y VLC (se empaquetan si están en vendor\)
 ;   • Opcional: regla de firewall para el descubrimiento NDI/mDNS (UDP 5353)
 ;
-; Instalación por usuario (sin UAC) en %LOCALAPPDATA%\Programs\TVPlayoutPRO:
+; Instalación por usuario (sin UAC) en %LOCALAPPDATA%\Programs\NexoraAir:
 ; la aplicación guarda base de datos, logs, miniaturas y cache JUNTO AL EXE,
 ; por lo que necesita una carpeta con permisos de escritura (Program Files
 ; no los daría sin administrador).
@@ -15,10 +15,10 @@
 ; Compilar con Inno Setup 6:  installer\BUILD_INSTALLER.bat lo llama solo.
 ; ============================================================================
 
-#define MyAppName "TVPlayout PRO"
-#define MyAppVersion "V24.0.2.45"
-#define MyAppPublisher "TVPlayout PRO"
-#define MyAppExeName "TVPlayoutPRO.exe"
+#define MyAppName "Nexora Air"
+#define MyAppVersion "V25.0.0"
+#define MyAppPublisher "Nexora Air"
+#define MyAppExeName "NexoraAir.exe"
 #define MyAppId "{7A4C2E90-3B1D-4F5A-8C2E-9D0B1A2C3E4F}"
 
 [Setup]
@@ -27,7 +27,7 @@ AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppVerName={#MyAppName} {#MyAppVersion}
 AppPublisher={#MyAppPublisher}
-DefaultDirName={autopf}\TVPlayoutPRO
+DefaultDirName={autopf}\NexoraAir
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 ; Instalación por usuario: sin UAC y con permisos de escritura para la BD.
@@ -38,7 +38,7 @@ Compression=lzma2/max
 SolidCompression=yes
 WizardResizable=yes
 OutputDir=..\dist
-OutputBaseFilename=Setup_TVPlayoutPRO_{#MyAppVersion}
+OutputBaseFilename=Setup_NexoraAir_{#MyAppVersion}
 SetupLogging=yes
 UninstallDisplayName={#MyAppName} {#MyAppVersion}
 #if FileExists("..\assets\logo.ico")
@@ -56,7 +56,7 @@ Name: "firewall"; Description: "Permitir NDI en el firewall de Windows (regla mD
 
 [Files]
 ; Aplicación completa (exe + _internal + ffmpeg/ffprobe/mpv en la raíz)
-Source: "..\dist\TVPlayoutPRO\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\dist\NexoraAir\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; Instaladores opcionales: solo se empaquetan si existen en vendor\
 Source: "..\vendor\ndi-runtime.exe"; DestDir: "{tmp}"; Flags: skipifsourcedoesntexist
 Source: "..\vendor\vlc-setup.exe"; DestDir: "{tmp}"; Flags: skipifsourcedoesntexist
@@ -72,13 +72,13 @@ Filename: "{tmp}\ndi-runtime.exe"; Parameters: "/S"; Flags: runas runhidden wait
 ; VLC (silencioso, elevado por UAC)
 Filename: "{tmp}\vlc-setup.exe"; Parameters: "/S"; Flags: runas runhidden waituntilterminated; Tasks: vlc; Check: VlcInstallerPresent
 ; Regla de firewall para el descubrimiento NDI (mDNS)
-Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""TVPlayout PRO NDI"" dir=in action=allow protocol=UDP localport=5353 program=""{app}\{#MyAppExeName}"""; Flags: runas runhidden waituntilterminated; Tasks: firewall
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""Nexora Air NDI"" dir=in action=allow protocol=UDP localport=5353 program=""{app}\{#MyAppExeName}"""; Flags: runas runhidden waituntilterminated; Tasks: firewall
 ; Ejecutar la aplicación al terminar
 Filename: "{app}\{#MyAppExeName}"; Description: "Ejecutar {#MyAppName}"; Flags: nowait postinstall skipifsilent
 
 [UninstallRun]
 ; Quitar la regla de firewall si se llegó a crear (mejor esfuerzo).
-Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""TVPlayout PRO NDI"""; Flags: runhidden; RunOnceId: "DelFirewallRule"
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Nexora Air NDI"""; Flags: runhidden; RunOnceId: "DelFirewallRule"
 
 [UninstallDelete]
 ; La base de datos, logs, cache y miniaturas creadas en uso NO se borran:
@@ -99,5 +99,5 @@ end;
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssPostInstall then
-    Log('TVPlayout PRO instalado en ' + ExpandConstant('{app}'));
+    Log('Nexora Air instalado en ' + ExpandConstant('{app}'));
 end;

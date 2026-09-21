@@ -1,4 +1,4 @@
-"""Registro del sistema (logs/tvplayout.log con rotación) + buffer en memoria para la ventana de registros."""
+"""Registro del sistema (logs/nexora-air.log con rotación) + buffer en memoria."""
 import collections
 import logging
 import threading
@@ -6,7 +6,7 @@ from logging.handlers import RotatingFileHandler
 
 from .config import LOG_DIR
 
-LOG_FILE = LOG_DIR / "tvplayout.log"
+LOG_FILE = LOG_DIR / "nexora-air.log"
 _buffer = collections.deque(maxlen=2000)
 _lock = threading.Lock()
 _listeners = []

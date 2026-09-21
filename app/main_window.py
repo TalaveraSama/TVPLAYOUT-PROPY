@@ -74,7 +74,7 @@ DEFAULT_SETTINGS = {
     # v23.3: filler automático. Cuando se acaba la lista, se carga el
     # clip de filler en loop infinito para que el monitor nunca quede
     # en negro. Si no hay filler configurado, se muestra un slate
-    # estático generado con lavfi (texto "TVPlayout PRO — Próximamente").
+    # estático generado con lavfi (texto f"{APP_NAME} — Próximamente").
     "filler_path": "", "filler_enabled": True,
 }
 
@@ -771,6 +771,8 @@ class MainWindow(QMainWindow):
         # local (VPS). El monitor muestra el estado en vez del vídeo.
         clock_mode = str(s.get("monitor_mode", "pyav")) == "clock"
         self.ctrl.clock_only = clock_mode
+        if not clock_mode:
+            self.ctrl.set_output_master(False)
         if clock_mode:
             try:
                 self.video.set_active(False, "RELOJ DEL SISTEMA\n(sin decodificación local — VPS)")
@@ -1792,7 +1794,7 @@ class MainWindow(QMainWindow):
         self.onair_led.set_active(onair or is_slate)
         self.play_btn.setChecked(onair or is_slate)
         self.video.set_active(False if is_slate else onair,
-                              "TVPlayout PRO\\nPROXIMAMENTE" if is_slate else ("" if onair else "SIN SEÑAL"))
+                              f"{APP_NAME}\\nPROXIMAMENTE" if is_slate else ("" if onair else "SIN SEÑAL"))
         if not onair:
             self.pause_btn.setChecked(False)
             self.clip_title.setText("Sin evento al aire")
@@ -1979,11 +1981,11 @@ class MainWindow(QMainWindow):
             cmd = [executable, "--intf=dummy", "--no-video-title-show", "--network-caching=100",
                    "--quiet", feed_url]
         elif player == "mpv":
-            cmd = [executable, "--force-window=yes", "--title=TVPlayout FFmpeg Monitor",
+            cmd = [executable, "--force-window=yes", f"--title={APP_NAME} FFmpeg Monitor",
                    "--no-terminal", "--keep-open=yes", "--cache=yes", "--demuxer-lavf-format=mpegts",
                    feed_url]
         else:
-            cmd = [executable, "-window_title", "TVPlayout FFmpeg Monitor", "-fflags", "nobuffer",
+            cmd = [executable, "-window_title", f"{APP_NAME} FFmpeg Monitor", "-fflags", "nobuffer",
                    "-flags", "low_delay", "-i", feed_url]
         try:
             self._program_monitor_proc = subprocess.Popen(
@@ -2053,10 +2055,18 @@ class MainWindow(QMainWindow):
                                           program_interval=max(1, int(s.get("tmdb_interval_minutes", 18))) * 60.0,
                                           program_duration=max(1, int(s.get("tmdb_duration_seconds", 15))),
                                           ndi_ffmpeg=FFMPEG_NDI_PATH, ndi_source=self.player, parent=self,
+                                          externally_controlled=bool(self.ctrl.clock_only and needs_ffmpeg),
                                           monitor_feed_url=monitor_feed_url)
-        log.info("Salidas IP arrancadas (%d destinos) en offset %.2fs", len(profiles), mpv_time)
+        # V25: en modo Reloj, FFmpeg deja de «seguir» a un segundo reloj y se
+        # convierte en el player master. Su progreso y EOF gobiernan la lista.
+        output_master = bool(self.ctrl.clock_only and needs_ffmpeg)
+        self.ctrl.set_output_master(output_master)
+        log.info("Salidas IP arrancadas (%d destinos) en offset %.2fs%s", len(profiles), mpv_time,
+                 " • FFmpeg master" if output_master else "")
         self.output.state.connect(self._rtmp_state)
         self.output.log.connect(self._rtmp_log)
+        self.output.master_progress.connect(self.ctrl.follow_output_position)
+        self.output.master_finished.connect(self.ctrl.output_master_finished)
         self.output.ended.connect(self._rtmp_finished)
         self.output.start()
         self._set_rtmp_chip("CONECTANDO…")
@@ -2065,6 +2075,7 @@ class MainWindow(QMainWindow):
 
     def _rtmp_stop(self):
         """v22.2.2: detiene el RTMP si está corriendo."""
+        self.ctrl.set_output_master(False)
         if self.output and self.output.isRunning():
             self.output.stop()
         else:
@@ -2150,6 +2161,7 @@ class MainWindow(QMainWindow):
 
     def _rtmp_finished(self):
         self._stop_program_monitor()
+        self.ctrl.set_output_master(False)
         self.output = None
         self.rtmp_chip.set_active(False)
         self._set_rtmp_chip("OFF")
@@ -2279,7 +2291,14 @@ class MainWindow(QMainWindow):
         Se suspende durante 3s después de cualquier seek/pause/realign para
         evitar realineamientos espurios mientras el RTMP se está reiniciando.
         """
+        # En modo PyAV se conserva el watcher histórico: compara
+        # self.ctrl.elapsed / self.player._time con self.output.current_position
+        # y termina realineando mediante self.output.seek_to en el helper.
         if not self.output or not self.output.isRunning():
+            return
+        if self.ctrl.clock_only and self.ctrl.output_master_active:
+            # V25: comparar la salida consigo misma no tiene sentido; su
+            # progreso ya es el reloj del controlador y nunca se realinea.
             return
         # MultiOutputManager puede mantener su QThread vivo mientras el
         # proceso FFmpeg está entre reintentos. No convertir esa ventana en

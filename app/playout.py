@@ -178,6 +178,13 @@ class PlayoutController(QObject):
         # menos de 1x arrastraba el reloj de la emisión y el RTMP (que sí va a
         # 1x) parecía "adelantado", provocando realineaciones en bucle.
         self.clock_only = False
+        # V25 «un solo player»: cuando hay una salida FFmpeg activa en modo
+        # Reloj, su time= real gobierna posición y fin de evento. Antes el
+        # reloj de pared y FFmpeg podían avanzar por separado.
+        self.output_master_active = False
+        self._output_master_measured = False
+        self._output_master_index = -1
+        self._output_master_updated_at = 0.0
         self._dur = 0.0
         self._started_at = 0.0
         self._log_id = None
@@ -212,8 +219,12 @@ class PlayoutController(QObject):
 
     @property
     def elapsed(self):
-        # v24.0.2.37: en modo Reloj la posición ES el reloj de pared desde el
-        # arranque del evento (no hay reproductor local que la reporte).
+        # V25: después de la primera medición real, la posición ES la de la
+        # salida. Si FFmpeg se congela, la playlist se congela con él. Antes
+        # de recibir el primer frame se conserva el fallback de pared para que
+        # un arranque sin salida válida no bloquee la automatización.
+        if self.clock_only and self.output_master_active and self._output_master_measured:
+            return max(0.0, self._pos)
         if self.clock_only and self._started_at > 0 and not self.paused:
             return max(0.0, self._pos + (time.time() - self._started_at))
         # v22.2.4: si mpv no está reportando time-pos por IPC (caso
@@ -790,6 +801,12 @@ class PlayoutController(QObject):
         self._pos = resume_offset
         self._dur = (playback_duration + resume_offset) if playback_duration > 0 else (item["duration"] or 0.0)
         self._started_at = time.time()
+        if self.output_master_active:
+            # El primer time= del nuevo proceso fija el ancla real y descuenta
+            # automáticamente abrir el archivo/conectar a la red.
+            self._output_master_measured = False
+            self._output_master_index = index
+            self._output_master_updated_at = 0.0
         self._midroll_next_at = (self._pos + self._midroll_interval_seconds()
                                  if self._identifier_eligible(item) and self.midroll_enabled else 0.0)
         item["status"] = ST_ONAIR
@@ -853,6 +870,8 @@ class PlayoutController(QObject):
         self._pos = 0.0
         self._dur = 0.0
         self._position_base = 0.0
+        self._output_master_measured = False
+        self._output_master_index = -1
         self._midroll_next_at = 0.0
         self._midroll_resume = None
         self._identifier_transition = None
@@ -889,6 +908,67 @@ class PlayoutController(QObject):
             target = max(0.0, float(frac) * self.duration - self._position_base)
             self.player.seek(target, absolute=True)
 
+    def set_output_master(self, enabled):
+        """Activa/desactiva la salida FFmpeg como reloj canónico de emisión."""
+        enabled = bool(enabled and self.clock_only)
+        if enabled == self.output_master_active:
+            return
+        # Al soltar el master, el fallback continúa desde la última posición
+        # emitida sin sumar el tiempo que FFmpeg estuvo detenido.
+        if not enabled and self.output_master_active:
+            self._pos = max(0.0, float(self._pos or 0.0))
+            self._started_at = time.time()
+        self.output_master_active = enabled
+        self._output_master_measured = False
+        self._output_master_index = self.onair if enabled else -1
+        self._output_master_updated_at = 0.0
+
+    def follow_output_position(self, index, position):
+        """V25: mueve la playlist con el ``time=`` REAL del FFmpeg master."""
+        if not (self.clock_only and self.output_master_active and self.is_on_air):
+            return False
+        try:
+            index = int(index)
+            position = max(0.0, float(position))
+        except (TypeError, ValueError):
+            return False
+        if index != self.onair:
+            # Una medición retrasada del proceso anterior nunca puede mover el
+            # evento actual ni repetir contenido.
+            return False
+        if self.duration > 0:
+            position = min(position, self.duration)
+        self._pos = position
+        self._started_at = time.time()
+        self._output_master_index = index
+        self._output_master_measured = True
+        self._output_master_updated_at = self._started_at
+        self.position.emit(self._pos, self._dur)
+        if self._started_at - getattr(self, "_last_live_persist", 0.0) >= 5.0:
+            self._last_live_persist = self._started_at
+            self._persist_live()
+        if (self.midroll_enabled and self._midroll_next_at > 0 and
+                self.current and self._identifier_eligible(self.current) and
+                self._pos >= self._midroll_next_at):
+            self._start_midroll()
+        return True
+
+    def output_master_finished(self, index, success=True):
+        """Finaliza el evento sólo cuando la salida emitió su último frame."""
+        if not (self.clock_only and self.output_master_active and self.is_on_air):
+            return False
+        try:
+            index = int(index)
+        except (TypeError, ValueError):
+            return False
+        if index != self.onair:
+            return False
+        if success and self.duration > 0:
+            self._pos = self.duration
+            self.position.emit(self._pos, self._dur)
+        self._on_ended("eof" if success else "error")
+        return True
+
     def clock_tick(self):
         """v24.0.2.37: avance del playout por reloj de pared (modo Reloj).
 
@@ -900,6 +980,10 @@ class PlayoutController(QObject):
         if not self.clock_only or not self.is_on_air or self.paused or self.onair < 0:
             return False
         if self.onair == -2:   # el filler tiene su propio ciclo de recarga
+            return False
+        if self.output_master_active and self._output_master_measured:
+            # La señal progress dispara tandas y clip_finished hace el cambio.
+            # No hay watchdog/reloj paralelo capaz de adelantarse.
             return False
         pos = self.elapsed
         if (self.midroll_enabled and self._midroll_next_at > 0 and

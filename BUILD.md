@@ -1,163 +1,116 @@
-# Empaquetar TVPlayout PRO V24.0.2.34 para Windows
+# Empaquetar Nexora Air V25.0.0 para Windows
 
-## Instalador completo (recomendado): UN SOLO setup.exe
+## Instalador offline todo-en-uno (recomendado)
+
+El builder es reproducible y funciona desde Linux o Windows x64:
+
+```bash
+python3 installer/build_windows_setup.py all
+```
+
+En Windows también se puede ejecutar:
 
 ```bat
 installer\BUILD_INSTALLER.bat
 ```
 
-Genera **`dist\Setup_TVPlayoutPRO_V24.0.2.34.exe`**, un único ejecutable que
-instala todo en Windows 10/11 x64:
+La salida es:
 
-- **TVPlayoutPRO.exe** (aplicación completa con PySide6 + PyAV ya congeladas).
-- **ffmpeg.exe, ffprobe.exe y mpv.exe empaquetados en la raíz** del programa
-  (salidas RTMP/SRT, análisis de biblioteca y vistas previas funcionan sin
-  instalar nada más).
-- **Opcional**: NDI Runtime x64 y VLC empaquetados dentro del instalador, con
-  casillas para instalarlos en el equipo destino.
-- **Opcional**: regla de firewall para el descubrimiento NDI (mDNS UDP 5353).
-- Accesos directos en escritorio y menú Inicio.
+```text
+dist/Setup_NexoraAir_V25.0.0.exe
+dist/Setup_NexoraAir_V25.0.0.exe.sha256
+```
 
-El script descarga automáticamente FFmpeg, mpv y (si puede) NDI Runtime y VLC
-a la carpeta `vendor\` — si ya tienes los archivos, colócalos ahí y no
-descarga nada. Requisitos del equipo donde compilas: Python 3.10+, internet e
-[Inno Setup 6](https://jrsoftware.org/isdl.php) (gratuito).
+El Setup contiene, sin instalaciones manuales en el equipo destino:
 
-La instalación es **por usuario** (sin pedir administrador) en
-`%LOCALAPPDATA%\Programs\TVPlayoutPRO`: la aplicación guarda base de datos,
-logs, miniaturas y caché junto al EXE, así que necesita una carpeta con
-permisos de escritura (Program Files no los daría). Al desinstalar, los datos
-del usuario (base, logs) se conservan.
+- Nexora Air V25.0.0 y los launchers `NexoraAir.exe` / `NexoraAir-Console.exe`.
+- Python 3.13.2 embebido.
+- PySide6 6.8.3 y Shiboken.
+- PyAV 16 con sus bibliotecas multimedia.
+- `ffmpeg.exe` y `ffprobe.exe` para RTMP/SRT/UDP y metadatos.
+- El icono y los recursos de identidad.
 
-## Camino recomendado (portable, sin instalador)
+La compilación necesita conexión a Internet la primera vez y **NSIS 3**
+(`makensis`). Las descargas se conservan en `.installer-build/downloads/` para
+repetir el build sin volver a bajarlas.
 
-En Windows, desde la raíz del checkout, ejecuta:
+### Pasos separados
+
+```bash
+# Verifica identidad y versión sin descargar nada
+python3 installer/build_windows_setup.py check
+
+# Descarga y arma .installer-build/payload
+python3 installer/build_windows_setup.py prepare
+
+# Compila el payload ya preparado con NSIS
+python3 installer/build_windows_setup.py setup
+```
+
+### Actualización y migración
+
+El instalador trabaja por usuario en:
+
+```text
+%LOCALAPPDATA%\Programs\NexoraAir
+```
+
+Si encuentra la instalación anterior en
+`%LOCALAPPDATA%\Programs\TVPlayoutPRO`, migra `tvplayout.db`, `.env`, caché y
+logs. Una base ya migrada (`nexora-air.db`) siempre tiene prioridad. Al
+desinstalar se copian la base y `.env` al Escritorio antes de retirar el
+runtime; caché y logs se conservan en el directorio de instalación.
+
+## Portable PyInstaller (alternativo)
+
+En un Windows x64 con Python instalado:
 
 ```bat
 build_exe.bat
 ```
 
-El script crea un entorno aislado `.venv-build`, instala las dependencias,
-construye PySide6 + PyAV/libav con PyInstaller y genera una distribución
-**onedir** portable en:
+Genera:
 
 ```text
-dist\TVPlayoutPRO\
-├── TVPlayoutPRO.exe
-├── _internal\              librerías Python, PySide6 y PyAV
-├── ffmpeg.exe              salida RTMP/SRT/UDP (si está disponible)
-├── ffprobe.exe             análisis de biblioteca (si está disponible)
-├── assets\logo.png         logo opcional de ventana y Logo / CG
-├── assets\logo.ico         icono opcional del ejecutable
-├── tvplayout.db            se copia si existe en la raíz al construir
-├── INICIAR_EXE.bat
-└── LEEME_PORTABLE.txt
+dist\NexoraAir\
+├── NexoraAir.exe
+├── _internal\
+├── ffmpeg.exe             si existe en raíz/vendor/bin/ffmpeg
+├── ffprobe.exe            si existe en raíz/vendor/bin/ffmpeg
+├── mpv.exe                opcional para vistas previas
+├── assets\logo.png
+├── assets\logo.ico
+└── INICIAR_EXE.bat
 ```
 
-**No copies solo `TVPlayoutPRO.exe`**: la carpeta `_internal` contiene las
-librerías necesarias para PySide6 y PyAV. Copia la carpeta completa
-`dist\TVPlayoutPRO` al equipo de emisión y ejecuta `INICIAR_EXE.bat`.
+No copies solamente el EXE: la distribución `onedir` necesita `_internal`.
+La raíz del ejecutable es persistente; allí se guardan la base, `.env`, caché
+y logs.
 
-La aplicación congelada usa la carpeta donde está el EXE como raíz persistente.
-Ahí quedan `tvplayout.db`, `cache\`, `logs\` y `.env`; no se usa la carpeta
-TEMP de PyInstaller para datos permanentes.
+## Binarios externos para el build portable
 
-## Herramientas externas
+`build_exe.bat` busca FFmpeg/ffprobe en la raíz, `vendor/`, `bin/`, `ffmpeg/` o
+`ffmpeg/bin/`. También copia DLL vecinas. Para previews busca `mpv.exe` en
+`mpv-x86_64/`, `vendor/` o la raíz. NDI directo usa el Runtime NDI x64 instalado,
+no necesita `ffmpeg-ndi.exe` y tampoco necesita el muxer `libndi_newtek`.
 
-Coloca antes del build:
+## Identidad visual
 
-```text
-ffmpeg.exe                         raíz del proyecto
-ffprobe.exe                        raíz del proyecto
-ffmpeg-ndi.exe                     compatibilidad heredada opcional (no necesaria para NDI directo)
-bin\ffmpeg.exe / bin\ffprobe.exe
-ffmpeg\bin\ffmpeg.exe / ffmpeg\bin\ffprobe.exe
-```
-
-El BAT copia también las DLL que estén junto a FFmpeg. El aire local usa
-PyAV/libav y no necesita reproductores externos; FFmpeg sí es necesario para
-RTMP/SRT/UDP y ffprobe para escanear metadatos y generar miniaturas. NDI directo
-usa `Processing.NDI.Lib.x64.dll` mediante ctypes y no necesita `ffmpeg-ndi.exe`
-ni el muxer `libndi_newtek`. En Windows instala el NDI Runtime x64 oficial;
-la aplicación busca sus rutas habituales y solo marca NDI como disponible
-cuando carga, inicializa y crea correctamente un sender de prueba. La copia
-opcional de `ffmpeg-ndi.exe` solo conserva compatibilidad con instalaciones
-heredadas y no participa en el perfil NDI directo.
-
-## Logo e identidad visual
-
-Para personalizar la aplicación, crea esta carpeta en la raíz del proyecto:
-
-```text
-assets\logo.png
-assets\logo.ico
-```
-
-- `logo.png` se carga como icono de la ventana y aparece como ruta sugerida en
-  **Logo / CG (RTMP)**.
-- `logo.ico` se usa como icono del `TVPlayoutPRO.exe` durante el build.
-- En **Logo / CG (RTMP)** se puede activar el logo, seleccionar posición,
-  tamaño, opacidad y margen. La vista previa dibuja el lienzo 16:9 y las
-  líneas `12.5%` / `87.5%` del área central 4:3.
-- La salida FFmpeg mantiene automáticamente el logo dentro del área 4:3. El
-  tamaño predeterminado es 10% del ancho, un valor normal para una mosca de
-  cadena profesional, con margen predeterminado de 48 px en 1920x1080.
-- El logo afecta la salida FFmpeg y también el frame enviado por NDI directo; no altera el monitor local.
-- Si el usuario todavía no tiene un logo, estos archivos son opcionales y el
-  programa funciona normalmente sin ellos.
-
-## Requisitos del equipo de build
-
-- Windows 10/11 de 64 bits.
-- Python x64 3.13 recomendado; el BAT acepta otra versión `py -3` compatible.
-- Internet durante el primer build para descargar PySide6, PyAV y PyInstaller.
-- Aproximadamente 1 GB libre para el entorno y los artefactos temporales.
-
-## Build manual
-
-```bat
-py -3.13 -m venv .venv-build
-.venv-build\Scripts\activate
-python -m pip install --upgrade pip setuptools wheel
-python -m pip install -r requirements.txt PyInstaller==6.*
-python -m PyInstaller --noconfirm --clean tvplayout.spec
-```
-
-Después copia `ffmpeg.exe` y `ffprobe.exe` a `dist\TVPlayoutPRO\` si no los
-copió el BAT.
-
-## OBS, vMix y múltiples destinos
-
-Abre **Salidas IP · RTMP / SRT / NDI** desde el panel o desde Ajustes del
-sistema. Añade un perfil por receptor; los perfiles RTMP/SRT se emiten en
-procesos FFmpeg independientes y los perfiles NDI en senders independientes
-contra el Runtime x64.
-
-La cámara virtual de OBS no es una entrada para TVPlayout: OBS la publica hacia
-otras aplicaciones. Para llevar la señal a OBS, usa una entrada RTMP/SRT o
-`obs-ndi`; para vMix, usa una entrada Stream RTMP/SRT o NDI. NDI directo
-requiere el NDI Runtime x64 instalado en Windows y que Dispositivos muestre
-la prueba del Runtime como OK; no depende de FFmpeg.
+- `assets/logo.png`: ventana y documentación.
+- `assets/logo.ico`: ejecutable, instalador y accesos directos.
+- El logo de canal al aire sigue siendo configurable por el operador desde
+  **Logo / CG** y no se confunde con el icono del producto.
 
 ## Limpieza
 
-El BAT elimina `build\` y `dist\` al comenzar. Cuando el build termina bien,
-elimina también `build\`, que solo contiene artefactos temporales de PyInstaller
-como `.toc`, `.pyz`, `warn-*.txt` y reportes HTML. La carpeta `dist\TVPlayoutPRO`
-es la única salida que debe conservarse para distribuir el programa.
+Los siguientes directorios son generados y están ignorados por Git:
 
-Para eliminar manualmente solo los artefactos locales:
-
-```bat
-rmdir /s /q .venv-build
-rmdir /s /q build
-rmdir /s /q dist
+```text
+.installer-build/
+.venv-build/
+build/
+dist/
+vendor/
 ```
 
-## Diagnóstico
-
-Si el build falla, `build\` se conserva para revisar `warn-tvplayout.txt` y
-los reportes de PyInstaller. Para ver errores de Python en una build de prueba,
-cambia temporalmente `console=False` por `console=True` en `tvplayout.spec` y
-vuelve a ejecutar el BAT. En producción se recomienda mantener la build sin
-consola y revisar `logs\tvplayout.log`.
+Se pueden borrar sin afectar el código ni los datos de operación.
