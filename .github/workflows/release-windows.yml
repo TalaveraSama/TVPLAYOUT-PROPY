@@ -1,0 +1,55 @@
+name: Build Windows release installer
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-publish:
+    name: Build and publish Nexora Air V25
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Check out release source
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install NSIS 3
+        shell: powershell
+        run: choco install nsis --yes --no-progress
+
+      - name: Build offline Setup
+        shell: powershell
+        run: python installer/build_windows_setup.py all
+
+      - name: Verify generated checksum
+        shell: powershell
+        run: |
+          $setup = "dist/Setup_NexoraAir_V25.0.0.exe"
+          $checksum = "$setup.sha256"
+          if (-not (Test-Path $setup) -or -not (Test-Path $checksum)) {
+            throw "El builder no produjo el Setup y su checksum"
+          }
+          $actual = (Get-FileHash $setup -Algorithm SHA256).Hash.ToLowerInvariant()
+          $expected = ((Get-Content $checksum -Raw).Trim() -split '\s+')[0].ToLowerInvariant()
+          if ($actual -ne $expected) {
+            throw "SHA256 no coincide: $actual != $expected"
+          }
+          Write-Host "SHA256 verificado: $actual"
+
+      - name: Attach installer to GitHub release
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload v25.0.0 `
+            dist/Setup_NexoraAir_V25.0.0.exe `
+            dist/Setup_NexoraAir_V25.0.0.exe.sha256 `
+            --clobber --repo $env:GITHUB_REPOSITORY
