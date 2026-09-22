@@ -574,11 +574,12 @@ class OutputWorker(QThread):
             stage = "base"
             for inp_idx, (label, _path, expr) in enumerate(overlay_list, start=1):
                 if label == "logo":
-                    lw = max(16, int(w * int(logo.get("scale", 10)) / 100))
+                    lw = max(16, int(w * int(logo.get("width_pct", logo.get("scale", 10))) / 100))
+                    lh = max(16, int(h * int(logo.get("height_pct", logo.get("scale", 10))) / 100)) if logo.get("custom_size") else -1
                     op = max(0.05, min(1.0, int(logo.get("opacity", 90)) / 100))
                     m = int(logo.get("margin", 48))
                     xe, ye = logo_overlay_position(logo.get("position", "arriba-derecha"), w, h, m)
-                    filters.append(f"[{inp_idx}:v]setpts=PTS-STARTPTS,scale={lw}:-1,format=rgba,colorchannelmixer=aa={op:.2f}[logo]")
+                    filters.append(f"[{inp_idx}:v]setpts=PTS-STARTPTS,scale={lw}:{lh},format=rgba,colorchannelmixer=aa={op:.2f}[logo]")
                     filters.append(f"[{stage}][logo]overlay={xe.format(m=m)}:{ye.format(m=m)}:shortest=1:format=auto[withlogo]")
                     stage = "withlogo"
                 elif label == "program":
@@ -696,11 +697,12 @@ class OutputWorker(QThread):
             stage = "base"
             for inp_idx, (lbl, _path, _expr) in enumerate(overlay_list, start=1):
                 if lbl == "logo":
-                    lw = max(16, int(w * int(logo.get("scale", 10)) / 100))
+                    lw = max(16, int(w * int(logo.get("width_pct", logo.get("scale", 10))) / 100))
+                    lh = max(16, int(h * int(logo.get("height_pct", logo.get("scale", 10))) / 100)) if logo.get("custom_size") else -1
                     op = max(0.05, min(1.0, int(logo.get("opacity", 90)) / 100))
                     m = int(logo.get("margin", 48))
                     xe, ye = logo_overlay_position(logo.get("position", "arriba-derecha"), w, h, m)
-                    filters.append(f"[{inp_idx}:v]setpts=PTS-STARTPTS,scale={lw}:-1,format=rgba,colorchannelmixer=aa={op:.2f}[logo]")
+                    filters.append(f"[{inp_idx}:v]setpts=PTS-STARTPTS,scale={lw}:{lh},format=rgba,colorchannelmixer=aa={op:.2f}[logo]")
                     filters.append(f"[{stage}][logo]overlay={xe.format(m=m)}:{ye.format(m=m)}:shortest=1:format=auto[withlogo]")
                     stage = "withlogo"
                 elif lbl in ("program", "music"):
