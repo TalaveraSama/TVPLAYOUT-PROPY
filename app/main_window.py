@@ -59,7 +59,10 @@ DEFAULT_SETTINGS = {
     "audio_pref": AUDIO_PREFS[0], "sub_pref": "OFF", "hwdec": "auto-safe", "audio_device": "",
     "autofill_category": "Todas", "autofill_count": 10, "tandas_category": "Publicidad", "tandas_count": 2,
     "midroll_enabled": False, "midroll_category": "Publicidad", "midroll_interval_minutes": 15,
-    "identifiers_enabled": False, "identifier_in_path": "", "identifier_out_path": "",
+    "identifiers_enabled": False, "identifier_selection": "random",
+    "identifier_cadence": "every", "identifier_every_n": 1,
+    "identifier_in_paths": [], "identifier_out_paths": [],
+    "identifier_in_path": "", "identifier_out_path": "",
     "tmdb_enabled": False, "tmdb_api_key": "", "tmdb_interval_minutes": 18, "tmdb_duration_seconds": 15,
     "tmdb_card_position": "arriba", "tmdb_card_align": "izquierda", "tmdb_card_style": "banda",
     "tmdb_card_opacity": 70, "tmdb_card_margin": 18, "tmdb_card_show_year": False,
@@ -241,6 +244,8 @@ class MainWindow(QMainWindow):
         else:
             self.player = PyAVPlayer(self.video, MPV_PATH, self, vlc_path=VLC_PATH)
         self.player.status.connect(self._status)
+        if hasattr(self.player, "process_died"):
+            self.player.process_died.connect(self._monitor_process_died)
         self.player.levels.connect(self.vu.set_levels)
         self.ctrl = PlayoutController(self.db, self.player, self)
         self.ctrl.items_changed.connect(self.rebuild_grid)
@@ -322,6 +327,32 @@ class MainWindow(QMainWindow):
                      f"Biblioteca: {self.db.count_media()} medios")
         log.info("%s %s iniciado con PyAV/libav", APP_NAME, APP_VERSION)
         QTimer.singleShot(800, self._autostart)
+
+    def _monitor_process_died(self):
+        """Recupera el monitor MPV sin reiniciar el playout ni RTMP.
+
+        Un reemplazo de playlist o un cierre transitorio de la ventana hija no
+        debe dejar el monitor muerto ni provocar otra selección de evento.
+        """
+        if getattr(self, "_monitor_restart_pending", False):
+            return
+        self._monitor_restart_pending = True
+
+        def restart():
+            self._monitor_restart_pending = False
+            if self._locked or not hasattr(self.player, "start"):
+                return
+            try:
+                if not getattr(self.player, "running", False):
+                    self.player.start()
+                    if getattr(self.ctrl, "onair", -1) >= 0:
+                        current = getattr(self.ctrl, "current", None) or {}
+                        if current.get("path"):
+                            self.player.play(current.get("path"), start=float(getattr(self.ctrl, "elapsed", 0.0) or 0.0))
+            except Exception as exc:  # noqa: BLE001
+                log.warning("No se pudo recuperar el monitor: %s", exc)
+
+        QTimer.singleShot(750, restart)
 
     # ================================================================== UI
     def _build(self):
@@ -702,7 +733,7 @@ class MainWindow(QMainWindow):
                  ("Programador", self.open_scheduler), ("Registros\nAs-Run", self.open_logs),
                  ("Fuentes /\nCategorías", self.open_sources), ("Ajustes del\nsistema", self.open_settings),
                  ("Salidas IP\nRTMP/SRT/NDI", self.open_outputs), ("Escanear\nbiblioteca", self.start_scan),
-                 ("Logo / CG\n(RTMP)", self.open_logo), ("Tarjeta\nTMDB", self.open_tmdb_card),
+                 ("Lienzo de salida\n(RTMP)", self.open_canvas), ("Logo / CG\n(RTMP)", self.open_logo), ("Tarjeta\nTMDB", self.open_tmdb_card),
                  ("Sonido\nPRO", self.open_audio_processor), ("Titulación\nMusical", self.open_music_titling),
                  ("Dispositivos", self.open_devices)]
         self._fn_buttons = []
@@ -751,9 +782,10 @@ class MainWindow(QMainWindow):
         self.rtmp_chip.setMinimumWidth(120)
         self.rtmp_chip.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         r2.addWidget(self.rtmp_chip, 1)
-        # Referencia heredada: el control de activación está en cada perfil.
-        self.rtmp_btn = _btn("", lambda: None, None, "")
-        self.rtmp_btn.setVisible(False)
+        self.rtmp_btn = _btn("📡 EMITIR RTMP", self._toggle_rtmp_button, "primary", "Inicia o detiene la salida RTMP usando el lienzo configurado", True)
+        self.rtmp_btn.setChecked(initial_mode == "remote")
+        self.rtmp_btn.setText("⏹ NO EMITIR RTMP" if self.rtmp_btn.isChecked() else "📡 EMITIR RTMP")
+        r2.addWidget(self.rtmp_btn)
         ov.addLayout(r2)
 
         self.rtmp_destinations = _lbl("Abre Salidas IP para configurar destinos", "clipInfo")
@@ -819,8 +851,24 @@ class MainWindow(QMainWindow):
         self.ctrl.midroll_category = s.get("midroll_category", "Publicidad")
         self.ctrl.midroll_interval_minutes = max(1, int(s.get("midroll_interval_minutes", 15)))
         self.ctrl.identifiers_enabled = bool(s.get("identifiers_enabled", False))
-        self.ctrl.identifier_in_path = str(s.get("identifier_in_path", "") or "")
-        self.ctrl.identifier_out_path = str(s.get("identifier_out_path", "") or "")
+        # v25.3: listas de identificadores con compatibilidad con las rutas únicas antiguas.
+        def _identifier_list(plural, legacy):
+            values = s.get(plural, [])
+            if not isinstance(values, list):
+                values = []
+            values = [str(p).strip() for p in values if str(p).strip()]
+            old = str(s.get(legacy, "") or "").strip()
+            if old and old not in values:
+                values.insert(0, old)
+            return list(dict.fromkeys(values))
+        self.ctrl.identifier_in_paths = _identifier_list("identifier_in_paths", "identifier_in_path")
+        self.ctrl.identifier_out_paths = _identifier_list("identifier_out_paths", "identifier_out_path")
+        # La ruta única queda como alias de compatibilidad para módulos externos.
+        self.ctrl.identifier_in_path = self.ctrl.identifier_in_paths[0] if self.ctrl.identifier_in_paths else ""
+        self.ctrl.identifier_out_path = self.ctrl.identifier_out_paths[0] if self.ctrl.identifier_out_paths else ""
+        self.ctrl.identifier_selection = str(s.get("identifier_selection", "random") or "random")
+        self.ctrl.identifier_cadence = str(s.get("identifier_cadence", "every") or "every")
+        self.ctrl.identifier_every_n = max(1, int(s.get("identifier_every_n", 1) or 1))
         # v24: la activación de la tanda intermedia es independiente de la
         # tanda al finalizar el evento.
         # v23.3: filler automático. El operador configura el path a un
@@ -1968,6 +2016,19 @@ class MainWindow(QMainWindow):
         log.info("Programación %s aplicada: %d eventos", schedule["name"], len(items))
 
     # ================================================================= RTMP
+    def _toggle_rtmp_button(self, checked):
+        if self._locked:
+            self.rtmp_btn.setChecked(bool(self.output and self.output.isRunning()))
+            return
+        if checked:
+            self.rtmp_mode_remote.setChecked(True)
+            self._save_setting("rtmp_mode", "remote")
+            self._rtmp_start()
+        else:
+            self.rtmp_mode_local.setChecked(True)
+            self._save_setting("rtmp_mode", "local")
+            self._rtmp_stop()
+
     def toggle_rtmp(self):
         """v22.2.2: compat — ya no se llama desde la UI, los radios
         (_rtmp_mode_changed) son la nueva forma de prender/apagar. Se
@@ -2125,6 +2186,21 @@ class MainWindow(QMainWindow):
         # self.player._time directamente, que podía quedar en 0 si mpv no
         # emitía property-change, y generaba un loop de drift infinito.
         mpv_time = float(self.ctrl.elapsed or 0.0)
+        # Nunca iniciar FFmpeg dentro de un bumper temporal ni con el offset
+        # heredado de otro evento. Un identificador dura unos segundos y no
+        # puede recibir, por ejemplo, un seek de 363 s de la película anterior.
+        current_item = self.ctrl.current
+        if current_item and current_item.get("_transient_identifier"):
+            mpv_time = 0.0
+        else:
+            try:
+                current_duration = float(self.ctrl.duration or 0.0)
+                if current_duration > 0:
+                    mpv_time = min(max(0.0, mpv_time), max(0.0, current_duration - 0.25))
+                else:
+                    mpv_time = max(0.0, mpv_time)
+            except (TypeError, ValueError):
+                mpv_time = 0.0
         monitor_feed_url = ""
         if str(s.get("monitor_mode", "pyav")) == "program_feed":
             candidate_feed = self._program_monitor_url()
@@ -2141,7 +2217,11 @@ class MainWindow(QMainWindow):
                                           program_interval=max(1, int(s.get("tmdb_interval_minutes", 18))) * 60.0,
                                           program_duration=max(1, int(s.get("tmdb_duration_seconds", 15))),
                                           ndi_ffmpeg=FFMPEG_NDI_PATH, ndi_source=self.player, parent=self,
-                                          externally_controlled=bool(self.ctrl.clock_only and needs_ffmpeg),
+                                          # El worker RTMP nunca debe avanzar por su
+                                          # cuenta: el playout local/clock decide el
+                                          # siguiente evento. Antes sólo se activaba
+                                          # en modo Reloj y FFmpeg podía adelantarse.
+                                          externally_controlled=bool(needs_ffmpeg),
                                           audio_processor_config=self._audio_processor_config(),
                                           music_overlay=self._music_overlay_path,
                                           music_intro_start=float(s.get("music_titling_intro_start", 30.0)),
@@ -2168,6 +2248,11 @@ class MainWindow(QMainWindow):
 
     def _rtmp_stop(self):
         """v22.2.2: detiene el RTMP si está corriendo."""
+        if hasattr(self, "rtmp_btn"):
+            self.rtmp_btn.blockSignals(True)
+            self.rtmp_btn.setChecked(False)
+            self.rtmp_btn.setText("📡 EMITIR RTMP")
+            self.rtmp_btn.blockSignals(False)
         self.ctrl.set_output_master(False)
         if self.output and self.output.isRunning():
             self.output.stop()
@@ -2229,6 +2314,11 @@ class MainWindow(QMainWindow):
         self._refresh_output_monitor()
         self._status(msg)
         self.rtmp_chip.set_active(ok)
+        if hasattr(self, "rtmp_btn"):
+            self.rtmp_btn.blockSignals(True)
+            self.rtmp_btn.setChecked(bool(ok or (self.output and self.output.isRunning())))
+            self.rtmp_btn.setText("⏹ NO EMITIR RTMP" if self.rtmp_btn.isChecked() else "📡 EMITIR RTMP")
+            self.rtmp_btn.blockSignals(False)
         self._set_rtmp_chip(msg.replace("RTMP ON AIR • ", "ON AIR • ") if ok else ("ERROR" if "ERROR" in msg else "OFF"))
         if ok:
             self.rtmp_info.setText(msg)
@@ -2273,7 +2363,22 @@ class MainWindow(QMainWindow):
             # No reutilizar la tarjeta de la película anterior mientras TMDB
             # resuelve la nueva; la respuesta llega de forma asíncrona.
             self.output.set_program_overlay("")
-            self.output.sync_items(self.ctrl.export_items(), index, force_jump=True, start_offset=start_offset)
+            # Si FFmpeg ya llegó naturalmente al mismo evento, no lo mates y
+            # lo vuelvas a abrir: esa terminación/reapertura era el pequeño
+            # corte que se oía al cambiar de video. Sólo saltar con force_jump
+            # cuando la salida todavía está en otro contenido.
+            output_current = getattr(self.output, "current_item", None) or {}
+            output_index = getattr(self.output, "current_index", -1)
+            output_items = getattr(self.output, "items", []) or []
+            if 0 <= int(output_index) < len(output_items):
+                output_current = output_items[int(output_index)]
+            same_content = (str(output_current.get("path") or "") ==
+                            str((_item or {}).get("path") or ""))
+            self.output.sync_items(
+                self.ctrl.export_items(), index,
+                force_jump=not same_content,
+                start_offset=start_offset if not same_content else 0.0,
+            )
             # v22.2.1: al cambiar de clip el offset se resetea a 0 en el RTMP,
             # no tiene sentido que el watcher intente realinear durante 3s.
             self._rtmp_drift_bad_count = 0
@@ -2492,27 +2597,31 @@ class MainWindow(QMainWindow):
             self._rtmp_drift_bad_count = 0
         self._rtmp_drift_had_unknown = False
         now = time.time()
-        # v24.0.2.39 A: la salida está en OTRO evento que el playout. Con la
-        # señal viva eso es desincronización de CONTENIDO (log 00:18: un error
-        # de conexión hacía avanzar de película a la salida).
+        # El índice interno de FFmpeg no es estable cuando se insertan o
+        # retiran identificadores temporales. Comparar sólo 20 contra 21
+        # producía falsos avisos aunque ambos apuntaran al mismo archivo.
+        # Comparamos la ruta real del evento y sólo realineamos si el contenido
+        # de salida es verdaderamente distinto al del playout.
         onair = self.ctrl.onair
-        if onair is not None and onair >= 0 and 0 <= clip != onair:
-            if clip < onair:
-                # La salida quedó ATRÁS (el playout ya cambió de evento):
-                # realinear de inmediato al evento y posición del playout.
-                if now - self._rtmp_drift_last_restart >= 12.0:
-                    log.info("RTMP en evento %d pero el playout está en %d — realineando",
-                             clip, onair)
-                    self._realign_rtmp(mpv_time, now)
-                return
-            if not self._rtmp_drift_ahead_warned:
-                self._rtmp_drift_ahead_warned = True
+        output_item = None
+        output_items = getattr(self.output, "items", []) or []
+        if 0 <= clip < len(output_items):
+            output_item = output_items[clip]
+        onair_item = self.ctrl.current if onair is not None and onair >= 0 else None
+
+        def _event_path(item):
+            if not item:
+                return ""
+            return os.path.normcase(os.path.normpath(str(item.get("path") or "")))
+
+        if onair_item and output_item and _event_path(output_item) != _event_path(onair_item):
+            if now - self._rtmp_drift_last_restart >= 4.0:
                 log.warning(
-                    "La salida terminó el evento antes que el playout y adelantó contenido "
-                    "(salida en %d, playout en %d). Para emisiones de larga duración usa el "
-                    "modo Reloj del sistema (Ajustes → Monitor de programa).", clip, onair)
-            # No se reinicia: al final de cada evento un reinicio en bucle
-            # cortaría la señal.
+                    "Contenido RTMP desalineado: salida=%s, playout=%s; realineando sin avanzar la playlist",
+                    os.path.basename(str(output_item.get("path") or "")),
+                    os.path.basename(str(onair_item.get("path") or "")),
+                )
+                self._realign_rtmp(mpv_time, now)
             return
         if self._rtmp_drift_baseline is None:
             # Primer frame medido del clip: el gap frente al monitor local
@@ -2683,6 +2792,16 @@ class MainWindow(QMainWindow):
             self.rtmp_info.setText("Salidas detenidas • ningún destino está activo")
         self._refresh_output_monitor()
         self._status(f"Destinos guardados: {len(profiles)} • {'activando' if enabled else 'todos desactivados'}")
+
+    def open_canvas(self):
+        from .dialogs_extra import CanvasDialog
+        d = CanvasDialog(self, self.settings)
+        if d.exec() != QDialog.Accepted:
+            return
+        for k, v in d.values().items():
+            if self.settings.get(k) != v:
+                self._save_setting(k, v)
+        self._status(f"Lienzo guardado • {self.settings.get('resolution', '1920x1080')} • listo para Emitir RTMP")
 
     def open_logo(self):
         from .dialogs_extra import LogoDialog

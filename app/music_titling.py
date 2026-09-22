@@ -20,6 +20,7 @@ import logging
 import os
 import re
 import subprocess
+import shutil
 import time
 import urllib.parse
 import urllib.request
@@ -196,8 +197,13 @@ def recognize_acoustid(audio_path: str, client_key: str) -> Optional[Dict[str, s
         return None
 
     try:
-        # Intentar fpcalc si está en el sistema
-        cmd = ["fpcalc", "-json", audio_path]
+        # Chromaprint es opcional. Si fpcalc no está instalado, no convertir
+        # una limitación normal del equipo en un WARNING por cada videoclip.
+        fpcalc = shutil.which("fpcalc")
+        if not fpcalc:
+            log.info("AcoustID omitido: fpcalc/Chromaprint no está instalado")
+            return None
+        cmd = [fpcalc, "-json", audio_path]
         out = subprocess.check_output(cmd, timeout=10, stderr=subprocess.DEVNULL)
         data = json.loads(out.decode("utf-8", "replace"))
         duration = int(data.get("duration", 0))

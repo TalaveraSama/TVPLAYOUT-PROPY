@@ -2,6 +2,7 @@
 autofill, tandas, loop, cue) sobre el reproductor local PyAV. La salida RTMP/SRT/NDI se engancha mediante callbacks."""
 import json
 import os
+import random
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -151,7 +152,13 @@ class PlayoutController(QObject):
         self.identifiers_enabled = False
         self.identifier_in_path = ""
         self.identifier_out_path = ""
+        self.identifier_in_paths = []
+        self.identifier_out_paths = []
+        self.identifier_selection = "random"
         self.identifier_categories = {"Películas", "Música"}
+        self.identifier_cadence = "every"
+        self.identifier_every_n = 1
+        self._identifier_count = 0
         self._identifier_transition = None
         self._position_base = 0.0
         self.audio_pref = "AUTO"
@@ -464,8 +471,16 @@ class PlayoutController(QObject):
             if not (0 <= self.onair < len(self.items)):
                 self._clear_live()
                 return
+            # Los bumpers de entrada/salida son transitorios. Nunca guardar
+            # su índice/posición como punto de reanudación: al reiniciar ya no
+            # existen en la playlist y podían provocar offsets imposibles
+            # (por ejemplo 363 s dentro de un identificador de 8 s).
+            current = self.items[self.onair]
+            if current.get("_transient_identifier"):
+                self._clear_live()
+                return
             self.db.set_setting("live_onair", int(self.onair))
-            self.db.set_setting("live_path", str(self.items[self.onair].get("path") or ""))
+            self.db.set_setting("live_path", str(current.get("path") or ""))
             self.db.set_setting("live_pos", round(float(self._pos or 0.0), 3))
             self.db.set_setting("live_at", datetime.now().isoformat(sep=" ", timespec="seconds"))
         except Exception as exc:  # noqa: BLE001
@@ -659,7 +674,24 @@ class PlayoutController(QObject):
             return True
         if cat.lower() in {c.lower() for c in self.identifier_categories}:
             return True
-        return True
+        # Los identificadores son exclusivos de Películas y Música; no deben
+        # aparecer en "Otros", videoclips con otra categoría, Publicidad,
+        # filler, slate ni señales en vivo.
+        return False
+
+    def _identifier_path(self, phase):
+        """Obtiene el clip configurado; en modo aleatorio cambia en cada transición."""
+        paths = (self.identifier_in_paths if phase == "in" else self.identifier_out_paths) or []
+        # Compatibilidad con configuraciones antiguas de una sola ruta.
+        legacy = self.identifier_in_path if phase == "in" else self.identifier_out_path
+        if not paths and legacy:
+            paths = [legacy]
+        paths = [str(p) for p in paths if p and os.path.isfile(str(p))]
+        if not paths:
+            return ""
+        if str(getattr(self, "identifier_selection", "random")).lower() == "random":
+            return random.choice(paths)
+        return paths[0]
 
     def _start_identifier(self, index, phase):
         """Inserta un identificador temporal justo antes/después del evento.
@@ -668,8 +700,8 @@ class PlayoutController(QObject):
         identificador sólo vive durante la transición y se retira al terminar,
         para que loop/clear_aired no acumulen clips invisibles.
         """
-        path = self.identifier_in_path if phase == "in" else self.identifier_out_path
-        if not (self.identifiers_enabled and path and os.path.isfile(path)):
+        path = self._identifier_path(phase)
+        if not (self.identifiers_enabled and path):
             return False
         if not (0 <= index < len(self.items)):
             return False
@@ -756,12 +788,9 @@ class PlayoutController(QObject):
         # devolver al operador a una película que ya decidió saltar.
         if self._midroll_resume and not _internal:
             self._midroll_resume = None
-        if (not _internal and not self._identifier_transition and not self.clock_only and
-                self._identifier_eligible(item) and self.identifiers_enabled and
-                self.identifier_in_path and os.path.isfile(self.identifier_in_path)):
-            # v24.0.2.37: en modo Reloj no hay reproductor local para los
-            # identificadores de entrada; se saltan (la emisión continúa).
-            return self._start_identifier(index, "in")
+        # v25.4: los identificadores se reproducen únicamente DESPUÉS del
+        # video. Las rutas de entrada antiguas se conservan como compatibilidad
+        # de configuración, pero nunca insertan una fila antes del contenido.
         if not item.get("path") or not os.path.isfile(item["path"]):
             item["status"] = ST_ERROR
             item["note"] = "archivo no encontrado"
@@ -1144,10 +1173,24 @@ class PlayoutController(QObject):
         if reason == "error" and self._consecutive_errors >= max(3, len(self.items)):
             self.message.emit("Demasiados errores consecutivos • emisión detenida")
             return
+        # El identificador sale después del video, nunca antes. La frecuencia
+        # cuenta sólo Películas/Música emitidas; los clips transitorios no
+        # incrementan el contador ni se convierten en filas permanentes.
         if (not transition and reason == "eof" and self.identifiers_enabled and
-                self._identifier_eligible(item) and self.identifier_out_path and
-                os.path.isfile(self.identifier_out_path)):
-            if self._start_identifier(idx, "out"):
+                self._identifier_eligible(item)):
+            self._identifier_count += 1
+            cadence = str(getattr(self, "identifier_cadence", "every") or "every")
+            if cadence == "every":
+                every_n = 1
+            elif cadence.startswith("random_"):
+                try:
+                    every_n = int(cadence.split("_", 1)[1])
+                except (TypeError, ValueError):
+                    every_n = 1
+            else:
+                every_n = max(1, int(getattr(self, "identifier_every_n", 1) or 1))
+            due = self._identifier_count % every_n == 0
+            if due and self._identifier_path("out") and self._start_identifier(idx, "out"):
                 return
         if (self._midroll_resume and reason == "eof" and
                 idx < self._midroll_resume.get("last_ad_index", idx)):

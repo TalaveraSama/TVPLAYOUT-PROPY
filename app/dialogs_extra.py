@@ -5,7 +5,7 @@ import shutil
 import subprocess
 
 from PySide6.QtCore import Qt, QRectF
-from PySide6.QtGui import QPixmap, QPainter, QColor, QPen, QFont
+from PySide6.QtGui import QPixmap, QImage, QPainter, QColor, QPen, QFont
 from PySide6.QtWidgets import (QApplication, QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QLabel, QPushButton, QLineEdit, QComboBox,
                                QSpinBox, QCheckBox, QFileDialog, QPlainTextEdit, QMessageBox, QWidget,
                                QTableWidget, QTableWidgetItem, QAbstractItemView, QHeaderView)
@@ -44,11 +44,38 @@ class LogoSafeAreaPreview(QWidget):
         self.setStyleSheet("background:#050505;border:1px solid #333;")
         self._pixmap = QPixmap()
         self._position = "arriba-derecha"
+        self._source_note = ""
+        self._title = ""
+        self._image_cache = {}
+
         self._scale = 10
         self._margin = 48
 
     def set_values(self, path, position, scale, margin):
-        self._pixmap = QPixmap(path) if path and os.path.isfile(path) else QPixmap()
+        self._pixmap = QPixmap()
+        path = str(path or "").strip()
+        if path and os.path.isfile(path):
+            ext = os.path.splitext(path)[1].lower()
+            if ext in {".mov", ".webm", ".mkv", ".mp4", ".avi", ".ts"}:
+                # Extrae sólo un fotograma para editar tamaño/posición. No
+                # abre un segundo reproductor ni toca la emisión al aire.
+                try:
+                    key = (path, os.path.getmtime(path))
+                    data = self._image_cache.get(key)
+                    if data is None and FFMPEG_PATH and os.path.isfile(FFMPEG_PATH):
+                        proc = subprocess.run(
+                            [FFMPEG_PATH, "-hide_banner", "-loglevel", "error", "-ss", "0", "-i", path,
+                             "-frames:v", "1", "-f", "image2pipe", "-vcodec", "png", "-"],
+                            capture_output=True, timeout=12, creationflags=CREATE_NO_WINDOW)
+                        data = bytes(proc.stdout or b"")
+                        self._image_cache[key] = data
+                    if data:
+                        image = QImage.fromData(data, "PNG")
+                        self._pixmap = QPixmap.fromImage(image) if not image.isNull() else QPixmap()
+                except Exception:
+                    self._pixmap = QPixmap()
+            else:
+                self._pixmap = QPixmap(path)
         self._position = position or "arriba-derecha"
         self._scale = max(2, int(scale or 10))
         self._margin = max(0, int(margin or 0))
@@ -93,6 +120,11 @@ class LogoSafeAreaPreview(QWidget):
         p.setPen(QColor("#f2c94c"))
         p.drawText(int(safe_left + 5), int(frame.bottom() + 16), "4:3 seguro · 12.5% — 87.5%")
 
+        if self._title:
+            p.setPen(QColor("#ffffff"))
+            p.setFont(QFont("Segoe UI", max(10, int(frame.width() / 45)), QFont.Bold))
+            p.drawText(frame.adjusted(18, 16, -18, -16), Qt.AlignCenter | Qt.TextWordWrap, self._title)
+
         if not self._pixmap.isNull():
             logo_w = max(8.0, frame.width() * self._scale / 100.0)
             logo_h = logo_w * self._pixmap.height() / max(1, self._pixmap.width())
@@ -120,7 +152,7 @@ class LogoDialog(QDialog):
         saved_logo = s.get("logo_path", "")
         default_logo = str(DEFAULT_LOGO_PATH) if DEFAULT_LOGO_PATH else ""
         self.path = QLineEdit(saved_logo or default_logo)
-        self.path.setPlaceholderText("PNG con transparencia recomendado")
+        self.path.setPlaceholderText("PNG o MOV/WebM con canal alfa")
         row.addWidget(self.path, 1)
         b = QPushButton("…")
         b.clicked.connect(self._browse)
@@ -153,7 +185,7 @@ class LogoDialog(QDialog):
         f.addRow("Vista previa", self.preview)
         note = QLabel("Las guías muestran el lienzo 16:9 y el margen central 4:3 (12.5%–87.5%). "
                       "La posición real queda dentro del área 4:3. Tamaño recomendado para una mosca profesional: 8–12%. "
-                      "Se aplica en el siguiente evento RTMP y no afecta al monitor local.")
+                      "Se aplica en el siguiente evento RTMP y no afecta al monitor local. En MOV se muestra aquí un fotograma real del archivo; el alfa se compone por CPU y se repite en bucle durante la emisión.")
         note.setWordWrap(True)
         note.setStyleSheet("color:#9a9a9a;")
         f.addRow(note)
@@ -173,8 +205,15 @@ class LogoDialog(QDialog):
         self.margin.valueChanged.connect(self._update_preview)
         self._update_preview()
 
+    def set_title(self, title):
+        self._title = str(title or "").strip()
+        self.update()
+
     def _browse(self):
-        p, _ = QFileDialog.getOpenFileName(self, "Logo", str(ROOT), "Imágenes (*.png *.jpg *.jpeg *.bmp *.gif)")
+        p, _ = QFileDialog.getOpenFileName(
+            self, "Logo", str(ROOT),
+            "Logo con alfa (*.png *.mov *.webm *.mkv *.mp4);;Imágenes (*.png *.jpg *.jpeg *.bmp *.gif);;Todos (*.*)"
+        )
         if p:
             self.path.setText(p)
 
@@ -186,6 +225,61 @@ class LogoDialog(QDialog):
         return {"logo_enabled": self.enabled.isChecked(), "logo_path": self.path.text().strip(),
                 "logo_position": self.position.currentText(), "logo_scale": self.scale.value(),
                 "logo_opacity": self.opacity.value(), "logo_margin": self.margin.value()}
+
+
+class CanvasDialog(QDialog):
+    """Lienzo de programa: previsualiza el formato y las capas antes de emitir."""
+
+    def __init__(self, parent, settings):
+        super().__init__(parent)
+        self.setWindowTitle("Lienzo de programa · salida RTMP")
+        _prepare_resizable_dialog(self, 760, 620, 620, 480)
+        s = settings
+        root = QVBoxLayout(self)
+        form = QFormLayout()
+        self.resolution = QComboBox()
+        self.resolution.addItem("SD · 720x576", "720x576")
+        self.resolution.addItem("HD · 1280x720", "1280x720")
+        self.resolution.addItem("FHD · 1920x1080", "1920x1080")
+        self.resolution.addItem("4K · 3840x2160", "3840x2160")
+        self.resolution.setCurrentIndex(max(0, self.resolution.findData(s.get("resolution", "1920x1080"))))
+        self.title = QLineEdit(s.get("canvas_title", "Título de prueba / titular"))
+        self.title.setPlaceholderText("Titular de prueba para el preview")
+        self.preview = LogoSafeAreaPreview()
+        self.preview.setMinimumHeight(330)
+        form.addRow("Formato del lienzo", self.resolution)
+        form.addRow("Titular de preview", self.title)
+        root.addLayout(form)
+        root.addWidget(self.preview, 1)
+        note = QLabel("Este lienzo es la referencia de la salida: fuente de video, logo MOV/PNG y titulares se componen dentro del mismo motor de programa. No es un lienzo de OBS separado y no crea una segunda emisión. Al pulsar Emitir RTMP se usa este formato.")
+        note.setWordWrap(True)
+        note.setStyleSheet("color:#9a9a9a;")
+        root.addWidget(note)
+        buttons = QHBoxLayout()
+        buttons.addStretch()
+        cancel = QPushButton("Cancelar")
+        cancel.clicked.connect(self.reject)
+        save = QPushButton("Guardar lienzo")
+        save.setObjectName("primary")
+        save.clicked.connect(self.accept)
+        buttons.addWidget(cancel)
+        buttons.addWidget(save)
+        root.addLayout(buttons)
+        self._refresh_preview()
+        self.resolution.currentIndexChanged.connect(self._refresh_preview)
+        self.title.textChanged.connect(self._refresh_preview)
+
+    def _refresh_preview(self):
+        logo_path = str(self.parent().settings.get("logo_path", "")) if self.parent() is not None else ""
+        self.preview.set_values(
+            logo_path if self.parent() is not None and self.parent().settings.get("logo_enabled", False) else "",
+            self.parent().settings.get("logo_position", "arriba-derecha") if self.parent() is not None else "arriba-derecha",
+            int(self.parent().settings.get("logo_scale", 10)) if self.parent() is not None else 10,
+            int(self.parent().settings.get("logo_margin", 48)) if self.parent() is not None else 48)
+        self.preview.set_title(self.title.text())
+
+    def values(self):
+        return {"resolution": self.resolution.currentData(), "canvas_title": self.title.text().strip()}
 
 
 class OutputProfilesDialog(QDialog):

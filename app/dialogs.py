@@ -1,8 +1,11 @@
 """Diálogos de funciones: Playlist Manager, Fuentes/Categorías, Programador, Registros, Ajustes, Editar clip."""
 import json
 import os
+import random
 import re
+import subprocess
 from datetime import datetime
+from urllib.parse import unquote
 
 from PySide6.QtCore import Qt, QTime, QDate, Signal
 from PySide6.QtGui import QColor, QBrush
@@ -202,19 +205,61 @@ class PlaylistManagerDialog(BaseDialog):
         except OSError as e:
             QMessageBox.critical(self, "Exportar", str(e))
 
+    @staticmethod
+    def _playlist_path_key(value):
+        """Normaliza rutas M3U/M3U8 de Windows, UNC y file:// para cotejarlas con la biblioteca."""
+        value = unquote(str(value or "").strip().strip('\\"'))
+        if value.lower().startswith("file://"):
+            value = value[7:]
+            if value.startswith("/") and len(value) > 2 and value[2] == ":":
+                value = value[1:]
+        value = value.replace("/", "\\")
+        return value.rstrip("\\").lower()
+
+    def _library_row_for_playlist_path(self, value, playlist_dir, by_path, by_name):
+        raw = str(value or "").strip().strip('\\"')
+        if not raw:
+            return None, raw
+        if not re.match(r"^[A-Za-z]:[\\/]", raw) and not raw.startswith("\\\\") and not raw.lower().startswith("file://"):
+            raw = os.path.join(playlist_dir, raw)
+        key = self._playlist_path_key(raw)
+        row = by_path.get(key)
+        if row:
+            return row, str(row["path"])
+        # Algunos exportadores M3U guardan sólo el nombre del archivo. Sólo
+        # usarlo si es único para no asociar silenciosamente el medio equivocado.
+        name = os.path.basename(raw.replace("\\", "/")).lower()
+        candidates = by_name.get(name, [])
+        if len(candidates) == 1:
+            return candidates[0], str(candidates[0]["path"])
+        return None, raw
+
     def import_file(self):
         path, _ = QFileDialog.getOpenFileName(self, "Importar playlist", str(ROOT), "Playlists (*.m3u *.m3u8 *.json *.txt)")
         if not path:
             return
         from .playout import make_item
         items = []
+        probe_paths = []
+        library_rows = self.db.search_media("", "Todas", limit=100000)
+        by_path = {self._playlist_path_key(r["path"]): r for r in library_rows if r["path"]}
+        by_name = {}
+        for r in library_rows:
+            name = os.path.basename(str(r["path"] or "").replace("\\", "/")).lower()
+            if name:
+                by_name.setdefault(name, []).append(r)
+        playlist_dir = os.path.dirname(path)
         try:
             if path.lower().endswith(".json"):
                 with open(path, encoding="utf-8") as f:
                     for d in json.load(f):
                         if isinstance(d, dict) and d.get("path"):
-                            row = self.db.media_by_path(d["path"])
-                            base = make_item(row) if row else make_item(d)
+                            row, resolved_path = self._library_row_for_playlist_path(d["path"], playlist_dir, by_path, by_name)
+                            if row:
+                                d["path"] = resolved_path
+                            base = make_item(row) if row else make_item(dict(d, path=resolved_path))
+                            if row and (not row["metadata_ok"] or not float(row["duration"] or 0)) and resolved_path not in probe_paths:
+                                probe_paths.append(resolved_path)
                             base["fixed_time"] = d.get("fixed_time", "") or ""
                             base["mark_in"] = max(0.0, float(d.get("mark_in") or 0))
                             base["mark_out"] = max(0.0, float(d.get("mark_out") or 0))
@@ -262,24 +307,33 @@ class PlaylistManagerDialog(BaseDialog):
                         elif line.startswith("#"):
                             continue
                         else:
-                            row = self.db.media_by_path(line)
+                            row, resolved_path = self._library_row_for_playlist_path(line, playlist_dir, by_path, by_name)
                             if row:
                                 it = make_item(row)
+                                if (not row["metadata_ok"] or not float(row["duration"] or 0)) and resolved_path not in probe_paths:
+                                    probe_paths.append(resolved_path)
                             else:
                                 item_cat = category or "Otros"
                                 if item_cat == "Otros":
                                     for src in self.db.sources():
                                         sp = src.get("path", "")
-                                        if sp and os.path.normcase(os.path.abspath(line)).startswith(os.path.normcase(os.path.abspath(sp))):
+                                        if sp and self._playlist_path_key(resolved_path).startswith(self._playlist_path_key(sp)):
                                             item_cat = src.get("category") or "Otros"
                                             break
                                 it = make_item({
-                                    "path": line,
-                                    "title": title or os.path.splitext(os.path.basename(line))[0],
+                                    "path": resolved_path,
+                                    "title": title or os.path.splitext(os.path.basename(resolved_path))[0],
                                     "category": item_cat,
                                     "duration": m3u_duration,
                                     "source_duration": m3u_duration,
                                 })
+                                # Si la playlist apunta a un archivo real que
+                                # aún no está en la biblioteca, registrarlo para
+                                # que ffprobe lo complete sin bloquear el aire.
+                                if os.path.isfile(resolved_path):
+                                    self.db.upsert_media(resolved_path, it["title"], item_cat)
+                                    if resolved_path not in probe_paths:
+                                        probe_paths.append(resolved_path)
                             it["fixed_time"] = fixed
                             it["mark_in"] = mark_in
                             it["mark_out"] = mark_out
@@ -296,7 +350,14 @@ class PlaylistManagerDialog(BaseDialog):
             QMessageBox.information(self, "Importar", "No se encontraron entradas válidas.")
             return
         self.ctrl.append_items(items)
-        self.parent().statusBar().showMessage(f"Importados {len(items)} eventos")
+        if probe_paths and hasattr(self.parent(), "start_probe"):
+            # ffprobe corre en segundo plano: no bloquea el aire ni la importación.
+            self.parent().start_probe(probe_paths)
+            self.parent().statusBar().showMessage(
+                f"Importados {len(items)} eventos • analizando metadatos de {len(probe_paths)} en segundo plano"
+            )
+        else:
+            self.parent().statusBar().showMessage(f"Importados {len(items)} eventos • metadatos de biblioteca reutilizados")
 
 
 # ============================================================ FUENTES / CATEGORÍAS
@@ -914,20 +975,60 @@ class SettingsDialog(BaseDialog):
         self.midroll_interval.setValue(max(1, int(self.settings.get("midroll_interval_minutes", 15))))
         self.identifiers_enabled = QCheckBox("Activar identificadores en Películas y Música")
         self.identifiers_enabled.setChecked(bool(self.settings.get("identifiers_enabled", False)))
-        self.identifier_in = QLineEdit(self.settings.get("identifier_in_path", ""))
-        self.identifier_in.setPlaceholderText("Vídeo de entrada • aproximadamente 8 segundos")
-        self.identifier_in_browse = QPushButton("Buscar…")
-        self.identifier_in_browse.clicked.connect(lambda: self._choose_identifier(self.identifier_in))
-        in_row = QHBoxLayout()
-        in_row.addWidget(self.identifier_in, 1)
-        in_row.addWidget(self.identifier_in_browse)
-        self.identifier_out = QLineEdit(self.settings.get("identifier_out_path", ""))
-        self.identifier_out.setPlaceholderText("Vídeo de salida • aproximadamente 8 segundos")
-        self.identifier_out_browse = QPushButton("Buscar…")
-        self.identifier_out_browse.clicked.connect(lambda: self._choose_identifier(self.identifier_out))
-        out_row = QHBoxLayout()
-        out_row.addWidget(self.identifier_out, 1)
-        out_row.addWidget(self.identifier_out_browse)
+        self.identifier_mode = QComboBox()
+        self.identifier_mode.addItem("Manual (usar el primero de la lista)", "manual")
+        self.identifier_mode.addItem("Aleatorio (cambiar en cada transición)", "random")
+        self.identifier_mode.setCurrentIndex(max(0, self.identifier_mode.findData(
+            self.settings.get("identifier_selection", "random"))))
+        self.identifier_cadence = QComboBox()
+        self.identifier_cadence.addItem("Después de cada video", "every")
+        self.identifier_cadence.addItem("Aleatorio: cada 2 videos", "random_2")
+        self.identifier_cadence.addItem("Aleatorio: cada 4 videos", "random_4")
+        self.identifier_cadence.addItem("Aleatorio: cada 10 videos", "random_10")
+        self.identifier_cadence.addItem("Personalizado: cada N videos", "custom")
+        self.identifier_cadence.setCurrentIndex(max(0, self.identifier_cadence.findData(
+            self.settings.get("identifier_cadence", "every"))))
+        self.identifier_every_n = QSpinBox()
+        self.identifier_every_n.setRange(1, 999)
+        self.identifier_every_n.setSuffix(" videos")
+        self.identifier_every_n.setValue(max(1, int(self.settings.get("identifier_every_n", 1) or 1)))
+        self.identifier_cadence.currentIndexChanged.connect(
+            lambda: self.identifier_every_n.setEnabled(self.identifier_cadence.currentData() == "custom"))
+        self.identifier_every_n.setEnabled(self.identifier_cadence.currentData() == "custom")
+        self.identifier_in_list = QListWidget()
+        self.identifier_in_list.setMaximumHeight(92)
+        self.identifier_out_list = QListWidget()
+        self.identifier_out_list.setMaximumHeight(92)
+        for path in self._identifier_paths("identifier_in_paths", "identifier_in_path"):
+            self.identifier_in_list.addItem(path)
+        for path in self._identifier_paths("identifier_out_paths", "identifier_out_path"):
+            self.identifier_out_list.addItem(path)
+        in_add = QPushButton("＋ Añadir manual…")
+        in_add.clicked.connect(lambda: self._add_identifier(self.identifier_in_list))
+        in_random = QPushButton("🎲 Aleatorio")
+        in_random.clicked.connect(lambda: self._select_random_identifier(self.identifier_in_list))
+        in_remove = QPushButton("Quitar")
+        in_remove.clicked.connect(lambda: self._remove_identifier(self.identifier_in_list))
+        in_buttons = QHBoxLayout()
+        in_buttons.addWidget(in_add)
+        in_buttons.addWidget(in_random)
+        in_buttons.addWidget(in_remove)
+        in_row = QVBoxLayout()
+        in_row.addWidget(self.identifier_in_list)
+        in_row.addLayout(in_buttons)
+        out_add = QPushButton("＋ Añadir manual…")
+        out_add.clicked.connect(lambda: self._add_identifier(self.identifier_out_list))
+        out_random = QPushButton("🎲 Aleatorio")
+        out_random.clicked.connect(lambda: self._select_random_identifier(self.identifier_out_list))
+        out_remove = QPushButton("Quitar")
+        out_remove.clicked.connect(lambda: self._remove_identifier(self.identifier_out_list))
+        out_buttons = QHBoxLayout()
+        out_buttons.addWidget(out_add)
+        out_buttons.addWidget(out_random)
+        out_buttons.addWidget(out_remove)
+        out_row = QVBoxLayout()
+        out_row.addWidget(self.identifier_out_list)
+        out_row.addLayout(out_buttons)
         self.tmdb_enabled = QCheckBox("Mostrar tarjeta TMDB periódica para Películas")
         self.tmdb_enabled.setChecked(bool(self.settings.get("tmdb_enabled", False)))
         self.tmdb_key = QLineEdit(self.settings.get("tmdb_api_key", ""))
@@ -967,9 +1068,12 @@ class SettingsDialog(BaseDialog):
         f2.addRow("Tanda intermedia: categoría", self.midroll_cat)
         f2.addRow("Tanda intermedia: intervalo", self.midroll_interval)
         f2.addRow("", self.identifiers_enabled)
-        f2.addRow("Identificador de entrada", in_row)
-        f2.addRow("Identificador de salida", out_row)
-        f2.addRow("", _note("Los identificadores se usan sólo en Películas y Música; no se insertan en Publicidad, filler ni slate."))
+        f2.addRow("Selección de clip", self.identifier_mode)
+        f2.addRow("Frecuencia", self.identifier_cadence)
+        f2.addRow("N personalizado", self.identifier_every_n)
+        f2.addRow("Identificadores (se reproducen DESPUÉS)", out_row)
+        f2.addRow("Compatibilidad: entrada", in_row)
+        f2.addRow("", _note("Los identificadores son clips audiovisuales temporales, nunca filas permanentes. Se reproducen después del video según la frecuencia elegida. Usa clips de 5 a 8 segundos; sólo Películas y Música. El cambio se prepara en la salida continua para no reiniciar RTMP ni afectar el playout."))
 
         # Sonido Profesional y Titulación Musical
         self.audio_proc_btn = QPushButton("🎚️ Configurar Sonido Profesional (EBU R128 / DynAudNorm / Compresor / EQ)…")
@@ -1027,13 +1131,65 @@ class SettingsDialog(BaseDialog):
         if path:
             self.monitor_player_path.setText(path)
 
-    def _choose_identifier(self, field):
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Seleccionar identificador de aproximadamente 8 segundos", "",
+    def _identifier_paths(self, plural_key, legacy_key):
+        value = self.settings.get(plural_key)
+        if not isinstance(value, list):
+            value = []
+        # Compatibilidad con las versiones anteriores que guardaban una sola ruta.
+        legacy = str(self.settings.get(legacy_key, "") or "").strip()
+        result = [str(p).strip() for p in value if str(p).strip()]
+        if legacy and legacy not in result:
+            result.insert(0, legacy)
+        return list(dict.fromkeys(result))
+
+    def _add_identifier(self, widget):
+        paths, _ = QFileDialog.getOpenFileNames(
+            self, "Añadir identificadores de aproximadamente 8 segundos", "",
             "Vídeo (*.mp4 *.mov *.mkv *.avi *.webm *.ts);;Todos los archivos (*.*)",
         )
-        if path:
-            field.setText(path)
+        existing = {widget.item(i).text() for i in range(widget.count())}
+        rejected = []
+        for path in paths:
+            duration = 0.0
+            try:
+                if FFPROBE_PATH and os.path.isfile(FFPROBE_PATH):
+                    probe = subprocess.run(
+                        [FFPROBE_PATH, "-v", "error", "-show_entries", "format=duration",
+                         "-of", "default=noprint_wrappers=1:nokey=1", path],
+                        capture_output=True, text=True, timeout=12)
+                    duration = float((probe.stdout or "0").strip() or 0)
+            except (OSError, ValueError, subprocess.SubprocessError):
+                duration = 0.0
+            if duration and not 5.0 <= duration <= 8.0:
+                rejected.append(f"{os.path.basename(path)} ({duration:.1f}s)")
+                continue
+            if path not in existing:
+                widget.addItem(path)
+                existing.add(path)
+        if rejected:
+            QMessageBox.warning(self, "Identificador no válido",
+                                "Sólo se admiten identificadores de 5 a 8 segundos.\n\n" +
+                                "\n".join(rejected))
+
+    def _remove_identifier(self, widget):
+        for item in widget.selectedItems():
+            widget.takeItem(widget.row(item))
+
+    def _select_random_identifier(self, widget):
+        if widget.count() <= 0:
+            return
+        widget.setCurrentRow(random.randrange(widget.count()))
+
+    def _list_paths(self, widget):
+        paths = [widget.item(i).text().strip() for i in range(widget.count()) if widget.item(i).text().strip()]
+        # En modo manual, el clip seleccionado se convierte en el primero de la lista.
+        # Así el controlador puede usarlo sin guardar un índice frágil.
+        if self.identifier_mode.currentData() == "manual" and widget.currentItem() is not None:
+            selected = widget.currentItem().text().strip()
+            if selected in paths:
+                paths.remove(selected)
+                paths.insert(0, selected)
+        return paths
 
     def values(self):
         return {
@@ -1062,8 +1218,14 @@ class SettingsDialog(BaseDialog):
             "midroll_category": self.midroll_cat.currentText(),
             "midroll_interval_minutes": self.midroll_interval.value(),
             "identifiers_enabled": self.identifiers_enabled.isChecked(),
-            "identifier_in_path": self.identifier_in.text().strip(),
-            "identifier_out_path": self.identifier_out.text().strip(),
+            "identifier_selection": self.identifier_mode.currentData() or "random",
+            "identifier_cadence": self.identifier_cadence.currentData() or "every",
+            "identifier_every_n": self.identifier_every_n.value(),
+            "identifier_in_paths": self._list_paths(self.identifier_in_list),
+            "identifier_out_paths": self._list_paths(self.identifier_out_list),
+            # Mantener las claves antiguas para que versiones anteriores no pierdan configuración.
+            "identifier_in_path": (self._list_paths(self.identifier_in_list) or [""])[0],
+            "identifier_out_path": (self._list_paths(self.identifier_out_list) or [""])[0],
             "tmdb_enabled": self.tmdb_enabled.isChecked(),
             "tmdb_api_key": self.tmdb_key.text().strip(),
             "tmdb_interval_minutes": self.tmdb_interval.value(),
