@@ -620,7 +620,7 @@ class OutputWorker(QThread):
         if self.extra_args.strip():
             cmd += self.extra_args.split()
         # Mantener paquetes en el buffer de IO reduce los vaciados durante una transición; el encoder y el socket permanecen abiertos.
-        cmd += ["-flush_packets", "0", "-max_interleave_delta", str(int(self.output_buffer_seconds * 1000000))]
+        cmd += ["-flush_packets", "0", "-muxdelay", f"{self.output_buffer_seconds:.3f}", "-muxpreload", f"{self.output_buffer_seconds:.3f}", "-max_interleave_delta", str(int(self.output_buffer_seconds * 1000000))]
         if self.protocol == "RTMP" or low.startswith(("rtmp://", "rtmps://")):
             if self.monitor_feed_url:
                 # Tee después de los filtros/encoder: el monitor externo ve
@@ -741,7 +741,7 @@ class OutputWorker(QThread):
             cmd += self.extra_args.split()
 
         # Mantener paquetes en el buffer de IO reduce los vaciados durante una transición; el encoder y el socket permanecen abiertos.
-        cmd += ["-flush_packets", "0", "-max_interleave_delta", str(int(self.output_buffer_seconds * 1000000))]
+        cmd += ["-flush_packets", "0", "-muxdelay", f"{self.output_buffer_seconds:.3f}", "-muxpreload", f"{self.output_buffer_seconds:.3f}", "-max_interleave_delta", str(int(self.output_buffer_seconds * 1000000))]
         if self.protocol == "RTMP" or low.startswith(("rtmp://", "rtmps://")):
             if self.monitor_feed_url:
                 tee = (f"[f=flv:onfail=ignore]{self.url}|"
