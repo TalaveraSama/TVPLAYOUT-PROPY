@@ -705,7 +705,7 @@ class MainWindow(QMainWindow):
                  ("Programador", self.open_scheduler), ("Registros\nAs-Run", self.open_logs),
                  ("Fuentes /\nCategorías", self.open_sources), ("Ajustes del\nsistema", self.open_settings),
                  ("Salidas IP\nRTMP/SRT/NDI", self.open_outputs), ("Escanear\nbiblioteca", self.start_scan),
-                 ("Logo / CG\n(RTMP)", self.open_logo), ("Tarjeta\nTMDB", self.open_tmdb_card),
+                 ("Lienzo de salida\n(RTMP)", self.open_canvas), ("Logo / CG\n(RTMP)", self.open_logo), ("Tarjeta\nTMDB", self.open_tmdb_card),
                  ("Sonido\nPRO", self.open_audio_processor), ("Titulación\nMusical", self.open_music_titling),
                  ("Dispositivos", self.open_devices)]
         self._fn_buttons = []
@@ -754,9 +754,10 @@ class MainWindow(QMainWindow):
         self.rtmp_chip.setMinimumWidth(120)
         self.rtmp_chip.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         r2.addWidget(self.rtmp_chip, 1)
-        # Referencia heredada: el control de activación está en cada perfil.
-        self.rtmp_btn = _btn("", lambda: None, None, "")
-        self.rtmp_btn.setVisible(False)
+        self.rtmp_btn = _btn("📡 EMITIR RTMP", self._toggle_rtmp_button, "primary", "Inicia o detiene la salida RTMP usando el lienzo configurado", True)
+        self.rtmp_btn.setChecked(initial_mode == "remote")
+        self.rtmp_btn.setText("⏹ NO EMITIR RTMP" if self.rtmp_btn.isChecked() else "📡 EMITIR RTMP")
+        r2.addWidget(self.rtmp_btn)
         ov.addLayout(r2)
 
         self.rtmp_destinations = _lbl("Abre Salidas IP para configurar destinos", "clipInfo")
@@ -1987,6 +1988,19 @@ class MainWindow(QMainWindow):
         log.info("Programación %s aplicada: %d eventos", schedule["name"], len(items))
 
     # ================================================================= RTMP
+    def _toggle_rtmp_button(self, checked):
+        if self._locked:
+            self.rtmp_btn.setChecked(bool(self.output and self.output.isRunning()))
+            return
+        if checked:
+            self.rtmp_mode_remote.setChecked(True)
+            self._save_setting("rtmp_mode", "remote")
+            self._rtmp_start()
+        else:
+            self.rtmp_mode_local.setChecked(True)
+            self._save_setting("rtmp_mode", "local")
+            self._rtmp_stop()
+
     def toggle_rtmp(self):
         """v22.2.2: compat — ya no se llama desde la UI, los radios
         (_rtmp_mode_changed) son la nueva forma de prender/apagar. Se
@@ -2206,6 +2220,11 @@ class MainWindow(QMainWindow):
 
     def _rtmp_stop(self):
         """v22.2.2: detiene el RTMP si está corriendo."""
+        if hasattr(self, "rtmp_btn"):
+            self.rtmp_btn.blockSignals(True)
+            self.rtmp_btn.setChecked(False)
+            self.rtmp_btn.setText("📡 EMITIR RTMP")
+            self.rtmp_btn.blockSignals(False)
         self.ctrl.set_output_master(False)
         if self.output and self.output.isRunning():
             self.output.stop()
@@ -2267,6 +2286,11 @@ class MainWindow(QMainWindow):
         self._refresh_output_monitor()
         self._status(msg)
         self.rtmp_chip.set_active(ok)
+        if hasattr(self, "rtmp_btn"):
+            self.rtmp_btn.blockSignals(True)
+            self.rtmp_btn.setChecked(bool(ok or (self.output and self.output.isRunning())))
+            self.rtmp_btn.setText("⏹ NO EMITIR RTMP" if self.rtmp_btn.isChecked() else "📡 EMITIR RTMP")
+            self.rtmp_btn.blockSignals(False)
         self._set_rtmp_chip(msg.replace("RTMP ON AIR • ", "ON AIR • ") if ok else ("ERROR" if "ERROR" in msg else "OFF"))
         if ok:
             self.rtmp_info.setText(msg)
@@ -2740,6 +2764,16 @@ class MainWindow(QMainWindow):
             self.rtmp_info.setText("Salidas detenidas • ningún destino está activo")
         self._refresh_output_monitor()
         self._status(f"Destinos guardados: {len(profiles)} • {'activando' if enabled else 'todos desactivados'}")
+
+    def open_canvas(self):
+        from .dialogs_extra import CanvasDialog
+        d = CanvasDialog(self, self.settings)
+        if d.exec() != QDialog.Accepted:
+            return
+        for k, v in d.values().items():
+            if self.settings.get(k) != v:
+                self._save_setting(k, v)
+        self._status(f"Lienzo guardado • {self.settings.get('resolution', '1920x1080')} • listo para Emitir RTMP")
 
     def open_logo(self):
         from .dialogs_extra import LogoDialog
