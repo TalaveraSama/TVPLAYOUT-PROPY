@@ -4,6 +4,7 @@ import os
 import random
 import re
 from datetime import datetime
+from urllib.parse import unquote
 
 from PySide6.QtCore import Qt, QTime, QDate, Signal
 from PySide6.QtGui import QColor, QBrush
@@ -203,19 +204,61 @@ class PlaylistManagerDialog(BaseDialog):
         except OSError as e:
             QMessageBox.critical(self, "Exportar", str(e))
 
+    @staticmethod
+    def _playlist_path_key(value):
+        """Normaliza rutas M3U/M3U8 de Windows, UNC y file:// para cotejarlas con la biblioteca."""
+        value = unquote(str(value or "").strip().strip('\\"'))
+        if value.lower().startswith("file://"):
+            value = value[7:]
+            if value.startswith("/") and len(value) > 2 and value[2] == ":":
+                value = value[1:]
+        value = value.replace("/", "\\")
+        return value.rstrip("\\").lower()
+
+    def _library_row_for_playlist_path(self, value, playlist_dir, by_path, by_name):
+        raw = str(value or "").strip().strip('\\"')
+        if not raw:
+            return None, raw
+        if not re.match(r"^[A-Za-z]:[\\/]", raw) and not raw.startswith("\\\\") and not raw.lower().startswith("file://"):
+            raw = os.path.join(playlist_dir, raw)
+        key = self._playlist_path_key(raw)
+        row = by_path.get(key)
+        if row:
+            return row, str(row["path"])
+        # Algunos exportadores M3U guardan sólo el nombre del archivo. Sólo
+        # usarlo si es único para no asociar silenciosamente el medio equivocado.
+        name = os.path.basename(raw.replace("\\", "/")).lower()
+        candidates = by_name.get(name, [])
+        if len(candidates) == 1:
+            return candidates[0], str(candidates[0]["path"])
+        return None, raw
+
     def import_file(self):
         path, _ = QFileDialog.getOpenFileName(self, "Importar playlist", str(ROOT), "Playlists (*.m3u *.m3u8 *.json *.txt)")
         if not path:
             return
         from .playout import make_item
         items = []
+        probe_paths = []
+        library_rows = self.db.search_media("", "Todas", limit=100000)
+        by_path = {self._playlist_path_key(r["path"]): r for r in library_rows if r["path"]}
+        by_name = {}
+        for r in library_rows:
+            name = os.path.basename(str(r["path"] or "").replace("\\", "/")).lower()
+            if name:
+                by_name.setdefault(name, []).append(r)
+        playlist_dir = os.path.dirname(path)
         try:
             if path.lower().endswith(".json"):
                 with open(path, encoding="utf-8") as f:
                     for d in json.load(f):
                         if isinstance(d, dict) and d.get("path"):
-                            row = self.db.media_by_path(d["path"])
-                            base = make_item(row) if row else make_item(d)
+                            row, resolved_path = self._library_row_for_playlist_path(d["path"], playlist_dir, by_path, by_name)
+                            if row:
+                                d["path"] = resolved_path
+                            base = make_item(row) if row else make_item(dict(d, path=resolved_path))
+                            if row and not row["metadata_ok"] and resolved_path not in probe_paths:
+                                probe_paths.append(resolved_path)
                             base["fixed_time"] = d.get("fixed_time", "") or ""
                             base["mark_in"] = max(0.0, float(d.get("mark_in") or 0))
                             base["mark_out"] = max(0.0, float(d.get("mark_out") or 0))
@@ -263,20 +306,22 @@ class PlaylistManagerDialog(BaseDialog):
                         elif line.startswith("#"):
                             continue
                         else:
-                            row = self.db.media_by_path(line)
+                            row, resolved_path = self._library_row_for_playlist_path(line, playlist_dir, by_path, by_name)
                             if row:
                                 it = make_item(row)
+                                if not row["metadata_ok"] and resolved_path not in probe_paths:
+                                    probe_paths.append(resolved_path)
                             else:
                                 item_cat = category or "Otros"
                                 if item_cat == "Otros":
                                     for src in self.db.sources():
                                         sp = src.get("path", "")
-                                        if sp and os.path.normcase(os.path.abspath(line)).startswith(os.path.normcase(os.path.abspath(sp))):
+                                        if sp and self._playlist_path_key(resolved_path).startswith(self._playlist_path_key(sp)):
                                             item_cat = src.get("category") or "Otros"
                                             break
                                 it = make_item({
-                                    "path": line,
-                                    "title": title or os.path.splitext(os.path.basename(line))[0],
+                                    "path": resolved_path,
+                                    "title": title or os.path.splitext(os.path.basename(resolved_path))[0],
                                     "category": item_cat,
                                     "duration": m3u_duration,
                                     "source_duration": m3u_duration,
@@ -297,7 +342,14 @@ class PlaylistManagerDialog(BaseDialog):
             QMessageBox.information(self, "Importar", "No se encontraron entradas válidas.")
             return
         self.ctrl.append_items(items)
-        self.parent().statusBar().showMessage(f"Importados {len(items)} eventos")
+        if probe_paths and hasattr(self.parent(), "start_probe"):
+            # ffprobe corre en segundo plano: no bloquea el aire ni la importación.
+            self.parent().start_probe(probe_paths)
+            self.parent().statusBar().showMessage(
+                f"Importados {len(items)} eventos • analizando metadatos de {len(probe_paths)} en segundo plano"
+            )
+        else:
+            self.parent().statusBar().showMessage(f"Importados {len(items)} eventos • metadatos de biblioteca reutilizados")
 
 
 # ============================================================ FUENTES / CATEGORÍAS
