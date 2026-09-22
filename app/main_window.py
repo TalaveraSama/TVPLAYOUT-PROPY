@@ -36,7 +36,7 @@ from .widgets import StationClock, VUMeter, VideoSurface, LedLabel, ProgressBarT
 from .dialogs import (PlaylistManagerDialog, SourcesDialog, SchedulerDialog, LogsDialog, SettingsDialog, EditClipDialog,
                         LibraryClipDialog, LiveStreamDialog)
 from .dialogs_tmdb import TMDBEditDialog, TMDBCardDialog
-from .dialogs_audio import AudioProcessorDialog
+from .dialogs_audio import AudioProcessorDialog, AudioMixerDialog
 from .dialogs_music import MusicTitlingDialog
 from .music_titling import MusicLookupWorker, build_music_overlay, identify_music_track, is_music_item
 from .audio_processor import build_audio_filters
@@ -76,6 +76,9 @@ DEFAULT_SETTINGS = {
     "audio_proc_comp_makeup": 2.0, "audio_proc_equalizer": False, "audio_proc_eq_bass": 0.0,
     "audio_proc_eq_presence": 2.0, "audio_proc_eq_treble": 1.5, "audio_proc_stereo_enhance": False,
     "audio_proc_limiter": True, "audio_proc_gain_db": 0.0,
+    # Mezclador master de programa, equivalente al fader/mute de OBS.
+    "audio_mixer_gain_db": 0.0, "audio_mixer_muted": False,
+    "audio_mixer_monitor_gain_db": 0.0, "audio_mixer_ducking": False,
     # Titulación de videos musicales en vivo
     "music_titling_enabled": True, "music_titling_service": "auto",
     "music_titling_intro_start": 30.0, "music_titling_intro_duration": 12.0, "music_titling_outro_duration": 10.0,
@@ -734,7 +737,8 @@ class MainWindow(QMainWindow):
                  ("Fuentes /\nCategorías", self.open_sources), ("Ajustes del\nsistema", self.open_settings),
                  ("Salidas IP\nRTMP/SRT/NDI", self.open_outputs), ("Escanear\nbiblioteca", self.start_scan),
                  ("Lienzo de salida\n(RTMP)", self.open_canvas), ("Logo / CG\n(RTMP)", self.open_logo), ("Tarjeta\nTMDB", self.open_tmdb_card),
-                 ("Sonido\nPRO", self.open_audio_processor), ("Titulación\nMusical", self.open_music_titling),
+                 ("Sonido\nPRO", self.open_audio_processor), ("Audio / Mixer\nPrograma", self.open_audio_mixer),
+                 ("Titulación\nMusical", self.open_music_titling),
                  ("Dispositivos", self.open_devices)]
         self._fn_buttons = []
         for i, (text, slot) in enumerate(funcs):
@@ -2851,6 +2855,10 @@ class MainWindow(QMainWindow):
             "audio_proc_stereo_enhance": bool(s.get("audio_proc_stereo_enhance", False)),
             "audio_proc_limiter": bool(s.get("audio_proc_limiter", True)),
             "audio_proc_gain_db": float(s.get("audio_proc_gain_db", 0.0)),
+            "audio_mixer_gain_db": float(s.get("audio_mixer_gain_db", 0.0)),
+            "audio_mixer_muted": bool(s.get("audio_mixer_muted", False)),
+            "audio_mixer_monitor_gain_db": float(s.get("audio_mixer_monitor_gain_db", 0.0)),
+            "audio_mixer_ducking": bool(s.get("audio_mixer_ducking", False)),
         }
 
     def open_audio_processor(self):
@@ -2865,6 +2873,20 @@ class MainWindow(QMainWindow):
                 self._status("Procesador de audio actualizado • se aplica en las salidas IP")
             else:
                 self._status("Ajustes de sonido profesional guardados")
+
+    def open_audio_mixer(self):
+        """Abre el mezclador de programa y actualiza el filtro de salida sin reiniciar RTMP."""
+        d = AudioMixerDialog(self, self.settings)
+        if d.exec() != QDialog.Accepted:
+            return
+        for key, value in d.values().items():
+            if self.settings.get(key) != value:
+                self._save_setting(key, value)
+        if self.output and self.output.isRunning():
+            self.output.set_audio_processor(self._audio_processor_config())
+            self._status("Mezclador guardado • se aplica al siguiente evento sin cerrar la sesión RTMP")
+        else:
+            self._status("Mezclador de programa guardado")
 
     def open_music_titling(self):
         """Abre el diálogo de configuración de Reconocimiento y Titulación Musical en vivo."""
