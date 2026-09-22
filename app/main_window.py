@@ -2508,27 +2508,31 @@ class MainWindow(QMainWindow):
             self._rtmp_drift_bad_count = 0
         self._rtmp_drift_had_unknown = False
         now = time.time()
-        # v24.0.2.39 A: la salida está en OTRO evento que el playout. Con la
-        # señal viva eso es desincronización de CONTENIDO (log 00:18: un error
-        # de conexión hacía avanzar de película a la salida).
+        # El índice interno de FFmpeg no es estable cuando se insertan o
+        # retiran identificadores temporales. Comparar sólo 20 contra 21
+        # producía falsos avisos aunque ambos apuntaran al mismo archivo.
+        # Comparamos la ruta real del evento y sólo realineamos si el contenido
+        # de salida es verdaderamente distinto al del playout.
         onair = self.ctrl.onair
-        if onair is not None and onair >= 0 and 0 <= clip != onair:
-            if clip < onair:
-                # La salida quedó ATRÁS (el playout ya cambió de evento):
-                # realinear de inmediato al evento y posición del playout.
-                if now - self._rtmp_drift_last_restart >= 12.0:
-                    log.info("RTMP en evento %d pero el playout está en %d — realineando",
-                             clip, onair)
-                    self._realign_rtmp(mpv_time, now)
-                return
-            if not self._rtmp_drift_ahead_warned:
-                self._rtmp_drift_ahead_warned = True
+        output_item = None
+        output_items = getattr(self.output, "items", []) or []
+        if 0 <= clip < len(output_items):
+            output_item = output_items[clip]
+        onair_item = self.ctrl.current if onair is not None and onair >= 0 else None
+
+        def _event_path(item):
+            if not item:
+                return ""
+            return os.path.normcase(os.path.normpath(str(item.get("path") or "")))
+
+        if onair_item and output_item and _event_path(output_item) != _event_path(onair_item):
+            if now - self._rtmp_drift_last_restart >= 4.0:
                 log.warning(
-                    "La salida terminó el evento antes que el playout y adelantó contenido "
-                    "(salida en %d, playout en %d). Para emisiones de larga duración usa el "
-                    "modo Reloj del sistema (Ajustes → Monitor de programa).", clip, onair)
-            # No se reinicia: al final de cada evento un reinicio en bucle
-            # cortaría la señal.
+                    "Contenido RTMP desalineado: salida=%s, playout=%s; realineando sin avanzar la playlist",
+                    os.path.basename(str(output_item.get("path") or "")),
+                    os.path.basename(str(onair_item.get("path") or "")),
+                )
+                self._realign_rtmp(mpv_time, now)
             return
         if self._rtmp_drift_baseline is None:
             # Primer frame medido del clip: el gap frente al monitor local

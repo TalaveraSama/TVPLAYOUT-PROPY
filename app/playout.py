@@ -663,7 +663,10 @@ class PlayoutController(QObject):
             return True
         if cat.lower() in {c.lower() for c in self.identifier_categories}:
             return True
-        return True
+        # Los identificadores son exclusivos de Películas y Música; no deben
+        # aparecer en "Otros", videoclips con otra categoría, Publicidad,
+        # filler, slate ni señales en vivo.
+        return False
 
     def _identifier_path(self, phase):
         """Obtiene el clip configurado; en modo aleatorio cambia en cada transición."""
