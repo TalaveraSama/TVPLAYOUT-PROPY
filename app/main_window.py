@@ -2229,7 +2229,10 @@ class MainWindow(QMainWindow):
                                           # cuenta: el playout local/clock decide el
                                           # siguiente evento. Antes sólo se activaba
                                           # en modo Reloj y FFmpeg podía adelantarse.
-                                          externally_controlled=bool(self.ctrl.clock_only and needs_ffmpeg),
+                                          # La sesión persistente es el dueño del avance de la salida; MPV
+                                          # continúa siendo el monitor local. No se reinicia FFmpeg al cambiar de archivo.
+                                          # Compatibilidad documental: antes era externally_controlled=bool(self.ctrl.clock_only and needs_ffmpeg).
+                                          externally_controlled=bool(needs_ffmpeg),
                                           audio_processor_config=self._audio_processor_config(),
                                           music_overlay=self._music_overlay_path,
                                           music_intro_start=float(s.get("music_titling_intro_start", 30.0)),

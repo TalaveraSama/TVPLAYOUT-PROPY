@@ -789,7 +789,7 @@ class OutputWorker(QThread):
             # normales de on_start sólo actualizan el espejo de la playlist;
             # matar aquí el proceso volvería a introducir el microcorte que
             # este modo elimina.
-            if self.seamless_concat and self.externally_controlled and self.proc is not None and self.proc.poll() is None:
+            if self.seamless_concat and self.proc is not None and self.proc.poll() is None:
                 return True
             if not force_jump:
                 if cur_path is not None:
@@ -1228,7 +1228,7 @@ class OutputWorker(QThread):
             # Una sesión persistente sólo se usa cuando el propio output es
             # master. En modo seguido por PyAV, sync_items conserva la
             # autoridad del playout y no permite que concat se adelante.
-            if self.seamless_concat and self.externally_controlled:
+            if self.seamless_concat:
                 self._run_persistent()
                 self.state.emit(False, f"{self.protocol} detenido")
                 return
