@@ -59,7 +59,9 @@ DEFAULT_SETTINGS = {
     "audio_pref": AUDIO_PREFS[0], "sub_pref": "OFF", "hwdec": "auto-safe", "audio_device": "",
     "autofill_category": "Todas", "autofill_count": 10, "tandas_category": "Publicidad", "tandas_count": 2,
     "midroll_enabled": False, "midroll_category": "Publicidad", "midroll_interval_minutes": 15,
-    "identifiers_enabled": False, "identifier_in_path": "", "identifier_out_path": "",
+    "identifiers_enabled": False, "identifier_selection": "random",
+    "identifier_in_paths": [], "identifier_out_paths": [],
+    "identifier_in_path": "", "identifier_out_path": "",
     "tmdb_enabled": False, "tmdb_api_key": "", "tmdb_interval_minutes": 18, "tmdb_duration_seconds": 15,
     "tmdb_card_position": "arriba", "tmdb_card_align": "izquierda", "tmdb_card_style": "banda",
     "tmdb_card_opacity": 70, "tmdb_card_margin": 18, "tmdb_card_show_year": False,
@@ -819,8 +821,22 @@ class MainWindow(QMainWindow):
         self.ctrl.midroll_category = s.get("midroll_category", "Publicidad")
         self.ctrl.midroll_interval_minutes = max(1, int(s.get("midroll_interval_minutes", 15)))
         self.ctrl.identifiers_enabled = bool(s.get("identifiers_enabled", False))
-        self.ctrl.identifier_in_path = str(s.get("identifier_in_path", "") or "")
-        self.ctrl.identifier_out_path = str(s.get("identifier_out_path", "") or "")
+        # v25.3: listas de identificadores con compatibilidad con las rutas únicas antiguas.
+        def _identifier_list(plural, legacy):
+            values = s.get(plural, [])
+            if not isinstance(values, list):
+                values = []
+            values = [str(p).strip() for p in values if str(p).strip()]
+            old = str(s.get(legacy, "") or "").strip()
+            if old and old not in values:
+                values.insert(0, old)
+            return list(dict.fromkeys(values))
+        self.ctrl.identifier_in_paths = _identifier_list("identifier_in_paths", "identifier_in_path")
+        self.ctrl.identifier_out_paths = _identifier_list("identifier_out_paths", "identifier_out_path")
+        # La ruta única queda como alias de compatibilidad para módulos externos.
+        self.ctrl.identifier_in_path = self.ctrl.identifier_in_paths[0] if self.ctrl.identifier_in_paths else ""
+        self.ctrl.identifier_out_path = self.ctrl.identifier_out_paths[0] if self.ctrl.identifier_out_paths else ""
+        self.ctrl.identifier_selection = str(s.get("identifier_selection", "random") or "random")
         # v24: la activación de la tanda intermedia es independiente de la
         # tanda al finalizar el evento.
         # v23.3: filler automático. El operador configura el path a un

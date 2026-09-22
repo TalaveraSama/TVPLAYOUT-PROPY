@@ -1,6 +1,7 @@
 """Diálogos de funciones: Playlist Manager, Fuentes/Categorías, Programador, Registros, Ajustes, Editar clip."""
 import json
 import os
+import random
 import re
 from datetime import datetime
 
@@ -914,20 +915,45 @@ class SettingsDialog(BaseDialog):
         self.midroll_interval.setValue(max(1, int(self.settings.get("midroll_interval_minutes", 15))))
         self.identifiers_enabled = QCheckBox("Activar identificadores en Películas y Música")
         self.identifiers_enabled.setChecked(bool(self.settings.get("identifiers_enabled", False)))
-        self.identifier_in = QLineEdit(self.settings.get("identifier_in_path", ""))
-        self.identifier_in.setPlaceholderText("Vídeo de entrada • aproximadamente 8 segundos")
-        self.identifier_in_browse = QPushButton("Buscar…")
-        self.identifier_in_browse.clicked.connect(lambda: self._choose_identifier(self.identifier_in))
-        in_row = QHBoxLayout()
-        in_row.addWidget(self.identifier_in, 1)
-        in_row.addWidget(self.identifier_in_browse)
-        self.identifier_out = QLineEdit(self.settings.get("identifier_out_path", ""))
-        self.identifier_out.setPlaceholderText("Vídeo de salida • aproximadamente 8 segundos")
-        self.identifier_out_browse = QPushButton("Buscar…")
-        self.identifier_out_browse.clicked.connect(lambda: self._choose_identifier(self.identifier_out))
-        out_row = QHBoxLayout()
-        out_row.addWidget(self.identifier_out, 1)
-        out_row.addWidget(self.identifier_out_browse)
+        self.identifier_mode = QComboBox()
+        self.identifier_mode.addItem("Manual (usar el primero de la lista)", "manual")
+        self.identifier_mode.addItem("Aleatorio (cambiar en cada transición)", "random")
+        self.identifier_mode.setCurrentIndex(max(0, self.identifier_mode.findData(
+            self.settings.get("identifier_selection", "random"))))
+        self.identifier_in_list = QListWidget()
+        self.identifier_in_list.setMaximumHeight(92)
+        self.identifier_out_list = QListWidget()
+        self.identifier_out_list.setMaximumHeight(92)
+        for path in self._identifier_paths("identifier_in_paths", "identifier_in_path"):
+            self.identifier_in_list.addItem(path)
+        for path in self._identifier_paths("identifier_out_paths", "identifier_out_path"):
+            self.identifier_out_list.addItem(path)
+        in_add = QPushButton("＋ Añadir manual…")
+        in_add.clicked.connect(lambda: self._add_identifier(self.identifier_in_list))
+        in_random = QPushButton("🎲 Aleatorio")
+        in_random.clicked.connect(lambda: self._select_random_identifier(self.identifier_in_list))
+        in_remove = QPushButton("Quitar")
+        in_remove.clicked.connect(lambda: self._remove_identifier(self.identifier_in_list))
+        in_buttons = QHBoxLayout()
+        in_buttons.addWidget(in_add)
+        in_buttons.addWidget(in_random)
+        in_buttons.addWidget(in_remove)
+        in_row = QVBoxLayout()
+        in_row.addWidget(self.identifier_in_list)
+        in_row.addLayout(in_buttons)
+        out_add = QPushButton("＋ Añadir manual…")
+        out_add.clicked.connect(lambda: self._add_identifier(self.identifier_out_list))
+        out_random = QPushButton("🎲 Aleatorio")
+        out_random.clicked.connect(lambda: self._select_random_identifier(self.identifier_out_list))
+        out_remove = QPushButton("Quitar")
+        out_remove.clicked.connect(lambda: self._remove_identifier(self.identifier_out_list))
+        out_buttons = QHBoxLayout()
+        out_buttons.addWidget(out_add)
+        out_buttons.addWidget(out_random)
+        out_buttons.addWidget(out_remove)
+        out_row = QVBoxLayout()
+        out_row.addWidget(self.identifier_out_list)
+        out_row.addLayout(out_buttons)
         self.tmdb_enabled = QCheckBox("Mostrar tarjeta TMDB periódica para Películas")
         self.tmdb_enabled.setChecked(bool(self.settings.get("tmdb_enabled", False)))
         self.tmdb_key = QLineEdit(self.settings.get("tmdb_api_key", ""))
@@ -967,9 +993,10 @@ class SettingsDialog(BaseDialog):
         f2.addRow("Tanda intermedia: categoría", self.midroll_cat)
         f2.addRow("Tanda intermedia: intervalo", self.midroll_interval)
         f2.addRow("", self.identifiers_enabled)
-        f2.addRow("Identificador de entrada", in_row)
-        f2.addRow("Identificador de salida", out_row)
-        f2.addRow("", _note("Los identificadores se usan sólo en Películas y Música; no se insertan en Publicidad, filler ni slate."))
+        f2.addRow("Selección", self.identifier_mode)
+        f2.addRow("Identificadores de entrada", in_row)
+        f2.addRow("Identificadores de salida", out_row)
+        f2.addRow("", _note("Puedes añadir varios clips. En modo Aleatorio se elige uno distinto al azar en cada transición; Manual usa el clip seleccionado (o el primero). Sólo se usan en Películas y Música; no en Publicidad, filler ni slate."))
 
         # Sonido Profesional y Titulación Musical
         self.audio_proc_btn = QPushButton("🎚️ Configurar Sonido Profesional (EBU R128 / DynAudNorm / Compresor / EQ)…")
@@ -1027,13 +1054,47 @@ class SettingsDialog(BaseDialog):
         if path:
             self.monitor_player_path.setText(path)
 
-    def _choose_identifier(self, field):
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Seleccionar identificador de aproximadamente 8 segundos", "",
+    def _identifier_paths(self, plural_key, legacy_key):
+        value = self.settings.get(plural_key)
+        if not isinstance(value, list):
+            value = []
+        # Compatibilidad con las versiones anteriores que guardaban una sola ruta.
+        legacy = str(self.settings.get(legacy_key, "") or "").strip()
+        result = [str(p).strip() for p in value if str(p).strip()]
+        if legacy and legacy not in result:
+            result.insert(0, legacy)
+        return list(dict.fromkeys(result))
+
+    def _add_identifier(self, widget):
+        paths, _ = QFileDialog.getOpenFileNames(
+            self, "Añadir identificadores de aproximadamente 8 segundos", "",
             "Vídeo (*.mp4 *.mov *.mkv *.avi *.webm *.ts);;Todos los archivos (*.*)",
         )
-        if path:
-            field.setText(path)
+        existing = {widget.item(i).text() for i in range(widget.count())}
+        for path in paths:
+            if path not in existing:
+                widget.addItem(path)
+                existing.add(path)
+
+    def _remove_identifier(self, widget):
+        for item in widget.selectedItems():
+            widget.takeItem(widget.row(item))
+
+    def _select_random_identifier(self, widget):
+        if widget.count() <= 0:
+            return
+        widget.setCurrentRow(random.randrange(widget.count()))
+
+    def _list_paths(self, widget):
+        paths = [widget.item(i).text().strip() for i in range(widget.count()) if widget.item(i).text().strip()]
+        # En modo manual, el clip seleccionado se convierte en el primero de la lista.
+        # Así el controlador puede usarlo sin guardar un índice frágil.
+        if self.identifier_mode.currentData() == "manual" and widget.currentItem() is not None:
+            selected = widget.currentItem().text().strip()
+            if selected in paths:
+                paths.remove(selected)
+                paths.insert(0, selected)
+        return paths
 
     def values(self):
         return {
@@ -1062,8 +1123,12 @@ class SettingsDialog(BaseDialog):
             "midroll_category": self.midroll_cat.currentText(),
             "midroll_interval_minutes": self.midroll_interval.value(),
             "identifiers_enabled": self.identifiers_enabled.isChecked(),
-            "identifier_in_path": self.identifier_in.text().strip(),
-            "identifier_out_path": self.identifier_out.text().strip(),
+            "identifier_selection": self.identifier_mode.currentData() or "random",
+            "identifier_in_paths": self._list_paths(self.identifier_in_list),
+            "identifier_out_paths": self._list_paths(self.identifier_out_list),
+            # Mantener las claves antiguas para que versiones anteriores no pierdan configuración.
+            "identifier_in_path": (self._list_paths(self.identifier_in_list) or [""])[0],
+            "identifier_out_path": (self._list_paths(self.identifier_out_list) or [""])[0],
             "tmdb_enabled": self.tmdb_enabled.isChecked(),
             "tmdb_api_key": self.tmdb_key.text().strip(),
             "tmdb_interval_minutes": self.tmdb_interval.value(),

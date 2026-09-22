@@ -2,6 +2,7 @@
 autofill, tandas, loop, cue) sobre el reproductor local PyAV. La salida RTMP/SRT/NDI se engancha mediante callbacks."""
 import json
 import os
+import random
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -151,6 +152,9 @@ class PlayoutController(QObject):
         self.identifiers_enabled = False
         self.identifier_in_path = ""
         self.identifier_out_path = ""
+        self.identifier_in_paths = []
+        self.identifier_out_paths = []
+        self.identifier_selection = "random"
         self.identifier_categories = {"Películas", "Música"}
         self._identifier_transition = None
         self._position_base = 0.0
@@ -661,6 +665,20 @@ class PlayoutController(QObject):
             return True
         return True
 
+    def _identifier_path(self, phase):
+        """Obtiene el clip configurado; en modo aleatorio cambia en cada transición."""
+        paths = (self.identifier_in_paths if phase == "in" else self.identifier_out_paths) or []
+        # Compatibilidad con configuraciones antiguas de una sola ruta.
+        legacy = self.identifier_in_path if phase == "in" else self.identifier_out_path
+        if not paths and legacy:
+            paths = [legacy]
+        paths = [str(p) for p in paths if p and os.path.isfile(str(p))]
+        if not paths:
+            return ""
+        if str(getattr(self, "identifier_selection", "random")).lower() == "random":
+            return random.choice(paths)
+        return paths[0]
+
     def _start_identifier(self, index, phase):
         """Inserta un identificador temporal justo antes/después del evento.
 
@@ -668,8 +686,8 @@ class PlayoutController(QObject):
         identificador sólo vive durante la transición y se retira al terminar,
         para que loop/clear_aired no acumulen clips invisibles.
         """
-        path = self.identifier_in_path if phase == "in" else self.identifier_out_path
-        if not (self.identifiers_enabled and path and os.path.isfile(path)):
+        path = self._identifier_path(phase)
+        if not (self.identifiers_enabled and path):
             return False
         if not (0 <= index < len(self.items)):
             return False
@@ -758,7 +776,7 @@ class PlayoutController(QObject):
             self._midroll_resume = None
         if (not _internal and not self._identifier_transition and not self.clock_only and
                 self._identifier_eligible(item) and self.identifiers_enabled and
-                self.identifier_in_path and os.path.isfile(self.identifier_in_path)):
+                self._identifier_path("in")):
             # v24.0.2.37: en modo Reloj no hay reproductor local para los
             # identificadores de entrada; se saltan (la emisión continúa).
             return self._start_identifier(index, "in")
@@ -1145,8 +1163,7 @@ class PlayoutController(QObject):
             self.message.emit("Demasiados errores consecutivos • emisión detenida")
             return
         if (not transition and reason == "eof" and self.identifiers_enabled and
-                self._identifier_eligible(item) and self.identifier_out_path and
-                os.path.isfile(self.identifier_out_path)):
+                self._identifier_eligible(item) and self._identifier_path("out")):
             if self._start_identifier(idx, "out"):
                 return
         if (self._midroll_resume and reason == "eof" and
