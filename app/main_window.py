@@ -54,7 +54,7 @@ STATUS_LABEL = {ST_PENDING: "", ST_READY: "LISTO", ST_ONAIR: "AL AIRE", ST_AIRED
                 ST_ERROR: "ERROR", ST_SKIPPED: "OMITIDO"}
 
 DEFAULT_SETTINGS = {
-    "rtmp_url": "", "outputs": [], "resolution": "1920x1080", "fps": "29.97", "encoder": "CPU/x264", "bitrate": 6000, "audio_bitrate": 192,
+    "rtmp_url": "", "outputs": [], "resolution": "1920x1080", "fps": "29.97", "encoder": "CPU/x264", "video_profile": "baseline", "x264_preset": "veryfast", "keyframe_interval": 2, "bitrate": 6000, "audio_bitrate": 192,
     "subtitle_burn": True, "ffmpeg_extra": "", "rtmp_autostart": False, "rtmp_mode": "local",
     "audio_pref": AUDIO_PREFS[0], "sub_pref": "OFF", "hwdec": "auto-safe", "audio_device": "",
     "autofill_category": "Todas", "autofill_count": 10, "tandas_category": "Publicidad", "tandas_count": 2,
@@ -2216,6 +2216,9 @@ class MainWindow(QMainWindow):
                                           s.get("sub_pref", "OFF"),
                                           bool(s.get("subtitle_burn", True) or str(s.get("sub_pref", "OFF")).upper() != "OFF"),
                                           int(s.get("audio_bitrate", 192)),
+                                          video_profile=str(s.get("video_profile", "baseline")),
+                                          x264_preset=str(s.get("x264_preset", "veryfast")),
+                                          keyframe_interval=int(s.get("keyframe_interval", 2)),
                                           loop=True, start_index=max(0, self.ctrl.onair), start_offset=mpv_time,
                                           extra_args=s.get("ffmpeg_extra", ""), logo=self._logo_config(),
                                           program_overlay=self._tmdb_overlay_path,

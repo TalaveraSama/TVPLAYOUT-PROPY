@@ -210,6 +210,7 @@ class OutputWorker(QThread):
     GRACE_SECONDS = 3.0
 
     def __init__(self, ffmpeg, items, url, resolution, fps, encoder, bitrate,
+                 video_profile="baseline", x264_preset="veryfast", keyframe_interval=2,
                  audio_preference="AUTO", subtitle_preference="OFF", subtitle_burn=False,
                  audio_bitrate=192, loop=True, start_index=0, start_offset=0.0, extra_args="", logo=None,
                  program_overlay=None, program_interval=1080.0, program_duration=15.0, protocol="",
@@ -223,6 +224,13 @@ class OutputWorker(QThread):
         self.resolution = resolution
         self.fps = fps
         self.encoder = encoder
+        self.video_profile = str(video_profile or "baseline").lower()
+        if self.video_profile not in {"baseline", "main", "high"}:
+            self.video_profile = "baseline"
+        self.x264_preset = str(x264_preset or "veryfast")
+        if self.x264_preset not in {"ultrafast", "superfast", "veryfast", "faster", "fast", "medium"}:
+            self.x264_preset = "veryfast"
+        self.keyframe_interval = max(1, int(keyframe_interval or 2))
         self.bitrate = int(bitrate)
         self.audio_bitrate = int(audio_bitrate)
         self.audio_preference = audio_preference
@@ -519,7 +527,7 @@ class OutputWorker(QThread):
             if local_srt:
                 vf.insert(0, f"subtitles='{_ffmpeg_filter_path(local_srt)}'")
                 self._cmd_has_subs = True
-        gop = int(round(float(self.fps) * 2))
+        gop = max(1, int(round(float(self.fps) * self.keyframe_interval)))
         # v24.0.2.35: -stats hace que FFmpeg reporte su posición real
         # ("time=") aunque el loglevel sea warning; el watcher de drift la
         # usa en lugar de estimar por reloj de pared.
@@ -603,8 +611,9 @@ class OutputWorker(QThread):
                 "-g", str(gop), "-keyint_min", str(gop), "-max_muxing_queue_size", "4096",
                 "-pix_fmt", "yuv420p", "-r", str(self.fps), "-fps_mode", "cfr", "-avoid_negative_ts", "make_zero"]
         if codec == "libx264":
-            cmd += ["-preset", "veryfast", "-profile:v", "high", "-bf", "2", "-sc_threshold", "0",
-                    "-x264-params", "nal-hrd=cbr:force-cfr=1"]
+            cmd += ["-preset", self.x264_preset, "-profile:v", self.video_profile,
+                    "-bf", "0" if self.video_profile == "baseline" else "2", "-sc_threshold", "0",
+                    "-x264-params", "nal-hrd=cbr:force-cfr=1:scenecut=0"]
         elif codec == "h264_nvenc":
             cmd += ["-preset", "p4", "-tune", "ll", "-rc", "cbr", "-profile:v", "high", "-bf", "2"]
         elif codec == "h264_qsv":
@@ -669,7 +678,7 @@ class OutputWorker(QThread):
             "format=yuv420p"
         ]
 
-        gop = int(round(float(self.fps) * 2))
+        gop = max(1, int(round(float(self.fps) * self.keyframe_interval)))
         cmd = [
             self.ffmpeg, "-hide_banner", "-loglevel", "warning", "-stats", "-nostdin",
             "-hwaccel", "none", "-thread_queue_size", "4096", "-f", "concat", "-safe", "0", "-re", "-i", concat_manifest_path
@@ -725,7 +734,8 @@ class OutputWorker(QThread):
             "-pix_fmt", "yuv420p", "-r", str(self.fps), "-fps_mode", "cfr", "-avoid_negative_ts", "make_zero"
         ]
         if codec == "libx264":
-            cmd += ["-preset", "veryfast", "-profile:v", "high", "-bf", "2",
+            cmd += ["-preset", self.x264_preset, "-profile:v", self.video_profile,
+                    "-bf", "0" if self.video_profile == "baseline" else "2",
                     "-x264-params", "nal-hrd=cbr:force-cfr=1:scenecut=0"]
         elif codec == "h264_nvenc":
             cmd += ["-preset", "p4", "-tune", "ll", "-rc", "cbr", "-profile:v", "high", "-bf", "2"]
@@ -1468,6 +1478,7 @@ class MultiOutputManager(QObject):
     def __init__(self, ffmpeg, profiles, items, resolution, fps, encoder, bitrate,
                  audio_preference="AUTO", subtitle_preference="OFF", subtitle_burn=False,
                  audio_bitrate=192, loop=True, start_index=0, start_offset=0.0,
+                 video_profile="baseline", x264_preset="veryfast", keyframe_interval=2,
                  extra_args="", logo=None, program_overlay=None, program_interval=1080.0,
                  program_duration=15.0, ndi_ffmpeg=None, ndi_source=None,
                  monitor_feed_url="", externally_controlled=False,
@@ -1483,6 +1494,8 @@ class MultiOutputManager(QObject):
         self.current_item = (self.items[int(start_index)]
                              if 0 <= int(start_index or 0) < len(self.items) else None)
         self.common = dict(resolution=resolution, fps=fps, encoder=encoder, bitrate=bitrate,
+                           video_profile=video_profile, x264_preset=x264_preset,
+                           keyframe_interval=keyframe_interval,
                            audio_preference=audio_preference, subtitle_preference=subtitle_preference,
                            subtitle_burn=subtitle_burn, audio_bitrate=audio_bitrate, loop=loop,
                            start_index=start_index, start_offset=start_offset, extra_args=extra_args, logo=logo,
