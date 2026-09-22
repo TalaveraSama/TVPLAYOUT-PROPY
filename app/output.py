@@ -554,7 +554,13 @@ class OutputWorker(QThread):
             overlay_list.append(("music", music, music_expr))
 
         for item_op in overlay_list:
-            cmd += ["-loop", "1", "-framerate", "1", "-i", item_op[1]]
+            # Un MOV/WEBM con canal alfa se reproduce en bucle como vídeo.
+            # -loop/-framerate sólo son opciones del demuxer de imágenes y
+            # hacen fallar algunos builds de FFmpeg cuando el logo es MOV.
+            if item_op[0] == "logo" and os.path.splitext(item_op[1])[1].lower() in {".mov", ".webm", ".mkv", ".avi", ".mp4"}:
+                cmd += ["-stream_loop", "-1", "-i", item_op[1]]
+            else:
+                cmd += ["-loop", "1", "-framerate", "1", "-i", item_op[1]]
 
         if overlay_list:
             filters = [f"[0:v]{','.join(vf)}[base]"]
@@ -668,7 +674,13 @@ class OutputWorker(QThread):
             overlay_list.append(("music", music, "1"))
 
         for item_op in overlay_list:
-            cmd += ["-loop", "1", "-framerate", "1", "-i", item_op[1]]
+            # Un MOV/WEBM con canal alfa se reproduce en bucle como vídeo.
+            # -loop/-framerate sólo son opciones del demuxer de imágenes y
+            # hacen fallar algunos builds de FFmpeg cuando el logo es MOV.
+            if item_op[0] == "logo" and os.path.splitext(item_op[1])[1].lower() in {".mov", ".webm", ".mkv", ".avi", ".mp4"}:
+                cmd += ["-stream_loop", "-1", "-i", item_op[1]]
+            else:
+                cmd += ["-loop", "1", "-framerate", "1", "-i", item_op[1]]
 
         amap = "0:a:0?"
         if overlay_list:

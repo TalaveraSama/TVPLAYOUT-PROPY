@@ -10,6 +10,10 @@ on:
       - arena/01a0c6ab-tvplayout-propy
     paths:
       - .github/workflows/release-windows.yml
+      - app/**
+      - installer/**
+      - main.py
+      - requirements.txt
 
 permissions:
   contents: write

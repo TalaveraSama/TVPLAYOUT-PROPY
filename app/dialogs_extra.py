@@ -120,7 +120,7 @@ class LogoDialog(QDialog):
         saved_logo = s.get("logo_path", "")
         default_logo = str(DEFAULT_LOGO_PATH) if DEFAULT_LOGO_PATH else ""
         self.path = QLineEdit(saved_logo or default_logo)
-        self.path.setPlaceholderText("PNG con transparencia recomendado")
+        self.path.setPlaceholderText("PNG o MOV/WebM con canal alfa")
         row.addWidget(self.path, 1)
         b = QPushButton("…")
         b.clicked.connect(self._browse)
@@ -174,7 +174,10 @@ class LogoDialog(QDialog):
         self._update_preview()
 
     def _browse(self):
-        p, _ = QFileDialog.getOpenFileName(self, "Logo", str(ROOT), "Imágenes (*.png *.jpg *.jpeg *.bmp *.gif)")
+        p, _ = QFileDialog.getOpenFileName(
+            self, "Logo", str(ROOT),
+            "Logo con alfa (*.png *.mov *.webm *.mkv *.mp4);;Imágenes (*.png *.jpg *.jpeg *.bmp *.gif);;Todos (*.*)"
+        )
         if p:
             self.path.setText(p)
 
