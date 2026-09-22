@@ -22,7 +22,7 @@ ROOT = _runtime_root()
 # V25 estrena una identidad propia. Estos nombres también centralizan el
 # empaquetado para que la UI, las salidas y el instalador no vuelvan a divergir.
 APP_NAME = "Nexora Air"
-APP_VERSION = "V25.4.0"
+APP_VERSION = "V25.5.0"
 APP_SLUG = "NexoraAir"
 APP_ID = "io.nexora.air"
 IS_WINDOWS = os.name == "nt"
