@@ -244,6 +244,8 @@ class MainWindow(QMainWindow):
         else:
             self.player = PyAVPlayer(self.video, MPV_PATH, self, vlc_path=VLC_PATH)
         self.player.status.connect(self._status)
+        if hasattr(self.player, "process_died"):
+            self.player.process_died.connect(self._monitor_process_died)
         self.player.levels.connect(self.vu.set_levels)
         self.ctrl = PlayoutController(self.db, self.player, self)
         self.ctrl.items_changed.connect(self.rebuild_grid)
@@ -325,6 +327,32 @@ class MainWindow(QMainWindow):
                      f"Biblioteca: {self.db.count_media()} medios")
         log.info("%s %s iniciado con PyAV/libav", APP_NAME, APP_VERSION)
         QTimer.singleShot(800, self._autostart)
+
+    def _monitor_process_died(self):
+        """Recupera el monitor MPV sin reiniciar el playout ni RTMP.
+
+        Un reemplazo de playlist o un cierre transitorio de la ventana hija no
+        debe dejar el monitor muerto ni provocar otra selección de evento.
+        """
+        if getattr(self, "_monitor_restart_pending", False):
+            return
+        self._monitor_restart_pending = True
+
+        def restart():
+            self._monitor_restart_pending = False
+            if self._locked or not hasattr(self.player, "start"):
+                return
+            try:
+                if not getattr(self.player, "running", False):
+                    self.player.start()
+                    if getattr(self.ctrl, "onair", -1) >= 0:
+                        current = getattr(self.ctrl, "current", None) or {}
+                        if current.get("path"):
+                            self.player.play(current.get("path"), start=float(getattr(self.ctrl, "elapsed", 0.0) or 0.0))
+            except Exception as exc:  # noqa: BLE001
+                log.warning("No se pudo recuperar el monitor: %s", exc)
+
+        QTimer.singleShot(750, restart)
 
     # ================================================================== UI
     def _build(self):

@@ -1,4 +1,4 @@
-# Empaquetar Nexora Air V25.3.0 para Windows
+# Empaquetar Nexora Air V24.3.9 para Windows
 
 ## Instalador offline todo-en-uno (recomendado)
 
@@ -17,13 +17,13 @@ installer\BUILD_INSTALLER.bat
 La salida es:
 
 ```text
-dist/Setup_NexoraAir_V25.3.0.exe
-dist/Setup_NexoraAir_V25.3.0.exe.sha256
+dist/Setup_NexoraAir_V24.3.9.exe
+dist/Setup_NexoraAir_V24.3.9.exe.sha256
 ```
 
 El Setup contiene, sin instalaciones manuales en el equipo destino:
 
-- Nexora Air V25.3.0 y los launchers `NexoraAir.exe` / `NexoraAir-Console.exe`.
+- Nexora Air V24.3.9 y los launchers `NexoraAir.exe` / `NexoraAir-Console.exe`.
 - Python 3.13.2 embebido.
 - PySide6 6.8.3 y Shiboken.
 - PyAV 16 con sus bibliotecas multimedia.

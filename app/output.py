@@ -30,7 +30,7 @@ CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 BELOW_NORMAL_PRIORITY = getattr(subprocess, "BELOW_NORMAL_PRIORITY_CLASS", 0)
 
 # v24.0.2.35: línea de progreso de FFmpeg (-stats): "time=HH:MM:SS.ms".
-_PROGRESS_RE = re.compile(r"time=(\d+):(\d+):(\d+(?:\.\d+)?)")
+_PROGRESS_RE = re.compile(r"time=([+-]?\d+):([+-]?\d+):([+-]?\d+(?:\.\d+)?)")
 
 
 def logo_safe_area_43(width, height):
@@ -502,7 +502,7 @@ class OutputWorker(QThread):
         subtitle_burn = self.subtitle_burn or str(subtitle_preference or "OFF").upper() != "OFF"
         sid = pick_subtitle(tracks, subtitle_preference) if subtitle_burn else -1
 
-        vf = [f"scale={w}:{h}:force_original_aspect_ratio=decrease", f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2",
+        vf = ["setpts=PTS-STARTPTS", f"scale={w}:{h}:force_original_aspect_ratio=decrease", f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2",
               f"fps={self.fps}", "format=yuv420p"]
         # v24.0.2.38: subtítulos quemados desde un SRT LOCAL. El filtro con el
         # archivo de vídeo original (red) detenía la señal sin error alguno.
@@ -574,7 +574,7 @@ class OutputWorker(QThread):
                     op = max(0.05, min(1.0, int(logo.get("opacity", 90)) / 100))
                     m = int(logo.get("margin", 48))
                     xe, ye = logo_overlay_position(logo.get("position", "arriba-derecha"), w, h, m)
-                    filters.append(f"[{inp_idx}:v]scale={lw}:-1,format=rgba,colorchannelmixer=aa={op:.2f}[logo]")
+                    filters.append(f"[{inp_idx}:v]setpts=PTS-STARTPTS,scale={lw}:-1,format=rgba,colorchannelmixer=aa={op:.2f}[logo]")
                     filters.append(f"[{stage}][logo]overlay={xe.format(m=m)}:{ye.format(m=m)}:shortest=1:format=auto[withlogo]")
                     stage = "withlogo"
                 elif label == "program":
@@ -593,7 +593,7 @@ class OutputWorker(QThread):
         cmd += ["-sn", "-dn", "-map_metadata", "-1", "-map_chapters", "-1", "-c:v", codec,
                 "-b:v", f"{self.bitrate}k", "-maxrate", f"{self.bitrate}k", "-bufsize", f"{self.bitrate * 2}k",
                 "-g", str(gop), "-keyint_min", str(gop),
-                "-pix_fmt", "yuv420p", "-r", str(self.fps)]
+                "-pix_fmt", "yuv420p", "-r", str(self.fps), "-fps_mode", "cfr", "-avoid_negative_ts", "make_zero"]
         if codec == "libx264":
             cmd += ["-preset", "veryfast", "-profile:v", "high", "-bf", "2", "-sc_threshold", "0",
                     "-x264-params", "nal-hrd=cbr:force-cfr=1"]
@@ -652,6 +652,7 @@ class OutputWorker(QThread):
         label, codec = self._resolve_encoder(self.encoder)
 
         vf = [
+            "setpts=PTS-STARTPTS",
             f"scale={w}:{h}:force_original_aspect_ratio=decrease",
             f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2",
             f"fps={self.fps}",
@@ -695,7 +696,7 @@ class OutputWorker(QThread):
                     op = max(0.05, min(1.0, int(logo.get("opacity", 90)) / 100))
                     m = int(logo.get("margin", 48))
                     xe, ye = logo_overlay_position(logo.get("position", "arriba-derecha"), w, h, m)
-                    filters.append(f"[{inp_idx}:v]scale={lw}:-1,format=rgba,colorchannelmixer=aa={op:.2f}[logo]")
+                    filters.append(f"[{inp_idx}:v]setpts=PTS-STARTPTS,scale={lw}:-1,format=rgba,colorchannelmixer=aa={op:.2f}[logo]")
                     filters.append(f"[{stage}][logo]overlay={xe.format(m=m)}:{ye.format(m=m)}:shortest=1:format=auto[withlogo]")
                     stage = "withlogo"
                 elif lbl in ("program", "music"):
@@ -712,7 +713,7 @@ class OutputWorker(QThread):
             "-sn", "-dn", "-map_metadata", "-1", "-map_chapters", "-1", "-c:v", codec,
             "-b:v", f"{self.bitrate}k", "-maxrate", f"{self.bitrate}k", "-bufsize", f"{self.bitrate * 2}k",
             "-g", str(gop), "-keyint_min", str(gop),
-            "-pix_fmt", "yuv420p", "-r", str(self.fps)
+            "-pix_fmt", "yuv420p", "-r", str(self.fps), "-fps_mode", "cfr", "-avoid_negative_ts", "make_zero"
         ]
         if codec == "libx264":
             cmd += ["-preset", "veryfast", "-profile:v", "high", "-bf", "2",
@@ -1065,6 +1066,12 @@ class OutputWorker(QThread):
                                     + float(m.group(3)))
                         with self._lock:
                             if proc is not self.proc or clip_index != self._current_index:
+                                continue
+                            if out_time < 0:
+                                # Algunos builds AMF imprimen un timestamp
+                                # negativo antes del primer frame; no es una
+                                # posición válida ni debe disparar drift.
+                                log.debug("ffmpeg: timestamp inicial negativo ignorado: %s", line)
                                 continue
                             self._out_time = out_time
                             self._out_time_at = time.time()

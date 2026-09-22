@@ -1,4 +1,4 @@
-"""Pruebas de release de Nexora Air V25.3.0."""
+"""Pruebas de release de Nexora Air V24.3.9."""
 from __future__ import annotations
 
 import os
@@ -22,7 +22,7 @@ def test_identity_and_version_are_centralized():
     main = read("app", "main_window.py")
     spec = read("tvplayout.spec")
     assert 'APP_NAME = "Nexora Air"' in config
-    assert 'APP_VERSION = "V25.3.0"' in config
+    assert 'APP_VERSION = "V24.3.9"' in config
     assert 'APP_SLUG = "NexoraAir"' in config
     assert "setWindowTitle(f\"{APP_NAME} {APP_VERSION}" in main
     assert 'name="NexoraAir"' in spec
