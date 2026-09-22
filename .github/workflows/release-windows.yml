@@ -1,26 +1,33 @@
 name: Build Windows release installer
 
 on:
-  workflow_dispatch:
-  # Arena's GitHub integration cannot dispatch workflows through the API.
-  # This branch-scoped push trigger publishes the asset once; normal releases
-  # can use workflow_dispatch from the default branch.
+  # Disparo normal de una release: se publica el tag y el build adjunta el
+  # instalador a esa release. Sustituye al antiguo trigger por rama de sesión,
+  # que quedaba obsoleto en cuanto cambiaba la sesión de trabajo.
   push:
-    branches:
-      - arena/01a0c993-tvplayout-propy
-    paths:
-      - .github/workflows/release-windows.yml
-      - app/**
-      - installer/**
-      - main.py
-      - requirements.txt
+    tags:
+      - "v*"
+
+  # Disparo manual desde cualquier rama (por defecto la rama por defecto).
+  # Útil para reconstruir un instalador o para validar el workflow con
+  # dry_run=true sin tocar los adjuntos ya publicados.
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Compilar y verificar sin publicar el instalador en la release"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
 
+concurrency:
+  group: release-windows-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   build-and-publish:
-    name: Build and publish Nexora Air V25
+    name: Build and publish Nexora Air
     runs-on: windows-latest
     timeout-minutes: 60
 
@@ -47,10 +54,21 @@ jobs:
             throw "APP_VERSION no encontrada en app/config.py"
           }
           $v = $Matches[1]
+          $tag = $v.ToLower()
+
+          # Si el disparo vino de un tag, debe coincidir con app/config.py.
+          # Así se evita publicar el instalador de una versión en otra release.
+          if ('${{ github.ref_type }}' -eq 'tag') {
+            $pushed = '${{ github.ref_name }}'
+            if ($pushed -ne $tag) {
+              throw "El tag publicado ($pushed) no coincide con APP_VERSION de app/config.py ($v -> $tag). Sincroniza ambos antes de etiquetar."
+            }
+          }
+
           Add-Content -Path $env:GITHUB_OUTPUT -Value "version=$v"
-          Add-Content -Path $env:GITHUB_OUTPUT -Value "tag=$($v.ToLower())"
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "tag=$tag"
           Add-Content -Path $env:GITHUB_OUTPUT -Value "setup=Setup_NexoraAir_$v.exe"
-          Write-Host "Versión: $v • tag: $($v.ToLower())"
+          Write-Host "Versión: $v - tag: $tag"
 
       - name: Build offline Setup
         shell: powershell
@@ -69,9 +87,37 @@ jobs:
           if ($actual -ne $expected) {
             throw "SHA256 no coincide: $actual != $expected"
           }
-          Write-Host "SHA256 verificado: $actual"
+          $mb = [math]::Round((Get-Item $setup).Length / 1MB, 1)
+          Write-Host "SHA256 verificado: $actual ($mb MB)"
+
+      - name: Ensure GitHub release exists
+        if: ${{ inputs.dry_run != true }}
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "${{ steps.ver.outputs.tag }}"
+          gh release view $tag --repo $env:GITHUB_REPOSITORY *> $null
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host "La release $tag ya existe."
+            exit 0
+          }
+
+          # Un tag recién publicado todavía no tiene release: se crea aquí para
+          # que el adjunto no dependa de haberla creado a mano antes del build.
+          $notes = "RELEASE_NOTES/$tag.md"
+          Write-Host "Creando la release $tag..."
+          if (Test-Path $notes) {
+            gh release create $tag --repo $env:GITHUB_REPOSITORY `
+              --title "Nexora Air ${{ steps.ver.outputs.version }}" --notes-file $notes
+          } else {
+            gh release create $tag --repo $env:GITHUB_REPOSITORY `
+              --title "Nexora Air ${{ steps.ver.outputs.version }}" --generate-notes
+          }
+          if ($LASTEXITCODE -ne 0) { throw "No se pudo crear la release $tag" }
 
       - name: Attach installer to GitHub release
+        if: ${{ inputs.dry_run != true }}
         shell: powershell
         env:
           GH_TOKEN: ${{ github.token }}
@@ -80,3 +126,17 @@ jobs:
             dist/${{ steps.ver.outputs.setup }} `
             dist/${{ steps.ver.outputs.setup }}.sha256 `
             --clobber --repo $env:GITHUB_REPOSITORY
+          if ($LASTEXITCODE -ne 0) { throw "No se pudo adjuntar el instalador" }
+
+      - name: Summary
+        if: always()
+        shell: powershell
+        run: |
+          $tag = "${{ steps.ver.outputs.tag }}"
+          $setup = "${{ steps.ver.outputs.setup }}"
+          if ('${{ inputs.dry_run }}' -eq 'true') {
+            $line = "Dry run: instalador **$setup** compilado y verificado, sin publicar."
+          } else {
+            $line = "Instalador **$setup** publicado en la release [``$tag``](https://github.com/$env:GITHUB_REPOSITORY/releases/tag/$tag)."
+          }
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $line
