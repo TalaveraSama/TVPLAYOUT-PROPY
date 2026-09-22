@@ -1515,6 +1515,7 @@ class MultiOutputManager(QObject):
         self.workers = []
         self.master_worker = None
         self._ended_workers = set()
+        self._next_provider = None
         self.ndi_senders = []
         self._ndi_connections = []
 
@@ -1533,8 +1534,17 @@ class MultiOutputManager(QObject):
         target = str(profile.get("target") or profile.get("url") or "").strip()
         name = str(profile.get("name") or protocol)
         binary = self.ndi_ffmpeg if protocol == "NDI" else self.ffmpeg
-        worker = BroadcastEngine(binary, self.items, target, protocol=protocol,
-                                  monitor_feed_url=monitor_feed_url, **self.common)
+        if protocol != "NDI" and self.common.get("seamless_concat"):
+            # v26: motor continuo estilo OBS — un consumidor persistente por
+            # destino (la conexión RTMP nunca se reinicia) alimentado por
+            # productores de spool. BroadcastEngine queda como camino legacy
+            # (un FFmpeg por clip) para output_seamless=false.
+            from .feed_engine import ContinuousOutputEngine
+            worker = ContinuousOutputEngine(binary, self.items, target, protocol=protocol,
+                                             monitor_feed_url=monitor_feed_url, **self.common)
+        else:
+            worker = BroadcastEngine(binary, self.items, target, protocol=protocol,
+                                     monitor_feed_url=monitor_feed_url, **self.common)
         worker._profile_name = name
         worker.state.connect(lambda ok, msg, n=name: self._state_from_worker(ok, msg, n))
         worker.log.connect(lambda msg, n=name: self.log.emit(f"[{n}] {msg}"))
@@ -1585,6 +1595,10 @@ class MultiOutputManager(QObject):
             feed = self.monitor_feed_url if (self.monitor_feed_url and not monitor_assigned) else ""
             worker = self._make_worker(profile, feed)
             monitor_assigned = monitor_assigned or bool(feed)
+            if self._next_provider is not None:
+                setter = getattr(worker, "set_next_provider", None)
+                if callable(setter):
+                    setter(self._next_provider)
             self.workers.append(worker)
             if self.master_worker is None:
                 # El primer destino FFmpeg activo es la referencia canónica.
@@ -1672,6 +1686,21 @@ class MultiOutputManager(QObject):
             self.common["subtitle_burn"] = True
         for worker in self.workers:
             worker.set_track_preferences(audio_preference, subtitle_preference)
+
+    def set_next_provider(self, provider):
+        """v26: instala el proveedor de «¿qué sigue?» del controlador master.
+
+        Sólo lo usan los motores continuos (seamless): les permite
+        pre-producir el siguiente evento (identificadores, tandas, loop) para
+        que las transiciones sean invisibles y sin cortes de conexión. Se
+        guarda en el manager porque ``start()`` recrea los workers: los
+        motores creados después lo reciben igual.
+        """
+        self._next_provider = provider
+        for worker in self.workers:
+            setter = getattr(worker, "set_next_provider", None)
+            if callable(setter):
+                setter(provider)
 
     def sync_items(self, items, current_index, force_jump=False, start_offset=0.0):
         self.items = items or []

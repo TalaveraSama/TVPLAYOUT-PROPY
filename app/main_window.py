@@ -2253,6 +2253,10 @@ class MainWindow(QMainWindow):
         self.output.master_progress.connect(self.ctrl.follow_output_position)
         self.output.master_finished.connect(self.ctrl.output_master_finished)
         self.output.ended.connect(self._rtmp_finished)
+        # v26: el motor continuo (dos mundos) pregunta «¿qué sigue?» con
+        # anticipación para pre-producir el siguiente spool y empalmar sin
+        # cortar la conexión RTMP. Espeja la decisión del controlador.
+        self.output.set_next_provider(self._output_next_speculation)
         self.output.start()
         self._set_rtmp_chip("CONECTANDO…")
         self.rtmp_chip.set_active(True)
@@ -2368,6 +2372,68 @@ class MainWindow(QMainWindow):
         # (por error o stop externo), no forzar cambio de radio — el usuario
         # puede reintentar. Pero si terminó por stop nuestro, dejamos el
         # modo como está.
+
+    def _output_next_speculation(self, current_index):
+        """v26: espejo estático de la decisión «¿qué sigue?» del controlador.
+
+        Lo consulta el motor continuo (dos mundos) LEAD segundos antes de que
+        termine el evento actual, para pre-producir el siguiente spool y que
+        la transición sea un empalme invisible: si la especulación acierta,
+        la bomba empalma los spools sin tocar la conexión RTMP; si falla,
+        conmuta igual (con imagen, gracias al «zombi»), pero nunca desconecta.
+        """
+        ctrl = self.ctrl
+        try:
+            if not ctrl.is_on_air or ctrl.paused or ctrl.onair < 0:
+                return None
+            if ctrl.onair != current_index:
+                # el motor pregunta por un evento distinto del que lleva el
+                # controlador (p. ej. en medio de una conmutación): no especular
+                return None
+            cur = ctrl.current
+            if cur is None:
+                return None
+            # Identificador de salida tras Películas/Música (mismo criterio que
+            # _on_ended). Con selección aleatoria no se puede acertar: no especular.
+            if (ctrl.identifiers_enabled and ctrl._identifier_eligible(cur)
+                    and str(getattr(ctrl, "identifier_selection", "random")).lower() != "random"):
+                path = ctrl._identifier_path("out")
+                if path:
+                    cadence = str(getattr(ctrl, "identifier_cadence", "every") or "every")
+                    if cadence == "every":
+                        every = 1
+                    elif cadence.startswith("random_"):
+                        try:
+                            every = int(cadence.split("_", 1)[1])
+                        except (TypeError, ValueError):
+                            every = 1
+                    else:
+                        try:
+                            every = max(1, int(getattr(ctrl, "identifier_every_n", 1) or 1))
+                        except (TypeError, ValueError):
+                            every = 1
+                    # _on_ended incrementa el contador antes de decidir: anticipar +1
+                    count = int(getattr(ctrl, "_identifier_count", 0))
+                    if (count + 1) % every == 0:
+                        return (current_index + 1, {
+                            "path": path,
+                            "title": "Identificador de salida",
+                            "category": "Identificador",
+                            "note": "identificador temporal",
+                            "_transient_identifier": True,
+                        })
+            if ctrl.mode != "auto":
+                # Manual: el operador decide el siguiente (slate si no actúa)
+                return None
+            nxt = ctrl.next_index()
+            if nxt is None:
+                return None
+            item = ctrl.items[nxt]
+            if not item.get("path"):
+                return None
+            return (nxt, item)
+        except Exception:  # noqa: BLE001
+            return None
 
     def _rtmp_follow(self, index, _item):
         """La salida IP sigue al evento; los perfiles activos arrancan

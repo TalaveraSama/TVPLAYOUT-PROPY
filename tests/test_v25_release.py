@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -21,8 +22,17 @@ def test_identity_and_version_are_centralized():
     config = read("app", "config.py")
     main = read("app", "main_window.py")
     spec = read("tvplayout.spec")
+    readme = read("README.md")
     assert 'APP_NAME = "Nexora Air"' in config
-    assert 'APP_VERSION = "V24.3.9"' in config
+    assert "APP_VERSION = \"" in config
+    # la versión de config.py es la única fuente de verdad: README y notas
+    # deben referirse a la MISMA versión (ninguna otra hardcodeada)
+    m = re.search(r'APP_VERSION = "(V[\d.]+)"', config)
+    assert m, "config.py no define APP_VERSION con formato Vx.y.z"
+    version = m.group(1)
+    assert f"Nexora Air {version}" in readme
+    assert f"Setup_NexoraAir_{version}.exe" in readme
+    assert not re.search(r'APP_VERSION = "V[\d.]+"', readme)
     assert 'APP_SLUG = "NexoraAir"' in config
     assert "setWindowTitle(f\"{APP_NAME} {APP_VERSION}" in main
     assert 'name="NexoraAir"' in spec

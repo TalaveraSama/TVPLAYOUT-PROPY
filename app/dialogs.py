@@ -905,7 +905,7 @@ class SettingsDialog(BaseDialog):
         self.extra.setPlaceholderText("argumentos extra de FFmpeg (avanzado)")
         self.autostart_rtmp = QCheckBox("Iniciar salidas IP automáticamente al abrir la aplicación si hay playlist")
         self.autostart_rtmp.setChecked(bool(self.settings.get("rtmp_autostart", False)))
-        self.output_seamless = QCheckBox("Emisión continua sin cortes (Concat Demuxer / Single Process)")
+        self.output_seamless = QCheckBox("Emisión continua sin cortes (motor OBS: consumidor RTMP persistente + spools)")
         self.output_seamless.setChecked(bool(self.settings.get("output_seamless", True)))
         self.output_fallback = QComboBox()
         self.output_fallback.addItem("Barras de color SMPTE (tono suave 1kHz)", "bars")
