@@ -4,7 +4,7 @@ cd /d "%~dp0.."
 
 echo.
 echo ============================================================
-echo   NEXORA AIR V25.3.2 - INSTALADOR TODO-EN-UNO WINDOWS X64
+echo   NEXORA AIR V25.5.0 - INSTALADOR TODO-EN-UNO WINDOWS X64
 echo ============================================================
 echo.
 
@@ -29,7 +29,7 @@ if errorlevel 1 (
 )
 
 echo.
-echo [OK] dist\Setup_NexoraAir_V25.3.2.exe
+echo [OK] dist\Setup_NexoraAir_V25.5.0.exe
 echo      Runtime Python, PySide6, PyAV y FFmpeg incluidos.
 echo      Migra automaticamente los datos de TVPlayout PRO.
 endlocal

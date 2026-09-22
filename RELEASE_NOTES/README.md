@@ -82,3 +82,5 @@ línea (v22.2, v24.0.0, v24.0.1, v24.0.2).
 | `v25.1.0` | Nexora Air V25.1.0 — Sonido Profesional, Titulación Musical y Transmisiones en Vivo |
 | `v24.3.9` | Nexora Air V24.3.9 — Sincronización Playout, Monitoreo MPV y Titulación Musical |
 | `v25.3.2` | Nexora Air V25.3.2 — BroadcastEngine persistente y continuidad RTMP |
+| `v25.4.0` | Nexora Air V25.4.0 — Motor de emisión continua estilo OBS (cero cortes TCP) |
+| `v25.5.0` | Nexora Air V25.5.0 — Cobertura de pruebas de `fmt_tc` |

@@ -7,7 +7,7 @@ on:
   # can use workflow_dispatch from the default branch.
   push:
     branches:
-      - arena/01a0c7d1-tvplayout-propy
+      - arena/01a0c993-tvplayout-propy
     paths:
       - .github/workflows/release-windows.yml
       - app/**
