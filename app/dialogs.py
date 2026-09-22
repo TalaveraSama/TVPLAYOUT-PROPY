@@ -257,7 +257,7 @@ class PlaylistManagerDialog(BaseDialog):
                             if row:
                                 d["path"] = resolved_path
                             base = make_item(row) if row else make_item(dict(d, path=resolved_path))
-                            if row and not row["metadata_ok"] and resolved_path not in probe_paths:
+                            if row and (not row["metadata_ok"] or not float(row["duration"] or 0)) and resolved_path not in probe_paths:
                                 probe_paths.append(resolved_path)
                             base["fixed_time"] = d.get("fixed_time", "") or ""
                             base["mark_in"] = max(0.0, float(d.get("mark_in") or 0))
@@ -309,7 +309,7 @@ class PlaylistManagerDialog(BaseDialog):
                             row, resolved_path = self._library_row_for_playlist_path(line, playlist_dir, by_path, by_name)
                             if row:
                                 it = make_item(row)
-                                if not row["metadata_ok"] and resolved_path not in probe_paths:
+                                if (not row["metadata_ok"] or not float(row["duration"] or 0)) and resolved_path not in probe_paths:
                                     probe_paths.append(resolved_path)
                             else:
                                 item_cat = category or "Otros"
@@ -326,6 +326,13 @@ class PlaylistManagerDialog(BaseDialog):
                                     "duration": m3u_duration,
                                     "source_duration": m3u_duration,
                                 })
+                                # Si la playlist apunta a un archivo real que
+                                # aún no está en la biblioteca, registrarlo para
+                                # que ffprobe lo complete sin bloquear el aire.
+                                if os.path.isfile(resolved_path):
+                                    self.db.upsert_media(resolved_path, it["title"], item_cat)
+                                    if resolved_path not in probe_paths:
+                                        probe_paths.append(resolved_path)
                             it["fixed_time"] = fixed
                             it["mark_in"] = mark_in
                             it["mark_out"] = mark_out

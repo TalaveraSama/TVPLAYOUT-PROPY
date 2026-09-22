@@ -468,8 +468,16 @@ class PlayoutController(QObject):
             if not (0 <= self.onair < len(self.items)):
                 self._clear_live()
                 return
+            # Los bumpers de entrada/salida son transitorios. Nunca guardar
+            # su índice/posición como punto de reanudación: al reiniciar ya no
+            # existen en la playlist y podían provocar offsets imposibles
+            # (por ejemplo 363 s dentro de un identificador de 8 s).
+            current = self.items[self.onair]
+            if current.get("_transient_identifier"):
+                self._clear_live()
+                return
             self.db.set_setting("live_onair", int(self.onair))
-            self.db.set_setting("live_path", str(self.items[self.onair].get("path") or ""))
+            self.db.set_setting("live_path", str(current.get("path") or ""))
             self.db.set_setting("live_pos", round(float(self._pos or 0.0), 3))
             self.db.set_setting("live_at", datetime.now().isoformat(sep=" ", timespec="seconds"))
         except Exception as exc:  # noqa: BLE001

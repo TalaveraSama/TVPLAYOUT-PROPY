@@ -2141,6 +2141,21 @@ class MainWindow(QMainWindow):
         # self.player._time directamente, que podía quedar en 0 si mpv no
         # emitía property-change, y generaba un loop de drift infinito.
         mpv_time = float(self.ctrl.elapsed or 0.0)
+        # Nunca iniciar FFmpeg dentro de un bumper temporal ni con el offset
+        # heredado de otro evento. Un identificador dura unos segundos y no
+        # puede recibir, por ejemplo, un seek de 363 s de la película anterior.
+        current_item = self.ctrl.current
+        if current_item and current_item.get("_transient_identifier"):
+            mpv_time = 0.0
+        else:
+            try:
+                current_duration = float(self.ctrl.duration or 0.0)
+                if current_duration > 0:
+                    mpv_time = min(max(0.0, mpv_time), max(0.0, current_duration - 0.25))
+                else:
+                    mpv_time = max(0.0, mpv_time)
+            except (TypeError, ValueError):
+                mpv_time = 0.0
         monitor_feed_url = ""
         if str(s.get("monitor_mode", "pyav")) == "program_feed":
             candidate_feed = self._program_monitor_url()
