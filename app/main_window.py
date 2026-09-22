@@ -87,6 +87,7 @@ DEFAULT_SETTINGS = {
     "music_audd_api_token": "", "music_acoustid_api_key": "",
     "music_acrcloud_host": "", "music_acrcloud_key": "", "music_acrcloud_secret": "",
     "monitor_mode": "pyav", "monitor_player": "VLC", "monitor_player_path": "", "monitor_feed_port": 39000,
+    "output_buffer_seconds": 5.0,
     # v24.0.2.37: NDI deshabilitado temporalmente a petición del operador
     # (el VPS no tiene el NDI Runtime y el reintento llenaba el log). Se
     # reactiva con la casilla de Ajustes.
@@ -2233,6 +2234,7 @@ class MainWindow(QMainWindow):
                                           music_outro_duration=float(s.get("music_titling_outro_duration", 10.0)),
                                           fallback_mode=str(s.get("output_fallback", "bars")),
                                           seamless_concat=bool(s.get("output_seamless", True)),
+                                          output_buffer_seconds=float(s.get("output_buffer_seconds", 5.0)),
                                           monitor_feed_url=monitor_feed_url)
         # V25: en modo Reloj, FFmpeg deja de «seguir» a un segundo reloj y se
         # convierte en el player master. Su progreso y EOF gobiernan la lista.

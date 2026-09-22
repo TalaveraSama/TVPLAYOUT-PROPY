@@ -215,7 +215,7 @@ class OutputWorker(QThread):
                  program_overlay=None, program_interval=1080.0, program_duration=15.0, protocol="",
                  monitor_feed_url="", externally_controlled=False, audio_processor_config=None,
                  music_overlay=None, music_intro_start=30.0, music_intro_duration=12.0, music_outro_duration=10.0,
-                 fallback_mode="bars", seamless_concat=True):
+                 fallback_mode="bars", seamless_concat=True, output_buffer_seconds=5.0):
         super().__init__()
         self.ffmpeg = ffmpeg
         self.items = self._norm_items(items)
@@ -244,6 +244,9 @@ class OutputWorker(QThread):
         self.music_outro_duration = max(1.0, float(music_outro_duration or 10.0))
         self.fallback_mode = str(fallback_mode or "bars")
         self.seamless_concat = bool(seamless_concat)
+        # Reserva lógica de continuidad para absorber la apertura del siguiente
+        # archivo y pequeñas variaciones de red; no reinicia el socket RTMP.
+        self.output_buffer_seconds = max(0.0, float(output_buffer_seconds or 5.0))
         # Feed local MPEG-TS opcional: contiene exactamente el vídeo/audio
         # ya procesado que se envía al destino, incluido el subtítulo quemado.
         # Un reproductor externo puede usarlo como monitor real del programa.
@@ -597,7 +600,7 @@ class OutputWorker(QThread):
             cmd += ["-map", "0:v:0", "-map", amap, "-vf", ",".join(vf)]
         cmd += ["-sn", "-dn", "-map_metadata", "-1", "-map_chapters", "-1", "-c:v", codec,
                 "-b:v", f"{self.bitrate}k", "-maxrate", f"{self.bitrate}k", "-bufsize", f"{self.bitrate * 2}k",
-                "-g", str(gop), "-keyint_min", str(gop),
+                "-g", str(gop), "-keyint_min", str(gop), "-max_muxing_queue_size", "4096",
                 "-pix_fmt", "yuv420p", "-r", str(self.fps), "-fps_mode", "cfr", "-avoid_negative_ts", "make_zero"]
         if codec == "libx264":
             cmd += ["-preset", "veryfast", "-profile:v", "high", "-bf", "2", "-sc_threshold", "0",
@@ -616,6 +619,8 @@ class OutputWorker(QThread):
             cmd += ["-t", f"{remaining_duration:.3f}"]
         if self.extra_args.strip():
             cmd += self.extra_args.split()
+        # Mantener paquetes en el buffer de IO reduce los vaciados durante una transición; el encoder y el socket permanecen abiertos.
+        cmd += ["-flush_packets", "0", "-max_interleave_delta", str(int(self.output_buffer_seconds * 1000000))]
         if self.protocol == "RTMP" or low.startswith(("rtmp://", "rtmps://")):
             if self.monitor_feed_url:
                 # Tee después de los filtros/encoder: el monitor externo ve
@@ -667,20 +672,18 @@ class OutputWorker(QThread):
         gop = int(round(float(self.fps) * 2))
         cmd = [
             self.ffmpeg, "-hide_banner", "-loglevel", "warning", "-stats", "-nostdin",
-            "-hwaccel", "none", "-f", "concat", "-safe", "0", "-re", "-i", concat_manifest_path
+            "-hwaccel", "none", "-thread_queue_size", "4096", "-f", "concat", "-safe", "0", "-re", "-i", concat_manifest_path
         ]
 
         logo = (self.logo if (self.logo and os.path.isfile(self.logo.get("path", ""))) else None)
-        program = (self.program_overlay if (self.program_overlay and os.path.isfile(self.program_overlay)) else None)
-        music = (self.music_overlay if (self.music_overlay and os.path.isfile(self.music_overlay)) else None)
-
+        # En una sesión concat persistente el título musical y la tarjeta TMDB
+        # no pueden cambiar de imagen sin reabrir el filtro. Incluirlos aquí
+        # dejaba pegado el primer título durante toda la tanda. El logo es
+        # global y sí puede permanecer; las capas dinámicas se aplican en el
+        # camino controlado por evento.
         overlay_list = []
         if logo:
             overlay_list.append(("logo", logo["path"], None))
-        if program:
-            overlay_list.append(("program", program, "1"))
-        if music:
-            overlay_list.append(("music", music, "1"))
 
         for item_op in overlay_list:
             # Un MOV/WEBM con canal alfa se reproduce en bucle como vídeo.
@@ -718,7 +721,7 @@ class OutputWorker(QThread):
         cmd += [
             "-sn", "-dn", "-map_metadata", "-1", "-map_chapters", "-1", "-c:v", codec,
             "-b:v", f"{self.bitrate}k", "-maxrate", f"{self.bitrate}k", "-bufsize", f"{self.bitrate * 2}k",
-            "-g", str(gop), "-keyint_min", str(gop),
+            "-g", str(gop), "-keyint_min", str(gop), "-max_muxing_queue_size", "4096",
             "-pix_fmt", "yuv420p", "-r", str(self.fps), "-fps_mode", "cfr", "-avoid_negative_ts", "make_zero"
         ]
         if codec == "libx264":
@@ -737,6 +740,8 @@ class OutputWorker(QThread):
         if self.extra_args.strip():
             cmd += self.extra_args.split()
 
+        # Mantener paquetes en el buffer de IO reduce los vaciados durante una transición; el encoder y el socket permanecen abiertos.
+        cmd += ["-flush_packets", "0", "-max_interleave_delta", str(int(self.output_buffer_seconds * 1000000))]
         if self.protocol == "RTMP" or low.startswith(("rtmp://", "rtmps://")):
             if self.monitor_feed_url:
                 tee = (f"[f=flv:onfail=ignore]{self.url}|"
@@ -774,7 +779,7 @@ class OutputWorker(QThread):
             # normales de on_start sólo actualizan el espejo de la playlist;
             # matar aquí el proceso volvería a introducir el microcorte que
             # este modo elimina.
-            if self.seamless_concat and not self.externally_controlled and self.proc is not None and self.proc.poll() is None:
+            if self.seamless_concat and self.externally_controlled and self.proc is not None and self.proc.poll() is None:
                 return True
             if not force_jump:
                 if cur_path is not None:
@@ -1213,7 +1218,7 @@ class OutputWorker(QThread):
             # Una sesión persistente sólo se usa cuando el propio output es
             # master. En modo seguido por PyAV, sync_items conserva la
             # autoridad del playout y no permite que concat se adelante.
-            if self.seamless_concat and not self.externally_controlled:
+            if self.seamless_concat and self.externally_controlled:
                 self._run_persistent()
                 self.state.emit(False, f"{self.protocol} detenido")
                 return
@@ -1468,7 +1473,7 @@ class MultiOutputManager(QObject):
                  monitor_feed_url="", externally_controlled=False,
                  audio_processor_config=None, music_overlay=None,
                  music_intro_start=30.0, music_intro_duration=12.0, music_outro_duration=10.0,
-                 fallback_mode="bars", seamless_concat=True, parent=None):
+                 fallback_mode="bars", seamless_concat=True, output_buffer_seconds=5.0, parent=None):
         super().__init__(parent)
         self.ffmpeg = ffmpeg
         self.ndi_ffmpeg = ndi_ffmpeg or ffmpeg
@@ -1490,7 +1495,8 @@ class MultiOutputManager(QObject):
                            music_intro_duration=float(music_intro_duration or 12.0),
                            music_outro_duration=float(music_outro_duration or 10.0),
                            fallback_mode=str(fallback_mode or "bars"),
-                           seamless_concat=bool(seamless_concat))
+                           seamless_concat=bool(seamless_concat),
+                           output_buffer_seconds=max(0.0, float(output_buffer_seconds or 5.0)))
         self.externally_controlled = bool(externally_controlled)
         self.monitor_feed_url = str(monitor_feed_url or "").strip()
         self.workers = []
