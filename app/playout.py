@@ -89,6 +89,12 @@ def make_item(row_or_dict, **extra):
         "tmdb_title": src.get("tmdb_title") or "",
         "tmdb_year": src.get("tmdb_year") or "",
         "tmdb_overview": src.get("tmdb_overview") or "",
+        "music_artist": src.get("music_artist") or "",
+        "music_title": src.get("music_title") or "",
+        "music_album": src.get("music_album") or "",
+        "music_year": src.get("music_year") or "",
+        "music_genre": src.get("music_genre") or "",
+        "music_label": src.get("music_label") or "",
         "audio_lang": src.get("audio_lang") or "",
         "subtitle_lang": src.get("subtitle_lang") or "",
         "fixed_time": src.get("fixed_time") or "",
@@ -223,7 +229,7 @@ class PlayoutController(QObject):
         # salida. Si FFmpeg se congela, la playlist se congela con él. Antes
         # de recibir el primer frame se conserva el fallback de pared para que
         # un arranque sin salida válida no bloquee la automatización.
-        if self.clock_only and self.output_master_active and self._output_master_measured:
+        if getattr(self, "clock_only", False) and getattr(self, "output_master_active", False) and getattr(self, "_output_master_measured", False):
             return max(0.0, self._pos)
         if self.clock_only and self._started_at > 0 and not self.paused:
             return max(0.0, self._pos + (time.time() - self._started_at))
@@ -393,8 +399,9 @@ class PlayoutController(QObject):
                 it["source_duration"] = meta.get("source_duration") or meta.get("duration") or 0
                 start, end, effective = trim_bounds(it)
                 it["mark_in"], it["mark_out"], it["duration"] = start, (end if end < it["source_duration"] else 0.0), effective
-                for k in ("width", "height", "fps", "video_codec", "audio_codec", "tracks", "thumb",
-                          "tmdb_poster", "tmdb_backdrop", "tmdb_title", "tmdb_year", "tmdb_overview"):
+                for k in ("category", "width", "height", "fps", "video_codec", "audio_codec", "tracks", "thumb",
+                          "tmdb_poster", "tmdb_backdrop", "tmdb_title", "tmdb_year", "tmdb_overview",
+                          "music_artist", "music_title", "music_album", "music_year", "music_genre", "music_label"):
                     it[k] = meta[k]
                 # v24.0.2.30: los recortes guardados en la biblioteca (Editar clip
                 # o Editar clip) llegan también a los eventos ya cargados, siempre
@@ -638,7 +645,21 @@ class PlayoutController(QObject):
         return True
 
     def _identifier_eligible(self, item):
-        return bool(item and item.get("category") in self.identifier_categories)
+        if not item or item.get("_transient_identifier"):
+            return False
+        cat = str(item.get("category") or "").strip()
+        excluded = {
+            "Publicidad", "Tanda", "Identificador", "Filler", "Slate",
+            str(getattr(self, "tandas_category", "Publicidad") or "Publicidad"),
+            str(getattr(self, "midroll_category", "Publicidad") or "Publicidad"),
+        }
+        if cat in excluded:
+            return False
+        if cat in self.identifier_categories:
+            return True
+        if cat.lower() in {c.lower() for c in self.identifier_categories}:
+            return True
+        return True
 
     def _start_identifier(self, index, phase):
         """Inserta un identificador temporal justo antes/después del evento.
@@ -981,7 +1002,7 @@ class PlayoutController(QObject):
             return False
         if self.onair == -2:   # el filler tiene su propio ciclo de recarga
             return False
-        if self.output_master_active and self._output_master_measured:
+        if getattr(self, "output_master_active", False) and getattr(self, "_output_master_measured", False):
             # La señal progress dispara tandas y clip_finished hace el cambio.
             # No hay watchdog/reloj paralelo capaz de adelantarse.
             return False

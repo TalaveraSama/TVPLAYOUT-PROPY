@@ -1,6 +1,6 @@
 @echo off
 REM ============================================================================
-REM Nexora Air V25.0.0 - Empaquetado portable para Windows x64
+REM Nexora Air V25.3.0 - Empaquetado portable para Windows x64
 REM Renombra el ejecutable heredado TVPlayoutPRO.exe como NexoraAir.exe.
 REM
 REM Genera una distribución onedir profesional en:
@@ -14,7 +14,7 @@ REM ============================================================================
 setlocal EnableExtensions EnableDelayedExpansion
 cd /d "%~dp0"
 
-set "APP_VERSION=V25.0.0"
+set "APP_VERSION=V25.3.0"
 set "VENV=.venv-build"
 set "PYEXE=%VENV%\Scripts\python.exe"
 set "OUT=%~dp0dist\NexoraAir"

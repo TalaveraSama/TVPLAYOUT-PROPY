@@ -1,6 +1,7 @@
 """Diálogos de funciones: Playlist Manager, Fuentes/Categorías, Programador, Registros, Ajustes, Editar clip."""
 import json
 import os
+import re
 from datetime import datetime
 
 from PySide6.QtCore import Qt, QTime, QDate, Signal
@@ -188,6 +189,8 @@ class PlaylistManagerDialog(BaseDialog):
                     f.write("#EXTM3U\n")
                     for it in self.ctrl.items:
                         f.write(f"#EXTINF:{int(it['duration'] or -1)},{it['title']}\n")
+                        if it.get("category"):
+                            f.write(f"#EXT-X-TVPLAYOUT-CATEGORY:{it['category']}\n")
                         if it.get("fixed_time"):
                             f.write(f"#EXT-X-TVPLAYOUT-FIXED:{it['fixed_time']}\n")
                         if float(it.get("mark_in") or 0) > 0:
@@ -223,6 +226,7 @@ class PlaylistManagerDialog(BaseDialog):
             else:
                 title = ""
                 fixed = ""
+                category = ""
                 m3u_duration = 0.0
                 mark_in = 0.0
                 mark_out = 0.0
@@ -233,12 +237,18 @@ class PlaylistManagerDialog(BaseDialog):
                             continue
                         if line.startswith("#EXTINF"):
                             head, title = (line.split(",", 1) + [""])[:2] if "," in line else (line, "")
+                            gt_match = re.search(r'group-title="([^"]+)"', head, re.IGNORECASE)
+                            if gt_match:
+                                category = gt_match.group(1).strip()
                             try:
-                                m3u_duration = max(0.0, float(head.split(":", 1)[1]))
+                                dur_part = head.split(":", 1)[1].split()[0]
+                                m3u_duration = max(0.0, float(dur_part))
                             except (ValueError, IndexError):
                                 m3u_duration = 0.0
+                        elif line.startswith(("#EXT-X-TVPLAYOUT-CATEGORY:", "#EXT-X-CATEGORY:")):
+                            category = line.split(":", 1)[1].strip()
                         elif line.startswith("#EXT-X-TVPLAYOUT-FIXED:"):
-                            fixed = line.split(":", 1)[1]
+                            fixed = line.split(":", 1)[1].strip()
                         elif line.startswith("#EXT-X-TVPLAYOUT-MARKIN:"):
                             try:
                                 mark_in = max(0.0, float(line.split(":", 1)[1]))
@@ -253,12 +263,23 @@ class PlaylistManagerDialog(BaseDialog):
                             continue
                         else:
                             row = self.db.media_by_path(line)
-                            it = make_item(row) if row else make_item({
-                                "path": line,
-                                "title": title or os.path.splitext(os.path.basename(line))[0],
-                                "duration": m3u_duration,
-                                "source_duration": m3u_duration,
-                            })
+                            if row:
+                                it = make_item(row)
+                            else:
+                                item_cat = category or "Otros"
+                                if item_cat == "Otros":
+                                    for src in self.db.sources():
+                                        sp = src.get("path", "")
+                                        if sp and os.path.normcase(os.path.abspath(line)).startswith(os.path.normcase(os.path.abspath(sp))):
+                                            item_cat = src.get("category") or "Otros"
+                                            break
+                                it = make_item({
+                                    "path": line,
+                                    "title": title or os.path.splitext(os.path.basename(line))[0],
+                                    "category": item_cat,
+                                    "duration": m3u_duration,
+                                    "source_duration": m3u_duration,
+                                })
                             it["fixed_time"] = fixed
                             it["mark_in"] = mark_in
                             it["mark_out"] = mark_out
@@ -267,7 +288,7 @@ class PlaylistManagerDialog(BaseDialog):
                                 start, end, effective = trim_bounds(it)
                                 it["mark_in"], it["mark_out"], it["duration"] = start, (end if end < it["source_duration"] else 0.0), effective
                             items.append(it)
-                            title, fixed, m3u_duration, mark_in, mark_out = "", "", 0.0, 0.0, 0.0
+                            title, fixed, category, m3u_duration, mark_in, mark_out = "", "", "", 0.0, 0.0, 0.0
         except (OSError, ValueError) as e:
             QMessageBox.critical(self, "Importar", str(e))
             return
@@ -810,6 +831,14 @@ class SettingsDialog(BaseDialog):
         self.extra.setPlaceholderText("argumentos extra de FFmpeg (avanzado)")
         self.autostart_rtmp = QCheckBox("Iniciar salidas IP automáticamente al abrir la aplicación si hay playlist")
         self.autostart_rtmp.setChecked(bool(self.settings.get("rtmp_autostart", False)))
+        self.output_seamless = QCheckBox("Emisión continua sin cortes (Concat Demuxer / Single Process)")
+        self.output_seamless.setChecked(bool(self.settings.get("output_seamless", True)))
+        self.output_fallback = QComboBox()
+        self.output_fallback.addItem("Barras de color SMPTE (tono suave 1kHz)", "bars")
+        self.output_fallback.addItem("Pantalla negra (silencio)", "black")
+        fb_idx = self.output_fallback.findData(self.settings.get("output_fallback", "bars"))
+        if fb_idx >= 0:
+            self.output_fallback.setCurrentIndex(fb_idx)
         self.outputs_btn = QPushButton("Configurar destinos RTMP / SRT / NDI…")
         self.outputs_btn.clicked.connect(parent.open_outputs)
         f.addRow("Destinos", self.outputs_btn)
@@ -819,6 +848,8 @@ class SettingsDialog(BaseDialog):
         f.addRow("Encoder", self.encoder)
         f.addRow("Bitrate vídeo", self.bitrate)
         f.addRow("Bitrate audio (kbps)", self.abitrate)
+        f.addRow("Señal en espera (sin lista)", self.output_fallback)
+        f.addRow("", self.output_seamless)
         f.addRow("", self.burn)
         f.addRow("FFmpeg extra", self.extra)
         f.addRow("", self.autostart_rtmp)
@@ -839,7 +870,8 @@ class SettingsDialog(BaseDialog):
         self.audio_device = QLineEdit(self.settings.get("audio_device", ""))
         self.audio_device.setPlaceholderText("vacío = predeterminado (ej. wasapi/{guid})")
         self.monitor_mode = QComboBox()
-        self.monitor_mode.addItem("PyAV/libav (predeterminado)", "pyav")
+        self.monitor_mode.addItem("mpv nativo (reproductor integrado de alto rendimiento)", "mpv")
+        self.monitor_mode.addItem("PyAV/libav (reproductor Python integrado)", "pyav")
         self.monitor_mode.addItem("Programa FFmpeg → reproductor externo", "program_feed")
         # v24.0.2.37: para VPS sin monitor ni CPU de sobra: el playout avanza
         # con el reloj de pared y sólo FFmpeg decodifica (las salidas IP).
@@ -938,6 +970,16 @@ class SettingsDialog(BaseDialog):
         f2.addRow("Identificador de entrada", in_row)
         f2.addRow("Identificador de salida", out_row)
         f2.addRow("", _note("Los identificadores se usan sólo en Películas y Música; no se insertan en Publicidad, filler ni slate."))
+
+        # Sonido Profesional y Titulación Musical
+        self.audio_proc_btn = QPushButton("🎚️ Configurar Sonido Profesional (EBU R128 / DynAudNorm / Compresor / EQ)…")
+        self.audio_proc_btn.clicked.connect(lambda: parent.open_audio_processor() if hasattr(parent, "open_audio_processor") else None)
+        f2.addRow("Sonido PRO", self.audio_proc_btn)
+
+        self.music_titling_btn = QPushButton("🎵 Configurar Titulación Musical (Reconocimiento / Timing 30s-10s / Grafismo)…")
+        self.music_titling_btn.clicked.connect(lambda: parent.open_music_titling() if hasattr(parent, "open_music_titling") else None)
+        f2.addRow("Titulación Música", self.music_titling_btn)
+
         f2.addRow("", self.tmdb_enabled)
         f2.addRow("TMDB API key", self.tmdb_key)
         f2.addRow("TMDB: intervalo", self.tmdb_interval)
@@ -1030,6 +1072,8 @@ class SettingsDialog(BaseDialog):
             "autoplay": self.autoplay.isChecked(),
             "probe_on_scan": self.probe_on_scan.isChecked(),
             "ndi_disabled": self.ndi_disabled.isChecked(),
+            "output_seamless": self.output_seamless.isChecked(),
+            "output_fallback": self.output_fallback.currentData() or "bars",
         }
 
 
@@ -1302,3 +1346,118 @@ class LibraryClipDialog(QDialog):
                 "category": self.cat.currentText().strip() or "Otros",
                 "mark_in": trim_start,
                 "mark_out": mark_out}
+
+
+class LiveStreamDialog(QDialog):
+    """Diálogo para insertar o programar transmisiones en vivo (RTMP, SRT, M3U8, UDP, RTSP)."""
+
+    def __init__(self, parent, categories, default_category="En Vivo"):
+        super().__init__(parent)
+        self.setWindowTitle("Insertar Transmisión en Vivo (RTMP / SRT / M3U8 / UDP)")
+        self.resize(650, 420)
+        root = QVBoxLayout(self)
+
+        note = QLabel(
+            "Inserta señales en vivo por red (RTMP, SRT, HLS/M3U8, UDP o RTSP) para intercalar "
+            "programas en vivo, eventos seculares o retransmisiones dentro de la continuidad de "
+            "películas y videoclips musicales."
+        )
+        note.setWordWrap(True)
+        note.setStyleSheet("color:#b0b8c4; margin-bottom: 8px;")
+        root.addWidget(note)
+
+        form = QFormLayout()
+
+        self.url = QLineEdit()
+        self.url.setPlaceholderText("rtmp://servidor/live/stream  ó  https://sitio.com/live.m3u8  ó  srt://ip:puerto")
+        form.addRow("URL / Entrada:", self.url)
+
+        self.title = QLineEdit("Programa Secular en Vivo")
+        form.addRow("Título del evento:", self.title)
+
+        self.cat = QComboBox()
+        cats = list(categories)
+        if "En Vivo" not in cats:
+            cats.insert(0, "En Vivo")
+        if "Programas" not in cats:
+            cats.insert(1, "Programas")
+        self.cat.addItems(cats)
+        idx = self.cat.findText(default_category)
+        if idx >= 0:
+            self.cat.setCurrentIndex(idx)
+        form.addRow("Categoría:", self.cat)
+
+        self.duration_edit = QTimeEdit()
+        self.duration_edit.setDisplayFormat("HH:mm:ss")
+        self.duration_edit.setTime(QTime(1, 0, 0))
+        form.addRow("Duración estimada:", self.duration_edit)
+
+        self.insertion_mode = QComboBox()
+        self.insertion_mode.addItem("Al final de la playlist", "end")
+        self.insertion_mode.addItem("A continuación del evento al aire", "after_onair")
+        self.insertion_mode.addItem("Emitir inmediatamente (Take Live)", "now")
+        self.insertion_mode.addItem("Programar a Hora Fija (corte automático)", "fixed_time")
+        self.insertion_mode.currentIndexChanged.connect(self._mode_changed)
+        form.addRow("Acción / Inserción:", self.insertion_mode)
+
+        self.fixed_time_edit = QTimeEdit()
+        self.fixed_time_edit.setDisplayFormat("HH:mm:ss")
+        self.fixed_time_edit.setTime(QTime.currentTime())
+        self.fixed_time_edit.setEnabled(False)
+        form.addRow("Hora Fija de inicio:", self.fixed_time_edit)
+
+        self.save_to_library = QCheckBox("Guardar también en la biblioteca para programar con el Scheduler")
+        self.save_to_library.setChecked(True)
+        form.addRow("", self.save_to_library)
+
+        root.addLayout(form)
+        root.addStretch()
+
+        btns = QHBoxLayout()
+        btns.addStretch()
+        cancel = QPushButton("Cancelar")
+        cancel.clicked.connect(self.reject)
+        btns.addWidget(cancel)
+
+        ok = QPushButton("📡 Insertar Transmisión")
+        ok.setObjectName("primary")
+        ok.clicked.connect(self._validate_and_accept)
+        btns.addWidget(ok)
+        root.addLayout(btns)
+
+    def _mode_changed(self, _idx=0):
+        mode = self.insertion_mode.currentData()
+        self.fixed_time_edit.setEnabled(mode == "fixed_time")
+
+    def _validate_and_accept(self):
+        url = self.url.text().strip()
+        if not url:
+            QMessageBox.warning(self, "URL requerida", "Introduce una URL o dirección válida (ej. rtmp://, srt://, https://...m3u8, udp://).")
+            return
+        if not re.match(r"^(https?|rtmp|rtmps|srt|udp|rtsp)://", url, re.IGNORECASE):
+            res = QMessageBox.question(
+                self, "Protocolo de red",
+                f"La dirección '{url}' no parece comenzar con un protocolo estándar de streaming.\n\n¿Deseas continuar de todos modos?",
+                QMessageBox.Yes | QMessageBox.No
+            )
+            if res != QMessageBox.Yes:
+                return
+        self.accept()
+
+    def values(self):
+        t = self.duration_edit.time()
+        dur_sec = t.hour() * 3600 + t.minute() * 60 + t.second()
+        mode = self.insertion_mode.currentData()
+        fixed_str = ""
+        if mode == "fixed_time":
+            ft = self.fixed_time_edit.time()
+            fixed_str = f"{ft.hour():02d}:{ft.minute():02d}:{ft.second():02d}"
+        return {
+            "url": self.url.text().strip(),
+            "title": self.title.text().strip() or "Transmisión en Vivo",
+            "category": self.cat.currentText().strip() or "En Vivo",
+            "duration": float(dur_sec if dur_sec > 0 else 3600.0),
+            "where": mode if mode != "fixed_time" else "end",
+            "fixed_time": fixed_str,
+            "save_to_library": self.save_to_library.isChecked(),
+        }

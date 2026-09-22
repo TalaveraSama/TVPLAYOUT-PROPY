@@ -1,12 +1,50 @@
-# Nexora Air V25.0.0 — continuidad broadcast 24/7
+# Nexora Air V25.3.0 — continuidad broadcast 24/7
 
 <p align="center">
   <img src="assets/logo.png" alt="Nexora Air" width="180">
 </p>
 
-**Nexora Air** es la nueva identidad de la consola: una plataforma de continuidad
-broadcast para Windows que une programación, biblioteca y salidas IP en un solo
-flujo. V25 conserva y migra las bibliotecas de TVPlayout PRO.
+**Nexora Air** es la plataforma de continuidad broadcast para Windows que une programación, biblioteca y salidas IP en un solo flujo optimizado para películas, videos musicales y eventos en vivo. V25 conserva y migra las bibliotecas de TVPlayout PRO.
+
+## Novedades de V25.3.0
+
+- **Sincronización Total y Monitoreo MPV de Alto Rendimiento:**
+  - Integración nativa de `MPVPlayer` para la ventana de monitoreo local con aceleración por hardware (`--hwdec`), mínima latencia y cero retrasos respecto a las salidas RTMP/SRT/NDI.
+  - Soporte completo de marcas de entrada y salida (`start`, `end`), control de volumen, niveles de audio VU estéreo y superposiciones gráficas (`set_logo`, `set_program_overlay`, `set_music_overlay`).
+  - Sincronización perfecta entre la lista de emisión, el monitor y el codificador RTMP, eliminando desajustes de tiempo.
+- **Titulación Musical y Tipografía de Letras Optimizada:**
+  - Detección automática en todas las categorías de videos musicales, canciones, videoclips y archivos con formato `"Artista - Título"`.
+  - Tipografía de alto contraste con sombras suaves para máxima legibilidad de letras sobre cualquier fondo de video.
+  - Visualización completa de Título, Artista, Álbum, Año y Sello Discográfico en monitor y salidas IP.
+  - Temporización broadcast con entrada al inicio y salida en los últimos 10 segundos del videoclip.
+- **Continuidad y Transición Fluida de Identificadores:**
+  - Depuración de bumpers de entrada y salida (`in` / `out`) para transiciones limpias y fluidas sin desconexiones de socket RTMP.
+  - Protección del watcher de salida para evitar reinicios secundarios de FFmpeg durante las transiciones de identificadores.
+  - Modo de espera automático con barras de ajuste SMPTE y pantalla negra para continuidad ininterrumpida 24/7.
+
+## Novedades de V25.1.0
+
+- **Módulo de Sonido Profesional (DSP FFmpeg):**
+  - Normalización EBU R128 (-23 LUFS) y Streaming Web (-14 LUFS).
+  - Control de dinámica y AGC activo con `dynaudnorm` y `acompressor`.
+  - Filtro pasa-altos / corte de subgraves y ecualizador multibanda.
+  - Limitador True Peak transparente para evitar saturación digital.
+  - Presets listos para emisión (Broadcast Master TV, Radio FM, Web Streaming, DynAudNorm AGC).
+- **Servicio de Reconocimiento y Titulación Musical en Vivo:**
+  - Identificación automática de pistas musicales por fingerprinting (AudD, AcoustID, ACRCloud) y lectura de etiquetas ID3/Vorbis locales.
+  - Generación de zócalos musicales (lower-thirds) con reglas broadcast automáticas: visible a los **30 segundos** del tema musical y durante los **últimos 10 segundos** de cierre.
+  - Renderizado vectorial de alta definición integrado en el monitor `PyAVPlayer` y en los overlays FFmpeg `-filter_complex`.
+- **Transmisiones y Programación Secular en Vivo (RTMP / SRT / M3U8 / UDP):**
+  - Soporte para intercalar señales en vivo por red dentro de la continuidad de películas y videoclips.
+  - Programación con hora fija para corte y conmutación automática de programas seculares.
+  - Flags de reconexión continua y buffering resiliente ante fluctuaciones de red.
+
+## Novedades de V25.0.1
+
+- **Sincronización RTMP y protección de drift:** corrección progresiva sin rebobinado ni saltos hacia atrás, evitando cortes de emisión en enlaces de red y reconexiones en bucle.
+- **Importación M3U8 y auto-categorización Musical:** soporte completo para listas de reproducción M3U/M3U8 con categorización automática en la base de datos y propagación inmediata a la lista activa.
+- **Identificadores de estación:** activación y control de identificadores de entrada/salida para transiciones fluidas.
+- **Actualización dinámica de metadatos:** los cambios en la base de datos tras escaneos de biblioteca se reflejan en vivo en los elementos de la lista en emisión.
 
 ## Novedades de V25.0.0
 
@@ -94,7 +132,7 @@ se mantiene dentro de ese margen con un tamaño profesional predeterminado del 1
 
 ### Setup todo-en-uno (recomendado)
 
-Descarga y abre **`Setup_NexoraAir_V25.0.0.exe`** desde la release V25. No
+Descarga y abre **`Setup_NexoraAir_V25.3.0.exe`** desde la release V25. No
 requiere instalar Python, Qt, PyAV ni FFmpeg por separado. Se instala por usuario
 en `%LOCALAPPDATA%\Programs\NexoraAir`, crea accesos directos y migra los datos
 de una instalación anterior.
