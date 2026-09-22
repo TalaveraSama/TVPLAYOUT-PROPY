@@ -7,7 +7,7 @@ on:
   # can use workflow_dispatch from the default branch.
   push:
     branches:
-      - arena/01a0c74d-tvplayout-propy
+      - arena/01a0c7d1-tvplayout-propy
     paths:
       - .github/workflows/release-windows.yml
       - app/**
@@ -37,6 +37,21 @@ jobs:
         shell: powershell
         run: choco install nsis --yes --no-progress
 
+      - name: Detect release version
+        id: ver
+        shell: powershell
+        run: |
+          # Fuente única de verdad: app/config.py (igual que el builder).
+          $cfg = Get-Content app/config.py -Raw
+          if ($cfg -notmatch 'APP_VERSION\s*=\s*"(V[\d.]+)"') {
+            throw "APP_VERSION no encontrada en app/config.py"
+          }
+          $v = $Matches[1]
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "version=$v"
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "tag=$($v.ToLower())"
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "setup=Setup_NexoraAir_$v.exe"
+          Write-Host "Versión: $v • tag: $($v.ToLower())"
+
       - name: Build offline Setup
         shell: powershell
         run: python installer/build_windows_setup.py all
@@ -44,7 +59,7 @@ jobs:
       - name: Verify generated checksum
         shell: powershell
         run: |
-          $setup = "dist/Setup_NexoraAir_V25.3.2.exe"
+          $setup = "dist/${{ steps.ver.outputs.setup }}"
           $checksum = "$setup.sha256"
           if (-not (Test-Path $setup) -or -not (Test-Path $checksum)) {
             throw "El builder no produjo el Setup y su checksum"
@@ -61,7 +76,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release upload v25.3.2 `
-            dist/Setup_NexoraAir_V25.3.2.exe `
-            dist/Setup_NexoraAir_V25.3.2.exe.sha256 `
+          gh release upload ${{ steps.ver.outputs.tag }} `
+            dist/${{ steps.ver.outputs.setup }} `
+            dist/${{ steps.ver.outputs.setup }}.sha256 `
             --clobber --repo $env:GITHUB_REPOSITORY

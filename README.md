@@ -1,10 +1,21 @@
-# Nexora Air V25.3.2 — continuidad broadcast 24/7
+# Nexora Air V25.4.0 — continuidad broadcast 24/7
 
 <p align="center">
   <img src="assets/logo.png" alt="Nexora Air" width="180">
 </p>
 
 **Nexora Air** es la plataforma de continuidad broadcast para Windows que une programación, biblioteca y salidas IP en un solo flujo optimizado para películas, videos musicales y eventos en vivo. V25 conserva y migra las bibliotecas de TVPlayout PRO.
+
+## Novedades de V25.4.0
+
+- **Motor de emisión continua estilo OBS (productor/consumidor):**
+  - Nueva arquitectura de **dos mundos** en `app/feed_engine.py`: un productor FFmpeg por clip normaliza y codifica a MPEG-TS con **timestamps globales** (`-output_ts_offset`) hacia un spool temporal; **un único consumidor FFmpeg por destino vive de "Iniciar" a "Detener"** y envía el flujo con `-c copy` (RTMP/SRT/UDP, con tee al monitor si procede).
+  - **Cero reinicios de la conexión TCP al cambiar de clip, saltar, pausar o quedarse sin playlist**: el corte entre clips es un empalme de bytes TS con timestamps monótonos (validado demuxeando con libav clips heterogéneos empalmados).
+  - Especulación del evento siguiente (empieza a producirse ~25 s antes del final) y **adopción** en `sync_items`: los saltos del playout sobre contenido ya especulado no generan ninguna conmutación.
+  - **Conmutación con zombi**: al saltar, el segmento al aire sigue emitiendo mientras calienta el productor del objetivo; el corte entra con imagen en lugar de un frame congelado.
+  - **Modo espera con slate** (barras SMPTE o negro): si la playlist se vacía, la conexión sigue viva emitiendo señal de espera hasta que entra el siguiente evento.
+  - El consumidor se **reconecta solo** ante caídas de red (backoff 1→8 s) retomando el spool por donde iba; los productores huérfanos quedan bajo Job Object y mueren con la app, cerrando el RTMP con su tráiler.
+  - Ruta anterior por clip conservada como respaldo cuando se desmarca *Continuidad sin cortes TCP* (NDI y otros flujos siguen usando el worker histórico).
 
 ## Novedades de V25.3.2
 
@@ -121,8 +132,11 @@ sólo sobre los clips elegidos.
 En modo PyAV la salida sigue al playout local: cada vez que empieza un evento,
 FFmpeg salta al mismo evento. En modo **Reloj**, la relación se invierte: la
 primera salida FFmpeg activa es el player master y su progreso real gobierna la
-playlist. Se emite clip por clip sobre la misma URL (el servidor ve una
-reconexión breve entre clips). Encoders: AUTO (prueba NVENC → QSV → AMF → x264),
+playlist. Con **Continuidad sin cortes TCP** activa (predeterminado), el motor
+continuo de V25.4 mantiene una única conexión por destino: cambiar de clip,
+saltar o pausar **no reconecta** — el servidor (vMix, YouTube, …) ve un flujo TS
+ininterrumpido con timestamps monótonos y barras de espera si la lista se vacía.
+Encoders: AUTO (prueba NVENC → QSV → AMF → x264),
 CPU/x264, NVIDIA NVENC, Intel QSV, AMD AMF. Audio AAC 48 kHz estéreo, pista de audio elegida por preferencia
 (es-MX / es-419 / Latino / spa / es…). Opcional: quemar subtítulos preferidos y superponer un **logo PNG** (posición, tamaño,
 opacidad). La vista previa muestra el marco 16:9 y el área segura 4:3 (12.5%–87.5%); la posición final
@@ -132,7 +146,7 @@ se mantiene dentro de ese margen con un tamaño profesional predeterminado del 1
 
 ### Setup todo-en-uno (recomendado)
 
-Descarga y abre **`Setup_NexoraAir_V25.3.2.exe`** desde la release V25. No
+Descarga y abre **`Setup_NexoraAir_V25.4.0.exe`** desde la release V25. No
 requiere instalar Python, Qt, PyAV ni FFmpeg por separado. Se instala por usuario
 en `%LOCALAPPDATA%\Programs\NexoraAir`, crea accesos directos y migra los datos
 de una instalación anterior.

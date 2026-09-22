@@ -37,7 +37,19 @@ PYSIDE_VERSION = "6.8.3"
 PYAV_VERSION = "16.1.0"
 APP_NAME = "Nexora Air"
 APP_SLUG = "NexoraAir"
-APP_VERSION = "V25.3.2"
+
+
+def _app_version_from_config() -> str:
+    """La versión vive ÚNICAMENTE en app/config.py (identidad centralizada)."""
+    import re
+    cfg = (ROOT / "app" / "config.py").read_text(encoding="utf-8")
+    m = re.search(r'^APP_VERSION = "(V[\d.]+)"', cfg, re.MULTILINE)
+    if not m:
+        raise RuntimeError("app/config.py no define APP_VERSION con formato Vx.y.z")
+    return m.group(1)
+
+
+APP_VERSION = _app_version_from_config()
 SETUP_NAME = f"Setup_{APP_SLUG}_{APP_VERSION}.exe"
 USER_AGENT = f"{APP_SLUG}-builder/{APP_VERSION}"
 

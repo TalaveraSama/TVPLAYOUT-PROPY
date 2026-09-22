@@ -178,6 +178,7 @@ def test_output_worker_sync_items_keeps_active_process():
     """Valida que sync_items con force_jump=True no mate el proceso si ya está
     emitiendo el mismo índice recientemente sin offset de seek."""
     worker = OutputWorker.__new__(OutputWorker)
+    worker.seamless_concat = False   # camino legacy: un FFmpeg por clip
     worker._current_index = 1
     worker._clip_started = time.time() - 2.0  # arrancado hace 2s
     worker._jump = type("Event", (), {"set": lambda self: None})()
