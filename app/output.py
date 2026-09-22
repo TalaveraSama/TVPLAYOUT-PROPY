@@ -516,7 +516,10 @@ class OutputWorker(QThread):
         # v24.0.2.35: -stats hace que FFmpeg reporte su posición real
         # ("time=") aunque el loglevel sea warning; el watcher de drift la
         # usa en lugar de estimar por reloj de pared.
-        cmd = [self.ffmpeg, "-hide_banner", "-loglevel", "warning", "-stats", "-nostdin"]
+        # El logo MOV se decodifica y compone en CPU. Esto conserva el alfa
+        # sin depender de AMF/NVENC/QSV; el encoder final puede seguir usando
+        # la GPU si el operador lo selecciona.
+        cmd = [self.ffmpeg, "-hide_banner", "-loglevel", "warning", "-stats", "-nostdin", "-hwaccel", "none"]
         if is_url:
             if str(source).lower().startswith(("http://", "https://")):
                 cmd += ["-reconnect", "1", "-reconnect_at_eof", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5"]
@@ -658,7 +661,7 @@ class OutputWorker(QThread):
         gop = int(round(float(self.fps) * 2))
         cmd = [
             self.ffmpeg, "-hide_banner", "-loglevel", "warning", "-stats", "-nostdin",
-            "-f", "concat", "-safe", "0", "-re", "-i", concat_manifest_path
+            "-hwaccel", "none", "-f", "concat", "-safe", "0", "-re", "-i", concat_manifest_path
         ]
 
         logo = (self.logo if (self.logo and os.path.isfile(self.logo.get("path", ""))) else None)

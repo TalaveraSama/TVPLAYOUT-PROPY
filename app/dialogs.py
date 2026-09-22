@@ -3,6 +3,7 @@ import json
 import os
 import random
 import re
+import subprocess
 from datetime import datetime
 from urllib.parse import unquote
 
@@ -979,6 +980,21 @@ class SettingsDialog(BaseDialog):
         self.identifier_mode.addItem("Aleatorio (cambiar en cada transición)", "random")
         self.identifier_mode.setCurrentIndex(max(0, self.identifier_mode.findData(
             self.settings.get("identifier_selection", "random"))))
+        self.identifier_cadence = QComboBox()
+        self.identifier_cadence.addItem("Después de cada video", "every")
+        self.identifier_cadence.addItem("Aleatorio: cada 2 videos", "random_2")
+        self.identifier_cadence.addItem("Aleatorio: cada 4 videos", "random_4")
+        self.identifier_cadence.addItem("Aleatorio: cada 10 videos", "random_10")
+        self.identifier_cadence.addItem("Personalizado: cada N videos", "custom")
+        self.identifier_cadence.setCurrentIndex(max(0, self.identifier_cadence.findData(
+            self.settings.get("identifier_cadence", "every"))))
+        self.identifier_every_n = QSpinBox()
+        self.identifier_every_n.setRange(1, 999)
+        self.identifier_every_n.setSuffix(" videos")
+        self.identifier_every_n.setValue(max(1, int(self.settings.get("identifier_every_n", 1) or 1)))
+        self.identifier_cadence.currentIndexChanged.connect(
+            lambda: self.identifier_every_n.setEnabled(self.identifier_cadence.currentData() == "custom"))
+        self.identifier_every_n.setEnabled(self.identifier_cadence.currentData() == "custom")
         self.identifier_in_list = QListWidget()
         self.identifier_in_list.setMaximumHeight(92)
         self.identifier_out_list = QListWidget()
@@ -1052,10 +1068,12 @@ class SettingsDialog(BaseDialog):
         f2.addRow("Tanda intermedia: categoría", self.midroll_cat)
         f2.addRow("Tanda intermedia: intervalo", self.midroll_interval)
         f2.addRow("", self.identifiers_enabled)
-        f2.addRow("Selección", self.identifier_mode)
-        f2.addRow("Identificadores de entrada", in_row)
-        f2.addRow("Identificadores de salida", out_row)
-        f2.addRow("", _note("Puedes añadir varios clips. En modo Aleatorio se elige uno distinto al azar en cada transición; Manual usa el clip seleccionado (o el primero). Sólo se usan en Películas y Música; no en Publicidad, filler ni slate."))
+        f2.addRow("Selección de clip", self.identifier_mode)
+        f2.addRow("Frecuencia", self.identifier_cadence)
+        f2.addRow("N personalizado", self.identifier_every_n)
+        f2.addRow("Identificadores (se reproducen DESPUÉS)", out_row)
+        f2.addRow("Compatibilidad: entrada", in_row)
+        f2.addRow("", _note("Los identificadores son clips audiovisuales temporales, nunca filas permanentes. Se reproducen después del video según la frecuencia elegida. Usa clips de 5 a 8 segundos; sólo Películas y Música. El cambio se prepara en la salida continua para no reiniciar RTMP ni afectar el playout."))
 
         # Sonido Profesional y Titulación Musical
         self.audio_proc_btn = QPushButton("🎚️ Configurar Sonido Profesional (EBU R128 / DynAudNorm / Compresor / EQ)…")
@@ -1130,10 +1148,28 @@ class SettingsDialog(BaseDialog):
             "Vídeo (*.mp4 *.mov *.mkv *.avi *.webm *.ts);;Todos los archivos (*.*)",
         )
         existing = {widget.item(i).text() for i in range(widget.count())}
+        rejected = []
         for path in paths:
+            duration = 0.0
+            try:
+                if FFPROBE_PATH and os.path.isfile(FFPROBE_PATH):
+                    probe = subprocess.run(
+                        [FFPROBE_PATH, "-v", "error", "-show_entries", "format=duration",
+                         "-of", "default=noprint_wrappers=1:nokey=1", path],
+                        capture_output=True, text=True, timeout=12)
+                    duration = float((probe.stdout or "0").strip() or 0)
+            except (OSError, ValueError, subprocess.SubprocessError):
+                duration = 0.0
+            if duration and not 5.0 <= duration <= 8.0:
+                rejected.append(f"{os.path.basename(path)} ({duration:.1f}s)")
+                continue
             if path not in existing:
                 widget.addItem(path)
                 existing.add(path)
+        if rejected:
+            QMessageBox.warning(self, "Identificador no válido",
+                                "Sólo se admiten identificadores de 5 a 8 segundos.\n\n" +
+                                "\n".join(rejected))
 
     def _remove_identifier(self, widget):
         for item in widget.selectedItems():
@@ -1183,6 +1219,8 @@ class SettingsDialog(BaseDialog):
             "midroll_interval_minutes": self.midroll_interval.value(),
             "identifiers_enabled": self.identifiers_enabled.isChecked(),
             "identifier_selection": self.identifier_mode.currentData() or "random",
+            "identifier_cadence": self.identifier_cadence.currentData() or "every",
+            "identifier_every_n": self.identifier_every_n.value(),
             "identifier_in_paths": self._list_paths(self.identifier_in_list),
             "identifier_out_paths": self._list_paths(self.identifier_out_list),
             # Mantener las claves antiguas para que versiones anteriores no pierdan configuración.

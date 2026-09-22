@@ -5,7 +5,7 @@ import shutil
 import subprocess
 
 from PySide6.QtCore import Qt, QRectF
-from PySide6.QtGui import QPixmap, QPainter, QColor, QPen, QFont
+from PySide6.QtGui import QPixmap, QImage, QPainter, QColor, QPen, QFont
 from PySide6.QtWidgets import (QApplication, QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QLabel, QPushButton, QLineEdit, QComboBox,
                                QSpinBox, QCheckBox, QFileDialog, QPlainTextEdit, QMessageBox, QWidget,
                                QTableWidget, QTableWidgetItem, QAbstractItemView, QHeaderView)
@@ -44,11 +44,37 @@ class LogoSafeAreaPreview(QWidget):
         self.setStyleSheet("background:#050505;border:1px solid #333;")
         self._pixmap = QPixmap()
         self._position = "arriba-derecha"
+        self._source_note = ""
+        self._image_cache = {}
+
         self._scale = 10
         self._margin = 48
 
     def set_values(self, path, position, scale, margin):
-        self._pixmap = QPixmap(path) if path and os.path.isfile(path) else QPixmap()
+        self._pixmap = QPixmap()
+        path = str(path or "").strip()
+        if path and os.path.isfile(path):
+            ext = os.path.splitext(path)[1].lower()
+            if ext in {".mov", ".webm", ".mkv", ".mp4", ".avi", ".ts"}:
+                # Extrae sólo un fotograma para editar tamaño/posición. No
+                # abre un segundo reproductor ni toca la emisión al aire.
+                try:
+                    key = (path, os.path.getmtime(path))
+                    data = self._image_cache.get(key)
+                    if data is None and FFMPEG_PATH and os.path.isfile(FFMPEG_PATH):
+                        proc = subprocess.run(
+                            [FFMPEG_PATH, "-hide_banner", "-loglevel", "error", "-ss", "0", "-i", path,
+                             "-frames:v", "1", "-f", "image2pipe", "-vcodec", "png", "-"],
+                            capture_output=True, timeout=12, creationflags=CREATE_NO_WINDOW)
+                        data = bytes(proc.stdout or b"")
+                        self._image_cache[key] = data
+                    if data:
+                        image = QImage.fromData(data, "PNG")
+                        self._pixmap = QPixmap.fromImage(image) if not image.isNull() else QPixmap()
+                except Exception:
+                    self._pixmap = QPixmap()
+            else:
+                self._pixmap = QPixmap(path)
         self._position = position or "arriba-derecha"
         self._scale = max(2, int(scale or 10))
         self._margin = max(0, int(margin or 0))
@@ -153,7 +179,7 @@ class LogoDialog(QDialog):
         f.addRow("Vista previa", self.preview)
         note = QLabel("Las guías muestran el lienzo 16:9 y el margen central 4:3 (12.5%–87.5%). "
                       "La posición real queda dentro del área 4:3. Tamaño recomendado para una mosca profesional: 8–12%. "
-                      "Se aplica en el siguiente evento RTMP y no afecta al monitor local.")
+                      "Se aplica en el siguiente evento RTMP y no afecta al monitor local. En MOV se muestra aquí un fotograma real del archivo; el alfa se compone por CPU y se repite en bucle durante la emisión.")
         note.setWordWrap(True)
         note.setStyleSheet("color:#9a9a9a;")
         f.addRow(note)

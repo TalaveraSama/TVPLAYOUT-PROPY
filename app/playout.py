@@ -156,6 +156,9 @@ class PlayoutController(QObject):
         self.identifier_out_paths = []
         self.identifier_selection = "random"
         self.identifier_categories = {"Películas", "Música"}
+        self.identifier_cadence = "every"
+        self.identifier_every_n = 1
+        self._identifier_count = 0
         self._identifier_transition = None
         self._position_base = 0.0
         self.audio_pref = "AUTO"
@@ -785,12 +788,9 @@ class PlayoutController(QObject):
         # devolver al operador a una película que ya decidió saltar.
         if self._midroll_resume and not _internal:
             self._midroll_resume = None
-        if (not _internal and not self._identifier_transition and not self.clock_only and
-                self._identifier_eligible(item) and self.identifiers_enabled and
-                self._identifier_path("in")):
-            # v24.0.2.37: en modo Reloj no hay reproductor local para los
-            # identificadores de entrada; se saltan (la emisión continúa).
-            return self._start_identifier(index, "in")
+        # v25.4: los identificadores se reproducen únicamente DESPUÉS del
+        # video. Las rutas de entrada antiguas se conservan como compatibilidad
+        # de configuración, pero nunca insertan una fila antes del contenido.
         if not item.get("path") or not os.path.isfile(item["path"]):
             item["status"] = ST_ERROR
             item["note"] = "archivo no encontrado"
@@ -1173,9 +1173,24 @@ class PlayoutController(QObject):
         if reason == "error" and self._consecutive_errors >= max(3, len(self.items)):
             self.message.emit("Demasiados errores consecutivos • emisión detenida")
             return
+        # El identificador sale después del video, nunca antes. La frecuencia
+        # cuenta sólo Películas/Música emitidas; los clips transitorios no
+        # incrementan el contador ni se convierten en filas permanentes.
         if (not transition and reason == "eof" and self.identifiers_enabled and
-                self._identifier_eligible(item) and self._identifier_path("out")):
-            if self._start_identifier(idx, "out"):
+                self._identifier_eligible(item)):
+            self._identifier_count += 1
+            cadence = str(getattr(self, "identifier_cadence", "every") or "every")
+            if cadence == "every":
+                every_n = 1
+            elif cadence.startswith("random_"):
+                try:
+                    every_n = int(cadence.split("_", 1)[1])
+                except (TypeError, ValueError):
+                    every_n = 1
+            else:
+                every_n = max(1, int(getattr(self, "identifier_every_n", 1) or 1))
+            due = self._identifier_count % every_n == 0
+            if due and self._identifier_path("out") and self._start_identifier(idx, "out"):
                 return
         if (self._midroll_resume and reason == "eof" and
                 idx < self._midroll_resume.get("last_ad_index", idx)):

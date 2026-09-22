@@ -60,6 +60,7 @@ DEFAULT_SETTINGS = {
     "autofill_category": "Todas", "autofill_count": 10, "tandas_category": "Publicidad", "tandas_count": 2,
     "midroll_enabled": False, "midroll_category": "Publicidad", "midroll_interval_minutes": 15,
     "identifiers_enabled": False, "identifier_selection": "random",
+    "identifier_cadence": "every", "identifier_every_n": 1,
     "identifier_in_paths": [], "identifier_out_paths": [],
     "identifier_in_path": "", "identifier_out_path": "",
     "tmdb_enabled": False, "tmdb_api_key": "", "tmdb_interval_minutes": 18, "tmdb_duration_seconds": 15,
@@ -837,6 +838,8 @@ class MainWindow(QMainWindow):
         self.ctrl.identifier_in_path = self.ctrl.identifier_in_paths[0] if self.ctrl.identifier_in_paths else ""
         self.ctrl.identifier_out_path = self.ctrl.identifier_out_paths[0] if self.ctrl.identifier_out_paths else ""
         self.ctrl.identifier_selection = str(s.get("identifier_selection", "random") or "random")
+        self.ctrl.identifier_cadence = str(s.get("identifier_cadence", "every") or "every")
+        self.ctrl.identifier_every_n = max(1, int(s.get("identifier_every_n", 1) or 1))
         # v24: la activación de la tanda intermedia es independiente de la
         # tanda al finalizar el evento.
         # v23.3: filler automático. El operador configura el path a un
