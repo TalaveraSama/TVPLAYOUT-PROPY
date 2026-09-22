@@ -30,6 +30,8 @@ CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 BELOW_NORMAL_PRIORITY = getattr(subprocess, "BELOW_NORMAL_PRIORITY_CLASS", 0)
 
 # v24.0.2.35: línea de progreso de FFmpeg (-stats): "time=HH:MM:SS.ms".
+# Formato base: time=(\d+):(\d+):(\d+(?:\.\d+)?) ; se toleran signos
+# porque algunos encoders imprimen timestamps negativos durante el arranque.
 _PROGRESS_RE = re.compile(r"time=([+-]?\d+):([+-]?\d+):([+-]?\d+(?:\.\d+)?)")
 
 
@@ -326,7 +328,9 @@ class OutputWorker(QThread):
             return self._resolved
         text = self._available_encoders()
         if requested == "AUTO":
-            for label in ("NVIDIA NVENC", "Intel QSV", "AMD AMF", "CPU/x264"):
+            # Primera validación siempre con CPU/x264. Los encoders de GPU se
+            # habilitarán después de validar continuidad RTMP en producción.
+            for label in ("CPU/x264", "NVIDIA NVENC", "Intel QSV", "AMD AMF"):
                 codec = self.ENCODERS[label]
                 if re.search(rf"\b{re.escape(codec)}\b", text) and self._encoder_works(codec):
                     self._resolved = (label, codec)
@@ -764,6 +768,12 @@ class OutputWorker(QThread):
             cur_path = self.items[self._current_index]["path"] if 0 <= self._current_index < len(self.items) else None
             self.items = new_items
             idx = max(0, min(int(current_index), len(new_items) - 1))
+            # BroadcastEngine ya tiene una entrada concat viva. Las señales
+            # normales de on_start sólo actualizan el espejo de la playlist;
+            # matar aquí el proceso volvería a introducir el microcorte que
+            # este modo elimina.
+            if self.seamless_concat and not self.externally_controlled and self.proc is not None and self.proc.poll() is None:
+                return True
             if not force_jump:
                 if cur_path is not None:
                     same = [i for i, it in enumerate(new_items) if it["path"] == cur_path]
@@ -1110,9 +1120,101 @@ class OutputWorker(QThread):
                 return True
         return False
 
+    # ---------------------------------------------------------- persistent output
+    def _run_persistent(self):
+        """Emite una tanda completa con un único proceso FFmpeg.
+
+        Este es el camino de BroadcastEngine para el modo reloj: concat lee
+        los clips de forma secuencial y el mismo proceso conserva el encoder,
+        el mux FLV y la conexión RTMP. No se intenta cambiar una entrada viva
+        matando FFmpeg; los saltos dinámicos siguen usando el camino controlado
+        por el playout local.
+        """
+        with self._lock:
+            items = list(self.items)
+        if not items:
+            return
+        manifest = os.path.join(tempfile.gettempdir(), f"{APP_SLUG}_broadcast_{id(self)}.ffconcat")
+        try:
+            write_concat_manifest(manifest, items, start_index=self.start_index,
+                                  offset=max(0.0, self.start_offset))
+            cmd, label = self._build_concat_command(manifest)
+            self.log.emit(f"BroadcastEngine • sesión persistente • {label} • {len(items)} eventos")
+            log.info("%s BroadcastEngine: %s", self.protocol, subprocess.list2cmdline(cmd))
+            self.now_playing.emit(self.start_index, items[self.start_index]["path"])
+            with self._lock:
+                self.proc = subprocess.Popen(
+                    cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                    stdin=subprocess.DEVNULL, text=True, encoding="utf-8", errors="replace",
+                    creationflags=CREATE_NO_WINDOW)
+                self._clip_started = time.time()
+                self._clip_emit_started = self._clip_started
+                self._out_time = -1.0
+                self._out_time_at = 0.0
+                proc = self.proc
+            self.state.emit(True, f"{self.protocol} ON AIR • BroadcastEngine persistente • {label} • {self.resolution}@{self.fps}")
+            # En modo persistente se conserva la salida de stderr para poder
+            # diagnosticar time= negativo, frame=0 y reconexiones sin crear
+            # otro lector que confunda el índice del evento.
+            last_lines = []
+            durations = []
+            for item in items:
+                duration = float(item.get("duration") or item.get("source_duration") or 0.0)
+                mark_in = float(item.get("mark_in") or 0.0)
+                mark_out = float(item.get("mark_out") or 0.0)
+                if mark_out > mark_in:
+                    duration = mark_out - mark_in
+                durations.append(max(0.0, duration))
+            def drain():
+                try:
+                    for line in proc.stderr:
+                        line = line.rstrip()
+                        m = _PROGRESS_RE.search(line)
+                        if m and ("frame=" in line or "speed=" in line):
+                            out_time = (int(m.group(1)) * 3600.0 + int(m.group(2)) * 60.0 + float(m.group(3)))
+                            if out_time < 0:
+                                continue
+                            with self._lock:
+                                self._out_time = out_time
+                                self._out_time_at = time.time()
+                            remaining = max(0.0, out_time + max(0.0, self.start_offset))
+                            idx = max(0, min(self.start_index, len(items) - 1))
+                            while idx + 1 < len(items) and durations[idx] > 0 and remaining >= durations[idx]:
+                                remaining -= durations[idx]
+                                idx += 1
+                            self._current_index = idx
+                            self.progress.emit(idx, remaining)
+                            continue
+                        if line and not any(n in line for n in self.NOISE):
+                            last_lines.append(line)
+                            del last_lines[:-5]
+                            self.log.emit("FFmpeg • " + line)
+                except Exception:  # noqa: BLE001
+                    pass
+            threading.Thread(target=drain, name="broadcast-stderr", daemon=True).start()
+            while proc.poll() is None and not self.stop_requested:
+                time.sleep(0.15)
+            code = proc.wait()
+            if not self.stop_requested and code not in (0, 255, -15):
+                self.log.emit(f"BroadcastEngine terminó con código {code}; no se avanza de evento")
+            if not self.stop_requested:
+                self.clip_finished.emit(self._current_index, code in (0, 255, -15))
+        finally:
+            try:
+                os.unlink(manifest)
+            except OSError:
+                pass
+
     # -------------------------------------------------------------- loop
     def run(self):
         try:
+            # Una sesión persistente sólo se usa cuando el propio output es
+            # master. En modo seguido por PyAV, sync_items conserva la
+            # autoridad del playout y no permite que concat se adelante.
+            if self.seamless_concat and not self.externally_controlled:
+                self._run_persistent()
+                self.state.emit(False, f"{self.protocol} detenido")
+                return
             with self._lock:
                 items = list(self.items)
             self.stop_requested = False
@@ -1333,6 +1435,15 @@ class OutputWorker(QThread):
                     pass
 
 
+class BroadcastEngine(OutputWorker):
+    """Motor propio de emisión continua para destinos FFmpeg/RTMP.
+
+    ``OutputWorker`` conserva la compatibilidad con salidas históricas; esta
+    clase da nombre explícito al motor que mantiene la sesión persistente en
+    el modo reloj y deja la reconexión aislada por destino.
+    """
+
+
 class MultiOutputManager(QObject):
     """Coordina destinos RTMP, SRT y NDI independientes.
 
@@ -1401,8 +1512,8 @@ class MultiOutputManager(QObject):
         target = str(profile.get("target") or profile.get("url") or "").strip()
         name = str(profile.get("name") or protocol)
         binary = self.ndi_ffmpeg if protocol == "NDI" else self.ffmpeg
-        worker = OutputWorker(binary, self.items, target, protocol=protocol,
-                              monitor_feed_url=monitor_feed_url, **self.common)
+        worker = BroadcastEngine(binary, self.items, target, protocol=protocol,
+                                  monitor_feed_url=monitor_feed_url, **self.common)
         worker._profile_name = name
         worker.state.connect(lambda ok, msg, n=name: self._state_from_worker(ok, msg, n))
         worker.log.connect(lambda msg, n=name: self.log.emit(f"[{n}] {msg}"))

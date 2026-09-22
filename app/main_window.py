@@ -54,7 +54,7 @@ STATUS_LABEL = {ST_PENDING: "", ST_READY: "LISTO", ST_ONAIR: "AL AIRE", ST_AIRED
                 ST_ERROR: "ERROR", ST_SKIPPED: "OMITIDO"}
 
 DEFAULT_SETTINGS = {
-    "rtmp_url": "", "outputs": [], "resolution": "1920x1080", "fps": "29.97", "encoder": "AUTO", "bitrate": 6000, "audio_bitrate": 192,
+    "rtmp_url": "", "outputs": [], "resolution": "1920x1080", "fps": "29.97", "encoder": "CPU/x264", "bitrate": 6000, "audio_bitrate": 192,
     "subtitle_burn": True, "ffmpeg_extra": "", "rtmp_autostart": False, "rtmp_mode": "local",
     "audio_pref": AUDIO_PREFS[0], "sub_pref": "OFF", "hwdec": "auto-safe", "audio_device": "",
     "autofill_category": "Todas", "autofill_count": 10, "tandas_category": "Publicidad", "tandas_count": 2,
@@ -2221,7 +2221,7 @@ class MainWindow(QMainWindow):
                                           # cuenta: el playout local/clock decide el
                                           # siguiente evento. Antes sólo se activaba
                                           # en modo Reloj y FFmpeg podía adelantarse.
-                                          externally_controlled=bool(needs_ffmpeg),
+                                          externally_controlled=bool(self.ctrl.clock_only and needs_ffmpeg),
                                           audio_processor_config=self._audio_processor_config(),
                                           music_overlay=self._music_overlay_path,
                                           music_intro_start=float(s.get("music_titling_intro_start", 30.0)),
@@ -2607,7 +2607,7 @@ class MainWindow(QMainWindow):
         output_items = getattr(self.output, "items", []) or []
         if 0 <= clip < len(output_items):
             output_item = output_items[clip]
-        onair_item = self.ctrl.current if onair is not None and onair >= 0 else None
+        onair_item = getattr(self.ctrl, "current", None) if onair is not None and onair >= 0 else None
 
         def _event_path(item):
             if not item:
