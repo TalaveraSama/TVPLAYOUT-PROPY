@@ -21,6 +21,7 @@ from .config import APP_NAME, APP_SLUG
 from .prober import pick_audio, pick_subtitle
 from .ndi_sender import NDISender, logo_suppressed_for_category
 from .audio_processor import build_audio_filters
+from .music_titling import is_music_item
 
 log = logger.get("rtmp")
 CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -537,7 +538,7 @@ class OutputWorker(QThread):
             program = None
 
         music = (self.music_overlay if (self.music_overlay and os.path.isfile(self.music_overlay)
-                 and item.get("category") in {"Música", "Musical", "Music"}) else None)
+                 and is_music_item(item)) else None)
         music_expr = self._music_enable_expression(local_offset, trim_duration) if music else ""
         if not music_expr:
             music = None

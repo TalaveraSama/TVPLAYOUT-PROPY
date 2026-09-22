@@ -78,5 +78,6 @@ línea (v22.2, v24.0.0, v24.0.1, v24.0.2).
 | `v24.0.2.44` | V24.0.2.44 — El auto-recorte ya no compite con la emisión al aire |
 | `v24.0.2.45` | V24.0.2.45 — Auto-recorte ELIMINADO por completo |
 | `v25.0.0` | Nexora Air V25.0.0 — un solo player, nueva identidad |
-| `v25.1.0` | Nexora Air V25.1.0 — Sonido Profesional, Titulación Musical y Transmisiones en Vivo |
 | `v25.0.1` | Nexora Air V25.0.1 — Sincronización continua, soporte M3U8 y gestión de identificadores |
+| `v25.1.0` | Nexora Air V25.1.0 — Sonido Profesional, Titulación Musical y Transmisiones en Vivo |
+| `v25.3.0` | Nexora Air V25.3.0 — Sincronización Playout, Monitoreo MPV y Titulación Musical |

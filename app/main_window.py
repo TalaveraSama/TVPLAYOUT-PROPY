@@ -38,7 +38,7 @@ from .dialogs import (PlaylistManagerDialog, SourcesDialog, SchedulerDialog, Log
 from .dialogs_tmdb import TMDBEditDialog, TMDBCardDialog
 from .dialogs_audio import AudioProcessorDialog
 from .dialogs_music import MusicTitlingDialog
-from .music_titling import MusicLookupWorker, build_music_overlay, identify_music_track
+from .music_titling import MusicLookupWorker, build_music_overlay, identify_music_track, is_music_item
 from .audio_processor import build_audio_filters
 from .theme import QSS
 
@@ -234,7 +234,12 @@ class MainWindow(QMainWindow):
         self._music_request_id = 0
 
         self._build()
-        self.player = PyAVPlayer(self.video, MPV_PATH, self, vlc_path=VLC_PATH)
+        monitor_mode = str(self.settings.get("monitor_mode", "mpv" if (MPV_PATH and os.path.isfile(MPV_PATH)) else "pyav")).lower()
+        if monitor_mode == "mpv" and MPV_PATH and os.path.isfile(MPV_PATH):
+            from .mpv_player import MPVPlayer
+            self.player = MPVPlayer(self.video, MPV_PATH, self)
+        else:
+            self.player = PyAVPlayer(self.video, MPV_PATH, self, vlc_path=VLC_PATH)
         self.player.status.connect(self._status)
         self.player.levels.connect(self.vu.set_levels)
         self.ctrl = PlayoutController(self.db, self.player, self)
@@ -2300,7 +2305,10 @@ class MainWindow(QMainWindow):
             log.info("TMDB tarjeta no disponible: %s", error)
 
     def _tmdb_ready(self, request_id, index, item, metadata):
-        if request_id != self._tmdb_request_id or self.ctrl.current is not item:
+        if request_id != self._tmdb_request_id:
+            return
+        current = self.ctrl.current
+        if not current or current.get("path") != item.get("path"):
             return
         if self._apply_movie_card(metadata):
             self._status(f"TMDB • {metadata.get('title', item.get('title', 'Película'))}")
@@ -2350,8 +2358,11 @@ class MainWindow(QMainWindow):
             self.output.set_music_overlay("")
 
         settings = self.settings
-        if (not settings.get("music_titling_enabled", True) or
-                item.get("category") not in {"Música", "Musical", "Music"}):
+        if not settings.get("music_titling_enabled", True):
+            return
+
+        force_all = bool(settings.get("music_titling_all_categories", False))
+        if not (is_music_item(item) or force_all):
             return
 
         worker = MusicLookupWorker(item.get("path", ""), resolution=settings.get("resolution", "1920x1080"),
@@ -2367,7 +2378,10 @@ class MainWindow(QMainWindow):
             log.info("Titulación musical: error o sin datos (%s)", error)
 
     def _music_ready(self, request_id, index, item, metadata, overlay_path):
-        if request_id != self._music_request_id or self.ctrl.current is not item:
+        if request_id != self._music_request_id:
+            return
+        current = self.ctrl.current
+        if not current or current.get("path") != item.get("path"):
             return
         if metadata:
             self.db.update_music_metadata(item.get("path"), metadata)
@@ -2376,7 +2390,7 @@ class MainWindow(QMainWindow):
             intro_start = float(self.settings.get("music_titling_intro_start", 30.0))
             intro_dur = float(self.settings.get("music_titling_intro_duration", 12.0))
             outro_dur = float(self.settings.get("music_titling_outro_duration", 10.0))
-            dur = float(item.get("duration") or 0.0)
+            dur = float(current.get("duration") or item.get("duration") or 0.0)
 
             self.player.set_music_overlay(str(overlay_path), dur, intro_start, intro_dur, outro_dur)
             if self.output and self.output.isRunning() and self.ctrl.is_on_air:

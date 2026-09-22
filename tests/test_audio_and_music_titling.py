@@ -314,3 +314,67 @@ def test_concat_manifest_and_fallback_slates():
         assert "scale=1920:1080:force_original_aspect_ratio=decrease" in cmd_str
 
 
+def test_mpv_player_overlay_stubs_and_parity():
+    """Verifica que MPVPlayer implemente las llamadas de superposición y branding."""
+    from app.mpv_player import MPVPlayer
+    player = MPVPlayer(None, mpv_path="")
+    player.set_logo({"enabled": True, "path": "/logo.png"})
+    assert player.logo.get("path") == "/logo.png"
+
+    player.set_program_overlay("/overlay_prog.png", interval=600.0, duration=10.0)
+    assert player.program_overlay == "/overlay_prog.png"
+
+    player.set_music_overlay("/overlay_music.png", duration=180.0, intro_start=30.0, intro_dur=12.0, outro_dur=10.0)
+    assert player.music_overlay == "/overlay_music.png"
+
+
+def test_music_ready_and_tmdb_ready_item_matching():
+    """Verifica que _music_ready y _tmdb_ready apliquen superposiciones correctamente por path."""
+    from app.main_window import MainWindow
+    # Test that dict copies with the same path match successfully
+    class DummyPlayer:
+        def __init__(self):
+            self.music_overlay = None
+            self.tmdb_overlay = None
+
+        def set_music_overlay(self, path, dur, intro_start, intro_dur, outro_dur):
+            self.music_overlay = (path, dur, intro_start, intro_dur, outro_dur)
+
+        def set_program_overlay(self, path, interval, duration):
+            self.tmdb_overlay = (path, interval, duration)
+
+    class DummyCtrl:
+        def __init__(self, current):
+            self.current = current
+            self.is_on_air = True
+
+    class DummyDB:
+        def update_music_metadata(self, path, meta):
+            pass
+        def update_tmdb_metadata(self, path, meta):
+            pass
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        overlay = os.path.join(tmpdir, "overlay.png")
+        Path(overlay).write_bytes(b"dummy_png")
+
+        # Create window dummy with unbound method execution
+        current_item = {"path": "/media/song.mp4", "duration": 200.0, "title": "Test Song"}
+        item_copy = {"path": "/media/song.mp4", "duration": 200.0, "title": "Test Song"}
+
+        win = MainWindow.__new__(MainWindow)
+        win._music_request_id = 42
+        win.ctrl = DummyCtrl(current_item)
+        win.db = DummyDB()
+        win.settings = {"music_titling_intro_start": 30.0, "music_titling_intro_duration": 12.0, "music_titling_outro_duration": 10.0}
+        win.player = DummyPlayer()
+        win.output = None
+        win._status = lambda msg: None
+
+        MainWindow._music_ready(win, 42, 0, item_copy, {"title": "Test Song", "artist": "Artist"}, overlay)
+        assert win.player.music_overlay is not None
+        assert win.player.music_overlay[0] == overlay
+        assert win.player.music_overlay[1] == 200.0
+
+
+

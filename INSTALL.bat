@@ -6,7 +6,7 @@ set "VENV=.venv"
 set "PYTHON_EXE=%VENV%\Scripts\python.exe"
 
 echo ================================================
-echo   Nexora Air V25.1.0 - INSTALADOR
+echo   Nexora Air V25.3.0 - INSTALADOR
 echo ================================================
 echo.
 

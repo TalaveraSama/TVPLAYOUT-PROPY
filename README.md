@@ -1,10 +1,26 @@
-# Nexora Air V25.1.0 — continuidad broadcast 24/7
+# Nexora Air V25.3.0 — continuidad broadcast 24/7
 
 <p align="center">
   <img src="assets/logo.png" alt="Nexora Air" width="180">
 </p>
 
 **Nexora Air** es la plataforma de continuidad broadcast para Windows que une programación, biblioteca y salidas IP en un solo flujo optimizado para películas, videos musicales y eventos en vivo. V25 conserva y migra las bibliotecas de TVPlayout PRO.
+
+## Novedades de V25.3.0
+
+- **Sincronización Total y Monitoreo MPV de Alto Rendimiento:**
+  - Integración nativa de `MPVPlayer` para la ventana de monitoreo local con aceleración por hardware (`--hwdec`), mínima latencia y cero retrasos respecto a las salidas RTMP/SRT/NDI.
+  - Soporte completo de marcas de entrada y salida (`start`, `end`), control de volumen, niveles de audio VU estéreo y superposiciones gráficas (`set_logo`, `set_program_overlay`, `set_music_overlay`).
+  - Sincronización perfecta entre la lista de emisión, el monitor y el codificador RTMP, eliminando desajustes de tiempo.
+- **Titulación Musical y Tipografía de Letras Optimizada:**
+  - Detección automática en todas las categorías de videos musicales, canciones, videoclips y archivos con formato `"Artista - Título"`.
+  - Tipografía de alto contraste con sombras suaves para máxima legibilidad de letras sobre cualquier fondo de video.
+  - Visualización completa de Título, Artista, Álbum, Año y Sello Discográfico en monitor y salidas IP.
+  - Temporización broadcast con entrada al inicio y salida en los últimos 10 segundos del videoclip.
+- **Continuidad y Transición Fluida de Identificadores:**
+  - Depuración de bumpers de entrada y salida (`in` / `out`) para transiciones limpias y fluidas sin desconexiones de socket RTMP.
+  - Protección del watcher de salida para evitar reinicios secundarios de FFmpeg durante las transiciones de identificadores.
+  - Modo de espera automático con barras de ajuste SMPTE y pantalla negra para continuidad ininterrumpida 24/7.
 
 ## Novedades de V25.1.0
 
@@ -116,7 +132,7 @@ se mantiene dentro de ese margen con un tamaño profesional predeterminado del 1
 
 ### Setup todo-en-uno (recomendado)
 
-Descarga y abre **`Setup_NexoraAir_V25.1.0.exe`** desde la release V25. No
+Descarga y abre **`Setup_NexoraAir_V25.3.0.exe`** desde la release V25. No
 requiere instalar Python, Qt, PyAV ni FFmpeg por separado. Se instala por usuario
 en `%LOCALAPPDATA%\Programs\NexoraAir`, crea accesos directos y migra los datos
 de una instalación anterior.

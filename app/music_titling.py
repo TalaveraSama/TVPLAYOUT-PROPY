@@ -488,25 +488,39 @@ def render_music_overlay(track_meta: Dict[str, str], resolution: Any = (1920, 10
 
     # Línea 1: CANCIÓN (Grande, bold, blanco)
     title_font_size = max(14, int(26 * factor * scale))
-    title_font = QFont("Segoe UI", title_font_size, QFont.Weight.Bold)
+    title_font = QFont()
+    title_font.setFamilies(["Segoe UI", "Montserrat", "Arial", "Helvetica", "sans-serif"])
+    title_font.setPixelSize(title_font_size)
+    title_font.setWeight(QFont.Weight.Bold)
     title_font.setStyleStrategy(QFont.StyleStrategy.PreferAntialias)
     p.setFont(title_font)
-    p.setPen(QColor(255, 255, 255))
     fm_title = QFontMetrics(title_font)
     elided_title = fm_title.elidedText(title.upper() if title else "MÚSICA", Qt.TextElideMode.ElideRight, int(max_text_w))
-    title_y = box_y + (38 * factor * scale)
+    title_y = box_y + (42 * factor * scale)
+    # Sombra de texto
+    p.setPen(QColor(0, 0, 0, 190))
+    p.drawText(int(text_x + 1), int(title_y + 1), elided_title)
+    # Texto frontal
+    p.setPen(QColor(255, 255, 255))
     p.drawText(int(text_x), int(title_y), elided_title)
 
     # Línea 2: ARTISTA (Mediano, color de acento / cyan)
     artist_font_size = max(12, int(20 * factor * scale))
-    artist_font = QFont("Segoe UI", artist_font_size, QFont.Weight.DemiBold)
+    artist_font = QFont()
+    artist_font.setFamilies(["Segoe UI", "Montserrat", "Arial", "Helvetica", "sans-serif"])
+    artist_font.setPixelSize(artist_font_size)
+    artist_font.setWeight(QFont.Weight.DemiBold)
     artist_font.setStyleStrategy(QFont.StyleStrategy.PreferAntialias)
     p.setFont(artist_font)
-    p.setPen(QColor(accent_hex))
     fm_artist = QFontMetrics(artist_font)
     artist_display = artist or "Artista Desconocido"
     elided_artist = fm_artist.elidedText(artist_display, Qt.TextElideMode.ElideRight, int(max_text_w))
-    artist_y = title_y + (28 * factor * scale)
+    artist_y = title_y + (30 * factor * scale)
+    # Sombra de texto
+    p.setPen(QColor(0, 0, 0, 190))
+    p.drawText(int(text_x + 1), int(artist_y + 1), elided_artist)
+    # Texto frontal
+    p.setPen(QColor(accent_hex))
     p.drawText(int(text_x), int(artist_y), elided_artist)
 
     # Línea 3: Álbum / Año / Discográfica (Pequeño, gris claro)
@@ -518,20 +532,49 @@ def render_music_overlay(track_meta: Dict[str, str], resolution: Any = (1920, 10
     if label and len(sub_parts) < 2:
         sub_parts.append(label)
     sub_text = " • ".join(sub_parts)
+    if not sub_text and (artist or title):
+        sub_text = "Video Musical • Transmisión HD"
 
     if sub_text:
         sub_font_size = max(10, int(14 * factor * scale))
-        sub_font = QFont("Segoe UI", sub_font_size, QFont.Weight.Normal)
+        sub_font = QFont()
+        sub_font.setFamilies(["Segoe UI", "Montserrat", "Arial", "Helvetica", "sans-serif"])
+        sub_font.setPixelSize(sub_font_size)
+        sub_font.setWeight(QFont.Weight.Normal)
         sub_font.setStyleStrategy(QFont.StyleStrategy.PreferAntialias)
         p.setFont(sub_font)
-        p.setPen(QColor(190, 200, 215, 220))
         fm_sub = QFontMetrics(sub_font)
         elided_sub = fm_sub.elidedText(sub_text, Qt.TextElideMode.ElideRight, int(max_text_w))
-        sub_y = artist_y + (22 * factor * scale)
+        sub_y = artist_y + (24 * factor * scale)
+        # Sombra de texto
+        p.setPen(QColor(0, 0, 0, 190))
+        p.drawText(int(text_x + 1), int(sub_y + 1), elided_sub)
+        # Texto frontal
+        p.setPen(QColor(210, 220, 235, 230))
         p.drawText(int(text_x), int(sub_y), elided_sub)
 
     p.end()
     return canvas
+
+
+def is_music_item(item: Any) -> bool:
+    """Determina si un ítem de la lista de reproducción es un video musical o pista de música."""
+    if not item or not isinstance(item, dict):
+        return False
+    cat = str(item.get("category") or "").strip().lower()
+    if cat in {
+        "música", "musica", "musical", "musicales", "music",
+        "videoclip", "videoclips", "video musical", "videos musicales",
+        "canción", "cancion", "canciones", "pop", "rock", "urbano",
+        "reggaeton", "salsa", "balada", "clip", "clips"
+    }:
+        return True
+    if item.get("artist") or item.get("music_metadata"):
+        return True
+    path = str(item.get("path") or "")
+    if " - " in Path(path).stem:
+        return True
+    return False
 
 
 def build_music_overlay(track_meta: Dict[str, str], resolution: Any, out_path: Path | str,
@@ -552,15 +595,18 @@ def is_music_overlay_visible(position: float, duration: float,
     pos = max(0.0, float(position or 0.0))
     dur = max(0.0, float(duration or 0.0))
 
-    # Ventana de Entrada: Inicia a los 30 segundos y permanece por intro_duration
-    in_intro = (intro_start <= pos < intro_start + intro_duration)
+    # Ventana de Entrada: Inicia a los intro_start segundos (o desde 0s si el clip es corto)
+    if 0 < dur <= (intro_start + intro_duration):
+        in_intro = (0.0 <= pos < intro_duration)
+    else:
+        in_intro = (intro_start <= pos < intro_start + intro_duration)
 
     # Ventana de Salida: En los últimos 10 segundos de la canción
     in_outro = False
     if dur > (intro_start + intro_duration):
         in_outro = (pos >= max(0.0, dur - outro_duration))
     elif dur > outro_duration:
-        in_outro = (pos >= dur - outro_duration)
+        in_outro = (pos >= max(0.0, dur - outro_duration))
 
     return in_intro or in_outro
 
@@ -574,19 +620,20 @@ def build_music_enable_expression(offset: float, duration: float,
 
     windows = []
 
-    # Ventana de entrada (30s)
-    intro_in = max(0.0, intro_start - origin)
-    intro_out = max(0.0, (intro_start + intro_duration) - origin)
+    # Ventana de entrada
+    effective_intro_start = 0.0 if (0 < total <= (intro_start + intro_duration)) else intro_start
+    intro_in = max(0.0, effective_intro_start - origin)
+    intro_out = max(0.0, (effective_intro_start + intro_duration) - origin)
     if intro_out > 0 and (total <= 0 or intro_in < total):
-        if origin < (intro_start + intro_duration):
+        if origin < (effective_intro_start + intro_duration):
             windows.append(f"between(t,{intro_in:.3f},{intro_out:.3f})")
 
     # Ventana de salida (últimos 10s)
-    if total > (intro_start + intro_duration):
+    if total > (effective_intro_start + intro_duration):
         outro_start = max(0.0, total - outro_duration)
         outro_in = max(0.0, outro_start - origin)
         outro_out = max(0.0, total - origin)
-        if outro_out > 0:
+        if outro_out > 0 and outro_out > outro_in:
             windows.append(f"between(t,{outro_in:.3f},{outro_out:.3f})")
 
     return "+".join(windows)

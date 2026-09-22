@@ -524,7 +524,7 @@ class MPVPlayer(QObject):
             log.info("play_loop: %s", path)
         return ok
 
-    def play(self, path, audio_id=None, sub_id=None, start=0.0, loop=False):
+    def play(self, path, audio_id=None, sub_id=None, start=0.0, end=0.0, loop=False):
         if not self.start():
             return False
         self._current_path = path
@@ -532,31 +532,6 @@ class MPVPlayer(QObject):
         # entre, queremos aplicar el fade-in (vía el filter chain) y
         # dejar que _tick() vuelva a triggerear el fade-out al final.
         self._fade_out_applied = False
-        # v22.2.7: bug crítico de sincronización. Antes mandábamos 7
-        # set_property ANTES del loadfile (aid/sid/start/loop-file/
-        # volume/mute/pause). Esto causaba tres problemas en builds
-        # modernos de mpv:
-        #  1) set_property("start", "none") podía conservarse del
-        #     archivo anterior (#15544 en mpv repo: loadfile a veces
-        #     ignora start cuando viene de un set_property previo).
-        #  2) set_property("pause", false) ANTES del loadfile hacía
-        #     que el nuevo archivo arrancara con un frame del archivo
-        #     anterior (estado interno de mpv inconsistente).
-        #  3) Los set_property y el loadfile entran en cola en orden,
-        #     pero mpv puede procesarlos fuera de orden. Las propiedades
-        #     de la sesión anterior (volume, mute, start) se aplicaban
-        #     al archivo viejo.
-        # Síntoma: el panel mostraba "AL AIRE" el nuevo clip pero el
-        # monitor seguía mostrando el frame del clip anterior.
-        #
-        # Fix: usar loadfile con opciones embebidas (start, pause, volume,
-        # mute, loop-file, sid, aid) en un solo comando atómico. Las
-        # opciones embebidas en loadfile SÍ se aplican en orden, antes
-        # de decodificar el primer frame del nuevo archivo.
-        # v22.2.8: NO usar opciones embebidas en loadfile — mpv las
-        # rechaza (issue #5770). Volvemos a set_property separados.
-        # El método _post_load_apply se encarga de reaplicar las
-        # propiedades críticas 200ms después del loadfile.
         if isinstance(audio_id, int) and audio_id >= 0:
             self.set_property("aid", int(audio_id) + 1)
         else:
@@ -569,6 +544,7 @@ class MPVPlayer(QObject):
             self.set_property("sid", int(sub_id) + 1)
         # start=0 → "none" para que mpv no herede offset anterior
         self.set_property("start", f"{float(start):.3f}" if start and start > 0 else "none")
+        self.set_property("end", f"{float(end):.3f}" if end and end > 0 else "none")
         self.set_property("loop-file", "inf" if loop else "no")
         self.set_property("volume", float(self.volume))
         self.set_property("mute", "yes" if self.muted else "no")
@@ -672,6 +648,18 @@ class MPVPlayer(QObject):
             self._fade_out_applied = True
             log.info("fade-out aplicado: duración %.2fs", d)
         return ok
+
+    def set_logo(self, logo):
+        """Configura el logotipo de canal."""
+        self.logo = logo
+
+    def set_program_overlay(self, path, interval=1080.0, duration=15.0):
+        """Configura la tarjeta o zócalo de programa."""
+        self.program_overlay = str(path or "")
+
+    def set_music_overlay(self, path, duration=0.0, intro_start=30.0, intro_dur=12.0, outro_dur=10.0):
+        """Configura el zócalo musical."""
+        self.music_overlay = str(path or "")
 
     def open_external_preview(self, path, title="PREVIEW"):
         """Abre el clip en una ventana mpv independiente (previsualización sin afectar el aire)."""

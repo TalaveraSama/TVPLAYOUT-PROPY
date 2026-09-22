@@ -870,7 +870,8 @@ class SettingsDialog(BaseDialog):
         self.audio_device = QLineEdit(self.settings.get("audio_device", ""))
         self.audio_device.setPlaceholderText("vacío = predeterminado (ej. wasapi/{guid})")
         self.monitor_mode = QComboBox()
-        self.monitor_mode.addItem("PyAV/libav (predeterminado)", "pyav")
+        self.monitor_mode.addItem("mpv nativo (reproductor integrado de alto rendimiento)", "mpv")
+        self.monitor_mode.addItem("PyAV/libav (reproductor Python integrado)", "pyav")
         self.monitor_mode.addItem("Programa FFmpeg → reproductor externo", "program_feed")
         # v24.0.2.37: para VPS sin monitor ni CPU de sobra: el playout avanza
         # con el reloj de pared y sólo FFmpeg decodifica (las salidas IP).
