@@ -2172,7 +2172,11 @@ class MainWindow(QMainWindow):
                                           program_interval=max(1, int(s.get("tmdb_interval_minutes", 18))) * 60.0,
                                           program_duration=max(1, int(s.get("tmdb_duration_seconds", 15))),
                                           ndi_ffmpeg=FFMPEG_NDI_PATH, ndi_source=self.player, parent=self,
-                                          externally_controlled=bool(self.ctrl.clock_only and needs_ffmpeg),
+                                          # El worker RTMP nunca debe avanzar por su
+                                          # cuenta: el playout local/clock decide el
+                                          # siguiente evento. Antes sólo se activaba
+                                          # en modo Reloj y FFmpeg podía adelantarse.
+                                          externally_controlled=bool(needs_ffmpeg),
                                           audio_processor_config=self._audio_processor_config(),
                                           music_overlay=self._music_overlay_path,
                                           music_intro_start=float(s.get("music_titling_intro_start", 30.0)),
