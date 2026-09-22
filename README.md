@@ -1,10 +1,21 @@
-# Nexora Air V25.5.0 — continuidad broadcast 24/7
+# Nexora Air V25.6.0 — continuidad broadcast 24/7
 
 <p align="center">
   <img src="assets/logo.png" alt="Nexora Air" width="180">
 </p>
 
 **Nexora Air** es la plataforma de continuidad broadcast para Windows que une programación, biblioteca y salidas IP en un solo flujo optimizado para películas, videos musicales y eventos en vivo. V25 conserva y migra las bibliotecas de TVPlayout PRO.
+
+## Novedades de V25.6.0
+
+- **Release reproducible y validada:** la versión, la documentación de build y
+  los launchers de Windows se mantienen sincronizados desde la fuente central
+  de `app/config.py`.
+- **Preparación segura de releases:** `tools/prepare_release.py` actualiza
+  únicamente las referencias de la release actual, conserva el histórico y
+  permite validar todo con `python3 tools/prepare_release.py --check`.
+- **Notas de release incluidas:** la comprobación previa también verifica la
+  existencia y el contenido de `RELEASE_NOTES/v25.6.0.md`.
 
 ## Novedades de V25.5.0
 
@@ -154,7 +165,7 @@ se mantiene dentro de ese margen con un tamaño profesional predeterminado del 1
 
 ### Setup todo-en-uno (recomendado)
 
-Descarga y abre **`Setup_NexoraAir_V25.5.0.exe`** desde la release V25. No
+Descarga y abre **`Setup_NexoraAir_V25.6.0.exe`** desde la release V25. No
 requiere instalar Python, Qt, PyAV ni FFmpeg por separado. Se instala por usuario
 en `%LOCALAPPDATA%\Programs\NexoraAir`, crea accesos directos y migra los datos
 de una instalación anterior.
