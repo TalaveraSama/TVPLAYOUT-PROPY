@@ -2304,7 +2304,22 @@ class MainWindow(QMainWindow):
             # No reutilizar la tarjeta de la película anterior mientras TMDB
             # resuelve la nueva; la respuesta llega de forma asíncrona.
             self.output.set_program_overlay("")
-            self.output.sync_items(self.ctrl.export_items(), index, force_jump=True, start_offset=start_offset)
+            # Si FFmpeg ya llegó naturalmente al mismo evento, no lo mates y
+            # lo vuelvas a abrir: esa terminación/reapertura era el pequeño
+            # corte que se oía al cambiar de video. Sólo saltar con force_jump
+            # cuando la salida todavía está en otro contenido.
+            output_current = getattr(self.output, "current_item", None) or {}
+            output_index = getattr(self.output, "current_index", -1)
+            output_items = getattr(self.output, "items", []) or []
+            if 0 <= int(output_index) < len(output_items):
+                output_current = output_items[int(output_index)]
+            same_content = (str(output_current.get("path") or "") ==
+                            str((_item or {}).get("path") or ""))
+            self.output.sync_items(
+                self.ctrl.export_items(), index,
+                force_jump=not same_content,
+                start_offset=start_offset if not same_content else 0.0,
+            )
             # v22.2.1: al cambiar de clip el offset se resetea a 0 en el RTMP,
             # no tiene sentido que el watcher intente realinear durante 3s.
             self._rtmp_drift_bad_count = 0
