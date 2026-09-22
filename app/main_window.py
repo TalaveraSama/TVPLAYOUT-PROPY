@@ -36,7 +36,7 @@ from .widgets import StationClock, VUMeter, VideoSurface, LedLabel, ProgressBarT
 from .dialogs import (PlaylistManagerDialog, SourcesDialog, SchedulerDialog, LogsDialog, SettingsDialog, EditClipDialog,
                         LibraryClipDialog, LiveStreamDialog)
 from .dialogs_tmdb import TMDBEditDialog, TMDBCardDialog
-from .dialogs_audio import AudioProcessorDialog
+from .dialogs_audio import AudioProcessorDialog, AudioMixerDialog
 from .dialogs_music import MusicTitlingDialog
 from .music_titling import MusicLookupWorker, build_music_overlay, identify_music_track, is_music_item
 from .audio_processor import build_audio_filters
@@ -54,7 +54,7 @@ STATUS_LABEL = {ST_PENDING: "", ST_READY: "LISTO", ST_ONAIR: "AL AIRE", ST_AIRED
                 ST_ERROR: "ERROR", ST_SKIPPED: "OMITIDO"}
 
 DEFAULT_SETTINGS = {
-    "rtmp_url": "", "outputs": [], "resolution": "1920x1080", "fps": "29.97", "encoder": "AUTO", "bitrate": 6000, "audio_bitrate": 192,
+    "rtmp_url": "", "outputs": [], "resolution": "1920x1080", "fps": "29.97", "encoder": "CPU/x264", "video_profile": "baseline", "x264_preset": "veryfast", "keyframe_interval": 2, "bitrate": 6000, "audio_bitrate": 192,
     "subtitle_burn": True, "ffmpeg_extra": "", "rtmp_autostart": False, "rtmp_mode": "local",
     "audio_pref": AUDIO_PREFS[0], "sub_pref": "OFF", "hwdec": "auto-safe", "audio_device": "",
     "autofill_category": "Todas", "autofill_count": 10, "tandas_category": "Publicidad", "tandas_count": 2,
@@ -76,6 +76,9 @@ DEFAULT_SETTINGS = {
     "audio_proc_comp_makeup": 2.0, "audio_proc_equalizer": False, "audio_proc_eq_bass": 0.0,
     "audio_proc_eq_presence": 2.0, "audio_proc_eq_treble": 1.5, "audio_proc_stereo_enhance": False,
     "audio_proc_limiter": True, "audio_proc_gain_db": 0.0,
+    # Mezclador master de programa, equivalente al fader/mute de OBS.
+    "audio_mixer_gain_db": 0.0, "audio_mixer_muted": False,
+    "audio_mixer_monitor_gain_db": 0.0, "audio_mixer_ducking": False,
     # Titulación de videos musicales en vivo
     "music_titling_enabled": True, "music_titling_service": "auto",
     "music_titling_intro_start": 30.0, "music_titling_intro_duration": 12.0, "music_titling_outro_duration": 10.0,
@@ -84,6 +87,7 @@ DEFAULT_SETTINGS = {
     "music_audd_api_token": "", "music_acoustid_api_key": "",
     "music_acrcloud_host": "", "music_acrcloud_key": "", "music_acrcloud_secret": "",
     "monitor_mode": "pyav", "monitor_player": "VLC", "monitor_player_path": "", "monitor_feed_port": 39000,
+    "output_buffer_seconds": 5.0,
     # v24.0.2.37: NDI deshabilitado temporalmente a petición del operador
     # (el VPS no tiene el NDI Runtime y el reintento llenaba el log). Se
     # reactiva con la casilla de Ajustes.
@@ -91,7 +95,7 @@ DEFAULT_SETTINGS = {
     "restore_playlist": True, "autoplay": False, "probe_on_scan": True,
     "mode": "auto", "loop": True, "exact_time": True, "autofill": False, "tandas": False, "autoscroll": True,
     "volume": 100, "muted": False, "emergency_clip": "", "splitter": [1120, 430],
-    "logo_enabled": False, "logo_path": "", "logo_position": "arriba-derecha", "logo_scale": 10, "logo_opacity": 90,
+    "logo_enabled": False, "logo_path": "", "logo_position": "arriba-derecha", "logo_scale": 10, "logo_custom_size": False, "logo_width_pct": 10, "logo_height_pct": 10, "logo_opacity": 90,
     "logo_margin": 48,
     # v23.3: filler automático. Cuando se acaba la lista, se carga el
     # clip de filler en loop infinito para que el monitor nunca quede
@@ -734,7 +738,8 @@ class MainWindow(QMainWindow):
                  ("Fuentes /\nCategorías", self.open_sources), ("Ajustes del\nsistema", self.open_settings),
                  ("Salidas IP\nRTMP/SRT/NDI", self.open_outputs), ("Escanear\nbiblioteca", self.start_scan),
                  ("Lienzo de salida\n(RTMP)", self.open_canvas), ("Logo / CG\n(RTMP)", self.open_logo), ("Tarjeta\nTMDB", self.open_tmdb_card),
-                 ("Sonido\nPRO", self.open_audio_processor), ("Titulación\nMusical", self.open_music_titling),
+                 ("Sonido\nPRO", self.open_audio_processor), ("Audio / Mixer\nPrograma", self.open_audio_mixer),
+                 ("Titulación\nMusical", self.open_music_titling),
                  ("Dispositivos", self.open_devices)]
         self._fn_buttons = []
         for i, (text, slot) in enumerate(funcs):
@@ -2211,6 +2216,9 @@ class MainWindow(QMainWindow):
                                           s.get("sub_pref", "OFF"),
                                           bool(s.get("subtitle_burn", True) or str(s.get("sub_pref", "OFF")).upper() != "OFF"),
                                           int(s.get("audio_bitrate", 192)),
+                                          video_profile=str(s.get("video_profile", "baseline")),
+                                          x264_preset=str(s.get("x264_preset", "veryfast")),
+                                          keyframe_interval=int(s.get("keyframe_interval", 2)),
                                           loop=True, start_index=max(0, self.ctrl.onair), start_offset=mpv_time,
                                           extra_args=s.get("ffmpeg_extra", ""), logo=self._logo_config(),
                                           program_overlay=self._tmdb_overlay_path,
@@ -2221,6 +2229,9 @@ class MainWindow(QMainWindow):
                                           # cuenta: el playout local/clock decide el
                                           # siguiente evento. Antes sólo se activaba
                                           # en modo Reloj y FFmpeg podía adelantarse.
+                                          # La sesión persistente es el dueño del avance de la salida; MPV
+                                          # continúa siendo el monitor local. No se reinicia FFmpeg al cambiar de archivo.
+                                          # Compatibilidad documental: antes era externally_controlled=bool(self.ctrl.clock_only and needs_ffmpeg).
                                           externally_controlled=bool(needs_ffmpeg),
                                           audio_processor_config=self._audio_processor_config(),
                                           music_overlay=self._music_overlay_path,
@@ -2229,6 +2240,7 @@ class MainWindow(QMainWindow):
                                           music_outro_duration=float(s.get("music_titling_outro_duration", 10.0)),
                                           fallback_mode=str(s.get("output_fallback", "bars")),
                                           seamless_concat=bool(s.get("output_seamless", True)),
+                                          output_buffer_seconds=float(s.get("output_buffer_seconds", 5.0)),
                                           monitor_feed_url=monitor_feed_url)
         # V25: en modo Reloj, FFmpeg deja de «seguir» a un segundo reloj y se
         # convierte en el player master. Su progreso y EOF gobiernan la lista.
@@ -2265,6 +2277,9 @@ class MainWindow(QMainWindow):
             return None
         hidden_categories = {"Publicidad", str(s.get("tandas_category") or "Publicidad")}
         return {"path": s["logo_path"], "position": s.get("logo_position", "arriba-derecha"), "scale": int(s.get("logo_scale", 12)),
+                "custom_size": bool(s.get("logo_custom_size", False)),
+                "width_pct": int(s.get("logo_width_pct", s.get("logo_scale", 10))),
+                "height_pct": int(s.get("logo_height_pct", s.get("logo_scale", 10))),
                 "opacity": int(s.get("logo_opacity", 90)), "margin": int(s.get("logo_margin", 24)),
                 "hide_categories": sorted(hidden_categories)}
 
@@ -2607,7 +2622,7 @@ class MainWindow(QMainWindow):
         output_items = getattr(self.output, "items", []) or []
         if 0 <= clip < len(output_items):
             output_item = output_items[clip]
-        onair_item = self.ctrl.current if onair is not None and onair >= 0 else None
+        onair_item = getattr(self.ctrl, "current", None) if onair is not None and onair >= 0 else None
 
         def _event_path(item):
             if not item:
@@ -2851,6 +2866,10 @@ class MainWindow(QMainWindow):
             "audio_proc_stereo_enhance": bool(s.get("audio_proc_stereo_enhance", False)),
             "audio_proc_limiter": bool(s.get("audio_proc_limiter", True)),
             "audio_proc_gain_db": float(s.get("audio_proc_gain_db", 0.0)),
+            "audio_mixer_gain_db": float(s.get("audio_mixer_gain_db", 0.0)),
+            "audio_mixer_muted": bool(s.get("audio_mixer_muted", False)),
+            "audio_mixer_monitor_gain_db": float(s.get("audio_mixer_monitor_gain_db", 0.0)),
+            "audio_mixer_ducking": bool(s.get("audio_mixer_ducking", False)),
         }
 
     def open_audio_processor(self):
@@ -2865,6 +2884,20 @@ class MainWindow(QMainWindow):
                 self._status("Procesador de audio actualizado • se aplica en las salidas IP")
             else:
                 self._status("Ajustes de sonido profesional guardados")
+
+    def open_audio_mixer(self):
+        """Abre el mezclador de programa y actualiza el filtro de salida sin reiniciar RTMP."""
+        d = AudioMixerDialog(self, self.settings)
+        if d.exec() != QDialog.Accepted:
+            return
+        for key, value in d.values().items():
+            if self.settings.get(key) != value:
+                self._save_setting(key, value)
+        if self.output and self.output.isRunning():
+            self.output.set_audio_processor(self._audio_processor_config())
+            self._status("Mezclador guardado • se aplica al siguiente evento sin cerrar la sesión RTMP")
+        else:
+            self._status("Mezclador de programa guardado")
 
     def open_music_titling(self):
         """Abre el diálogo de configuración de Reconocimiento y Titulación Musical en vivo."""

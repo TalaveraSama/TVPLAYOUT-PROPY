@@ -354,3 +354,82 @@ class AudioProcessorDialog(QDialog):
             "audio_proc_limiter": self.limiter_chk.isChecked(),
             "audio_proc_gain_db": self.gain_db.value(),
         }
+
+class AudioMixerDialog(QDialog):
+    """Mezclador de programa inspirado en OBS para la salida broadcast.
+
+    El fader de programa se aplica al audio que entra al encoder; el volumen
+    del monitor local continúa siendo independiente y no modifica RTMP.
+    """
+
+    def __init__(self, parent=None, settings=None):
+        super().__init__(parent)
+        self.settings = dict(settings or {})
+        self.setWindowTitle("Audio / Mixer — Programa RTMP")
+        _prepare_resizable_dialog(self, 520, 430, 460, 360)
+        self._build_ui()
+        self._load()
+
+    def _build_ui(self):
+        root = QVBoxLayout(self)
+        root.setContentsMargins(16, 16, 16, 16)
+        root.setSpacing(10)
+        title = QLabel("MEZCLADOR DE PROGRAMA")
+        title.setStyleSheet("font-size:16px; font-weight:bold; color:#00e5ff;")
+        root.addWidget(title)
+        info = QLabel("Estos controles actúan antes de x264 y afectan RTMP/SRT/UDP.\nEl volumen del monitor local es independiente.")
+        info.setWordWrap(True)
+        info.setStyleSheet("color:#aaa;")
+        root.addWidget(info)
+
+        box = QGroupBox("Canal de programa / Master")
+        form = QFormLayout(box)
+        self.gain = QDoubleSpinBox()
+        self.gain.setRange(-24.0, 12.0)
+        self.gain.setSingleStep(0.5)
+        self.gain.setSuffix(" dB")
+        form.addRow("Fader de salida:", self.gain)
+        self.muted = QCheckBox("Silenciar programa hacia RTMP")
+        form.addRow("", self.muted)
+        root.addWidget(box)
+
+        monitor_box = QGroupBox("Monitor local")
+        monitor_form = QFormLayout(monitor_box)
+        self.monitor_gain = QDoubleSpinBox()
+        self.monitor_gain.setRange(-24.0, 12.0)
+        self.monitor_gain.setSingleStep(0.5)
+        self.monitor_gain.setSuffix(" dB")
+        self.monitor_gain.setToolTip("Referencia guardada para el monitor local; no afecta la salida RTMP")
+        monitor_form.addRow("Ganancia de monitor:", self.monitor_gain)
+        self.ducking = QCheckBox("Atenuar música durante locución / fuente prioritaria")
+        monitor_form.addRow("", self.ducking)
+        root.addWidget(monitor_box)
+
+        chain = QLabel("Flujo: fuente de audio → mixer master → filtros PRO → AAC → FLV/RTMP")
+        chain.setStyleSheet("color:#00bcd4; font-family:monospace;")
+        root.addWidget(chain)
+        root.addStretch(1)
+        buttons = QHBoxLayout()
+        cancel = QPushButton("Cancelar")
+        cancel.clicked.connect(self.reject)
+        save = QPushButton("Guardar y aplicar")
+        save.setStyleSheet("background:#00bcd4; color:#000; font-weight:bold; padding:6px 14px;")
+        save.clicked.connect(self.accept)
+        buttons.addStretch(1)
+        buttons.addWidget(cancel)
+        buttons.addWidget(save)
+        root.addLayout(buttons)
+
+    def _load(self):
+        self.gain.setValue(float(self.settings.get("audio_mixer_gain_db", 0.0)))
+        self.muted.setChecked(bool(self.settings.get("audio_mixer_muted", False)))
+        self.monitor_gain.setValue(float(self.settings.get("audio_mixer_monitor_gain_db", 0.0)))
+        self.ducking.setChecked(bool(self.settings.get("audio_mixer_ducking", False)))
+
+    def values(self):
+        return {
+            "audio_mixer_gain_db": self.gain.value(),
+            "audio_mixer_muted": self.muted.isChecked(),
+            "audio_mixer_monitor_gain_db": self.monitor_gain.value(),
+            "audio_mixer_ducking": self.ducking.isChecked(),
+        }

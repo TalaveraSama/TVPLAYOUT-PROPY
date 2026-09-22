@@ -151,7 +151,15 @@ AUDIO_PRESETS = {
 def build_audio_filters(config: Dict[str, Any] | None = None) -> str:
     """Construye la cadena de filtros de audio FFmpeg (-af) según los ajustes configurados."""
     if not config or not config.get("audio_proc_enabled", False):
-        return "aresample=async=1:first_pts=0"
+        filters = []
+        mixer_gain = float((config or {}).get("audio_mixer_gain_db", 0.0) or 0.0)
+        mixer_muted = bool((config or {}).get("audio_mixer_muted", False))
+        if mixer_muted:
+            filters.append("volume=0")
+        elif abs(mixer_gain) > 0.1:
+            filters.append(f"volume={mixer_gain:+.1f}dB")
+        filters.append("aresample=async=1:first_pts=0")
+        return ",".join(filters)
 
     filters = []
 
@@ -207,7 +215,14 @@ def build_audio_filters(config: Dict[str, Any] | None = None) -> str:
     if abs(gain) > 0.1:
         filters.append(f"volume={gain:+.1f}dB")
 
-    # 8. Resampleo final estable
+    # 8. Mezclador master de salida, equivalente al fader de programa de OBS.
+    mixer_gain = float(config.get("audio_mixer_gain_db", 0.0) or 0.0)
+    if bool(config.get("audio_mixer_muted", False)):
+        filters.append("volume=0")
+    elif abs(mixer_gain) > 0.1:
+        filters.append(f"volume={mixer_gain:+.1f}dB")
+
+    # 9. Resampleo final estable
     filters.append("aresample=async=1:first_pts=0")
 
     return ",".join(filters)

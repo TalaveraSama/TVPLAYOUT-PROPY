@@ -51,7 +51,7 @@ class LogoSafeAreaPreview(QWidget):
         self._scale = 10
         self._margin = 48
 
-    def set_values(self, path, position, scale, margin):
+    def set_values(self, path, position, scale, margin, custom_size=False, width_pct=None, height_pct=None):
         self._pixmap = QPixmap()
         path = str(path or "").strip()
         if path and os.path.isfile(path):
@@ -64,8 +64,9 @@ class LogoSafeAreaPreview(QWidget):
                     data = self._image_cache.get(key)
                     if data is None and FFMPEG_PATH and os.path.isfile(FFMPEG_PATH):
                         proc = subprocess.run(
-                            [FFMPEG_PATH, "-hide_banner", "-loglevel", "error", "-ss", "0", "-i", path,
-                             "-frames:v", "1", "-f", "image2pipe", "-vcodec", "png", "-"],
+                            [FFMPEG_PATH, "-hide_banner", "-loglevel", "error", "-ss", "0.1", "-i", path,
+                             "-an", "-sn", "-frames:v", "1", "-vf", "format=rgba",
+                             "-f", "image2pipe", "-vcodec", "png", "-"],
                             capture_output=True, timeout=12, creationflags=CREATE_NO_WINDOW)
                         data = bytes(proc.stdout or b"")
                         self._image_cache[key] = data
@@ -78,6 +79,9 @@ class LogoSafeAreaPreview(QWidget):
                 self._pixmap = QPixmap(path)
         self._position = position or "arriba-derecha"
         self._scale = max(2, int(scale or 10))
+        self._custom_size = bool(custom_size)
+        self._width_pct = max(2, int(width_pct or scale or 10))
+        self._height_pct = max(2, int(height_pct or scale or 10))
         self._margin = max(0, int(margin or 0))
         self.update()
 
@@ -126,8 +130,9 @@ class LogoSafeAreaPreview(QWidget):
             p.drawText(frame.adjusted(18, 16, -18, -16), Qt.AlignCenter | Qt.TextWordWrap, self._title)
 
         if not self._pixmap.isNull():
-            logo_w = max(8.0, frame.width() * self._scale / 100.0)
-            logo_h = logo_w * self._pixmap.height() / max(1, self._pixmap.width())
+            logo_w = max(8.0, frame.width() * (self._width_pct if self._custom_size else self._scale) / 100.0)
+            logo_h = (frame.height() * self._height_pct / 100.0 if self._custom_size
+                      else logo_w * self._pixmap.height() / max(1, self._pixmap.width()))
             margin_x = frame.width() * self._margin / 1920.0
             margin_y = frame.height() * self._margin / 1080.0
             x = safe_left + margin_x if "izquierda" in self._position else safe_right - logo_w - margin_x
@@ -165,6 +170,16 @@ class LogoDialog(QDialog):
         self.scale.setSuffix(" % del ancho")
         self.scale.setToolTip("Tamaño profesional recomendado: 8–12 % del ancho de salida")
         self.scale.setValue(int(s.get("logo_scale", 10)))
+        self.custom_size = QCheckBox("Tamaño personalizado para MOV / vídeo")
+        self.custom_size.setChecked(bool(s.get("logo_custom_size", False)))
+        self.width_pct = QSpinBox()
+        self.width_pct.setRange(2, 50)
+        self.width_pct.setSuffix(" % ancho")
+        self.width_pct.setValue(int(s.get("logo_width_pct", s.get("logo_scale", 10))))
+        self.height_pct = QSpinBox()
+        self.height_pct.setRange(2, 80)
+        self.height_pct.setSuffix(" % alto")
+        self.height_pct.setValue(int(s.get("logo_height_pct", s.get("logo_scale", 10))))
         self.opacity = QSpinBox()
         self.opacity.setRange(5, 100)
         self.opacity.setSuffix(" %")
@@ -179,7 +194,14 @@ class LogoDialog(QDialog):
         f.addRow("", self.enabled)
         f.addRow("Archivo", row)
         f.addRow("Posición", self.position)
-        f.addRow("Tamaño", self.scale)
+        f.addRow("Tamaño proporcional", self.scale)
+        f.addRow("", self.custom_size)
+        custom_row = QHBoxLayout()
+        custom_row.addWidget(QLabel("Ancho"))
+        custom_row.addWidget(self.width_pct)
+        custom_row.addWidget(QLabel("Alto"))
+        custom_row.addWidget(self.height_pct)
+        f.addRow("Tamaño MOV", custom_row)
         f.addRow("Opacidad", self.opacity)
         f.addRow("Margen", self.margin)
         f.addRow("Vista previa", self.preview)
@@ -202,6 +224,9 @@ class LogoDialog(QDialog):
         self.path.textChanged.connect(self._update_preview)
         self.position.currentTextChanged.connect(self._update_preview)
         self.scale.valueChanged.connect(self._update_preview)
+        self.custom_size.toggled.connect(self._update_preview)
+        self.width_pct.valueChanged.connect(self._update_preview)
+        self.height_pct.valueChanged.connect(self._update_preview)
         self.margin.valueChanged.connect(self._update_preview)
         self._update_preview()
 
@@ -219,11 +244,14 @@ class LogoDialog(QDialog):
 
     def _update_preview(self):
         self.preview.set_values(self.path.text().strip(), self.position.currentText(),
-                                self.scale.value(), self.margin.value())
+                                self.scale.value(), self.margin.value(), self.custom_size.isChecked(),
+                                self.width_pct.value(), self.height_pct.value())
 
     def values(self):
         return {"logo_enabled": self.enabled.isChecked(), "logo_path": self.path.text().strip(),
                 "logo_position": self.position.currentText(), "logo_scale": self.scale.value(),
+                "logo_custom_size": self.custom_size.isChecked(),
+                "logo_width_pct": self.width_pct.value(), "logo_height_pct": self.height_pct.value(),
                 "logo_opacity": self.opacity.value(), "logo_margin": self.margin.value()}
 
 

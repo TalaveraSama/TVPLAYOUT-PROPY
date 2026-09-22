@@ -879,6 +879,19 @@ class SettingsDialog(BaseDialog):
         self.encoder = QComboBox()
         self.encoder.addItems(ENCODERS)
         self.encoder.setCurrentText(self.settings.get("encoder", "AUTO"))
+        self.video_profile = QComboBox()
+        self.video_profile.addItem("Baseline (máxima compatibilidad)", "baseline")
+        self.video_profile.addItem("Main (equilibrado)", "main")
+        self.video_profile.addItem("High (mejor compresión)", "high")
+        self.video_profile.setCurrentIndex(max(0, self.video_profile.findData(self.settings.get("video_profile", "baseline"))))
+        self.x264_preset = QComboBox()
+        for preset in ("ultrafast", "superfast", "veryfast", "faster", "fast", "medium"):
+            self.x264_preset.addItem(preset, preset)
+        self.x264_preset.setCurrentIndex(max(0, self.x264_preset.findData(self.settings.get("x264_preset", "veryfast"))))
+        self.keyframe_interval = QSpinBox()
+        self.keyframe_interval.setRange(1, 4)
+        self.keyframe_interval.setSuffix(" s")
+        self.keyframe_interval.setValue(int(self.settings.get("keyframe_interval", 2)))
         self.bitrate = QSpinBox()
         self.bitrate.setRange(300, 60000)
         self.bitrate.setSuffix(" kbps")
@@ -907,6 +920,9 @@ class SettingsDialog(BaseDialog):
         f.addRow("Resolución", self.res)
         f.addRow("FPS", self.fps)
         f.addRow("Encoder", self.encoder)
+        f.addRow("Perfil H.264", self.video_profile)
+        f.addRow("Preset x264", self.x264_preset)
+        f.addRow("Intervalo keyframe", self.keyframe_interval)
         f.addRow("Bitrate vídeo", self.bitrate)
         f.addRow("Bitrate audio (kbps)", self.abitrate)
         f.addRow("Señal en espera (sin lista)", self.output_fallback)
@@ -1197,6 +1213,9 @@ class SettingsDialog(BaseDialog):
             "resolution": self.res.currentText().strip(),
             "fps": self.fps.currentText(),
             "encoder": self.encoder.currentText(),
+            "video_profile": self.video_profile.currentData() or "baseline",
+            "x264_preset": self.x264_preset.currentData() or "veryfast",
+            "keyframe_interval": self.keyframe_interval.value(),
             "bitrate": self.bitrate.value(),
             "audio_bitrate": int(self.abitrate.currentText()),
             "subtitle_burn": self.burn.isChecked(),

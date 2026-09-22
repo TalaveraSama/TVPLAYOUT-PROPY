@@ -30,6 +30,8 @@ CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 BELOW_NORMAL_PRIORITY = getattr(subprocess, "BELOW_NORMAL_PRIORITY_CLASS", 0)
 
 # v24.0.2.35: línea de progreso de FFmpeg (-stats): "time=HH:MM:SS.ms".
+# Formato base: time=(\d+):(\d+):(\d+(?:\.\d+)?) ; se toleran signos
+# porque algunos encoders imprimen timestamps negativos durante el arranque.
 _PROGRESS_RE = re.compile(r"time=([+-]?\d+):([+-]?\d+):([+-]?\d+(?:\.\d+)?)")
 
 
@@ -208,12 +210,13 @@ class OutputWorker(QThread):
     GRACE_SECONDS = 3.0
 
     def __init__(self, ffmpeg, items, url, resolution, fps, encoder, bitrate,
+                 video_profile="baseline", x264_preset="veryfast", keyframe_interval=2,
                  audio_preference="AUTO", subtitle_preference="OFF", subtitle_burn=False,
                  audio_bitrate=192, loop=True, start_index=0, start_offset=0.0, extra_args="", logo=None,
                  program_overlay=None, program_interval=1080.0, program_duration=15.0, protocol="",
                  monitor_feed_url="", externally_controlled=False, audio_processor_config=None,
                  music_overlay=None, music_intro_start=30.0, music_intro_duration=12.0, music_outro_duration=10.0,
-                 fallback_mode="bars", seamless_concat=True):
+                 fallback_mode="bars", seamless_concat=True, output_buffer_seconds=5.0):
         super().__init__()
         self.ffmpeg = ffmpeg
         self.items = self._norm_items(items)
@@ -221,6 +224,13 @@ class OutputWorker(QThread):
         self.resolution = resolution
         self.fps = fps
         self.encoder = encoder
+        self.video_profile = str(video_profile or "baseline").lower()
+        if self.video_profile not in {"baseline", "main", "high"}:
+            self.video_profile = "baseline"
+        self.x264_preset = str(x264_preset or "veryfast")
+        if self.x264_preset not in {"ultrafast", "superfast", "veryfast", "faster", "fast", "medium"}:
+            self.x264_preset = "veryfast"
+        self.keyframe_interval = max(1, int(keyframe_interval or 2))
         self.bitrate = int(bitrate)
         self.audio_bitrate = int(audio_bitrate)
         self.audio_preference = audio_preference
@@ -242,6 +252,9 @@ class OutputWorker(QThread):
         self.music_outro_duration = max(1.0, float(music_outro_duration or 10.0))
         self.fallback_mode = str(fallback_mode or "bars")
         self.seamless_concat = bool(seamless_concat)
+        # Reserva lógica de continuidad para absorber la apertura del siguiente
+        # archivo y pequeñas variaciones de red; no reinicia el socket RTMP.
+        self.output_buffer_seconds = max(0.0, float(output_buffer_seconds or 5.0))
         # Feed local MPEG-TS opcional: contiene exactamente el vídeo/audio
         # ya procesado que se envía al destino, incluido el subtítulo quemado.
         # Un reproductor externo puede usarlo como monitor real del programa.
@@ -326,7 +339,9 @@ class OutputWorker(QThread):
             return self._resolved
         text = self._available_encoders()
         if requested == "AUTO":
-            for label in ("NVIDIA NVENC", "Intel QSV", "AMD AMF", "CPU/x264"):
+            # Primera validación siempre con CPU/x264. Los encoders de GPU se
+            # habilitarán después de validar continuidad RTMP en producción.
+            for label in ("CPU/x264", "NVIDIA NVENC", "Intel QSV", "AMD AMF"):
                 codec = self.ENCODERS[label]
                 if re.search(rf"\b{re.escape(codec)}\b", text) and self._encoder_works(codec):
                     self._resolved = (label, codec)
@@ -512,7 +527,7 @@ class OutputWorker(QThread):
             if local_srt:
                 vf.insert(0, f"subtitles='{_ffmpeg_filter_path(local_srt)}'")
                 self._cmd_has_subs = True
-        gop = int(round(float(self.fps) * 2))
+        gop = max(1, int(round(float(self.fps) * self.keyframe_interval)))
         # v24.0.2.35: -stats hace que FFmpeg reporte su posición real
         # ("time=") aunque el loglevel sea warning; el watcher de drift la
         # usa en lugar de estimar por reloj de pared.
@@ -570,11 +585,12 @@ class OutputWorker(QThread):
             stage = "base"
             for inp_idx, (label, _path, expr) in enumerate(overlay_list, start=1):
                 if label == "logo":
-                    lw = max(16, int(w * int(logo.get("scale", 10)) / 100))
+                    lw = max(16, int(w * int(logo.get("width_pct", logo.get("scale", 10))) / 100))
+                    lh = max(16, int(h * int(logo.get("height_pct", logo.get("scale", 10))) / 100)) if logo.get("custom_size") else -1
                     op = max(0.05, min(1.0, int(logo.get("opacity", 90)) / 100))
                     m = int(logo.get("margin", 48))
                     xe, ye = logo_overlay_position(logo.get("position", "arriba-derecha"), w, h, m)
-                    filters.append(f"[{inp_idx}:v]setpts=PTS-STARTPTS,scale={lw}:-1,format=rgba,colorchannelmixer=aa={op:.2f}[logo]")
+                    filters.append(f"[{inp_idx}:v]setpts=PTS-STARTPTS,scale={lw}:{lh},format=rgba,colorchannelmixer=aa={op:.2f}[logo]")
                     filters.append(f"[{stage}][logo]overlay={xe.format(m=m)}:{ye.format(m=m)}:shortest=1:format=auto[withlogo]")
                     stage = "withlogo"
                 elif label == "program":
@@ -592,11 +608,12 @@ class OutputWorker(QThread):
             cmd += ["-map", "0:v:0", "-map", amap, "-vf", ",".join(vf)]
         cmd += ["-sn", "-dn", "-map_metadata", "-1", "-map_chapters", "-1", "-c:v", codec,
                 "-b:v", f"{self.bitrate}k", "-maxrate", f"{self.bitrate}k", "-bufsize", f"{self.bitrate * 2}k",
-                "-g", str(gop), "-keyint_min", str(gop),
+                "-g", str(gop), "-keyint_min", str(gop), "-max_muxing_queue_size", "4096",
                 "-pix_fmt", "yuv420p", "-r", str(self.fps), "-fps_mode", "cfr", "-avoid_negative_ts", "make_zero"]
         if codec == "libx264":
-            cmd += ["-preset", "veryfast", "-profile:v", "high", "-bf", "2", "-sc_threshold", "0",
-                    "-x264-params", "nal-hrd=cbr:force-cfr=1"]
+            cmd += ["-preset", self.x264_preset, "-profile:v", self.video_profile,
+                    "-bf", "0" if self.video_profile == "baseline" else "2", "-sc_threshold", "0",
+                    "-x264-params", "nal-hrd=cbr:force-cfr=1:scenecut=0"]
         elif codec == "h264_nvenc":
             cmd += ["-preset", "p4", "-tune", "ll", "-rc", "cbr", "-profile:v", "high", "-bf", "2"]
         elif codec == "h264_qsv":
@@ -611,6 +628,8 @@ class OutputWorker(QThread):
             cmd += ["-t", f"{remaining_duration:.3f}"]
         if self.extra_args.strip():
             cmd += self.extra_args.split()
+        # Mantener paquetes en el buffer de IO reduce los vaciados durante una transición; el encoder y el socket permanecen abiertos.
+        cmd += ["-flush_packets", "0", "-muxdelay", f"{self.output_buffer_seconds:.3f}", "-muxpreload", f"{self.output_buffer_seconds:.3f}", "-max_interleave_delta", str(int(self.output_buffer_seconds * 1000000))]
         if self.protocol == "RTMP" or low.startswith(("rtmp://", "rtmps://")):
             if self.monitor_feed_url:
                 # Tee después de los filtros/encoder: el monitor externo ve
@@ -659,23 +678,21 @@ class OutputWorker(QThread):
             "format=yuv420p"
         ]
 
-        gop = int(round(float(self.fps) * 2))
+        gop = max(1, int(round(float(self.fps) * self.keyframe_interval)))
         cmd = [
             self.ffmpeg, "-hide_banner", "-loglevel", "warning", "-stats", "-nostdin",
-            "-hwaccel", "none", "-f", "concat", "-safe", "0", "-re", "-i", concat_manifest_path
+            "-hwaccel", "none", "-thread_queue_size", "4096", "-f", "concat", "-safe", "0", "-re", "-i", concat_manifest_path
         ]
 
         logo = (self.logo if (self.logo and os.path.isfile(self.logo.get("path", ""))) else None)
-        program = (self.program_overlay if (self.program_overlay and os.path.isfile(self.program_overlay)) else None)
-        music = (self.music_overlay if (self.music_overlay and os.path.isfile(self.music_overlay)) else None)
-
+        # En una sesión concat persistente el título musical y la tarjeta TMDB
+        # no pueden cambiar de imagen sin reabrir el filtro. Incluirlos aquí
+        # dejaba pegado el primer título durante toda la tanda. El logo es
+        # global y sí puede permanecer; las capas dinámicas se aplican en el
+        # camino controlado por evento.
         overlay_list = []
         if logo:
             overlay_list.append(("logo", logo["path"], None))
-        if program:
-            overlay_list.append(("program", program, "1"))
-        if music:
-            overlay_list.append(("music", music, "1"))
 
         for item_op in overlay_list:
             # Un MOV/WEBM con canal alfa se reproduce en bucle como vídeo.
@@ -692,11 +709,12 @@ class OutputWorker(QThread):
             stage = "base"
             for inp_idx, (lbl, _path, _expr) in enumerate(overlay_list, start=1):
                 if lbl == "logo":
-                    lw = max(16, int(w * int(logo.get("scale", 10)) / 100))
+                    lw = max(16, int(w * int(logo.get("width_pct", logo.get("scale", 10))) / 100))
+                    lh = max(16, int(h * int(logo.get("height_pct", logo.get("scale", 10))) / 100)) if logo.get("custom_size") else -1
                     op = max(0.05, min(1.0, int(logo.get("opacity", 90)) / 100))
                     m = int(logo.get("margin", 48))
                     xe, ye = logo_overlay_position(logo.get("position", "arriba-derecha"), w, h, m)
-                    filters.append(f"[{inp_idx}:v]setpts=PTS-STARTPTS,scale={lw}:-1,format=rgba,colorchannelmixer=aa={op:.2f}[logo]")
+                    filters.append(f"[{inp_idx}:v]setpts=PTS-STARTPTS,scale={lw}:{lh},format=rgba,colorchannelmixer=aa={op:.2f}[logo]")
                     filters.append(f"[{stage}][logo]overlay={xe.format(m=m)}:{ye.format(m=m)}:shortest=1:format=auto[withlogo]")
                     stage = "withlogo"
                 elif lbl in ("program", "music"):
@@ -712,11 +730,12 @@ class OutputWorker(QThread):
         cmd += [
             "-sn", "-dn", "-map_metadata", "-1", "-map_chapters", "-1", "-c:v", codec,
             "-b:v", f"{self.bitrate}k", "-maxrate", f"{self.bitrate}k", "-bufsize", f"{self.bitrate * 2}k",
-            "-g", str(gop), "-keyint_min", str(gop),
+            "-g", str(gop), "-keyint_min", str(gop), "-max_muxing_queue_size", "4096",
             "-pix_fmt", "yuv420p", "-r", str(self.fps), "-fps_mode", "cfr", "-avoid_negative_ts", "make_zero"
         ]
         if codec == "libx264":
-            cmd += ["-preset", "veryfast", "-profile:v", "high", "-bf", "2",
+            cmd += ["-preset", self.x264_preset, "-profile:v", self.video_profile,
+                    "-bf", "0" if self.video_profile == "baseline" else "2",
                     "-x264-params", "nal-hrd=cbr:force-cfr=1:scenecut=0"]
         elif codec == "h264_nvenc":
             cmd += ["-preset", "p4", "-tune", "ll", "-rc", "cbr", "-profile:v", "high", "-bf", "2"]
@@ -731,6 +750,8 @@ class OutputWorker(QThread):
         if self.extra_args.strip():
             cmd += self.extra_args.split()
 
+        # Mantener paquetes en el buffer de IO reduce los vaciados durante una transición; el encoder y el socket permanecen abiertos.
+        cmd += ["-flush_packets", "0", "-muxdelay", f"{self.output_buffer_seconds:.3f}", "-muxpreload", f"{self.output_buffer_seconds:.3f}", "-max_interleave_delta", str(int(self.output_buffer_seconds * 1000000))]
         if self.protocol == "RTMP" or low.startswith(("rtmp://", "rtmps://")):
             if self.monitor_feed_url:
                 tee = (f"[f=flv:onfail=ignore]{self.url}|"
@@ -764,6 +785,12 @@ class OutputWorker(QThread):
             cur_path = self.items[self._current_index]["path"] if 0 <= self._current_index < len(self.items) else None
             self.items = new_items
             idx = max(0, min(int(current_index), len(new_items) - 1))
+            # BroadcastEngine ya tiene una entrada concat viva. Las señales
+            # normales de on_start sólo actualizan el espejo de la playlist;
+            # matar aquí el proceso volvería a introducir el microcorte que
+            # este modo elimina.
+            if self.seamless_concat and self.proc is not None and self.proc.poll() is None:
+                return True
             if not force_jump:
                 if cur_path is not None:
                     same = [i for i, it in enumerate(new_items) if it["path"] == cur_path]
@@ -1110,9 +1137,101 @@ class OutputWorker(QThread):
                 return True
         return False
 
+    # ---------------------------------------------------------- persistent output
+    def _run_persistent(self):
+        """Emite una tanda completa con un único proceso FFmpeg.
+
+        Este es el camino de BroadcastEngine para el modo reloj: concat lee
+        los clips de forma secuencial y el mismo proceso conserva el encoder,
+        el mux FLV y la conexión RTMP. No se intenta cambiar una entrada viva
+        matando FFmpeg; los saltos dinámicos siguen usando el camino controlado
+        por el playout local.
+        """
+        with self._lock:
+            items = list(self.items)
+        if not items:
+            return
+        manifest = os.path.join(tempfile.gettempdir(), f"{APP_SLUG}_broadcast_{id(self)}.ffconcat")
+        try:
+            write_concat_manifest(manifest, items, start_index=self.start_index,
+                                  offset=max(0.0, self.start_offset))
+            cmd, label = self._build_concat_command(manifest)
+            self.log.emit(f"BroadcastEngine • sesión persistente • {label} • {len(items)} eventos")
+            log.info("%s BroadcastEngine: %s", self.protocol, subprocess.list2cmdline(cmd))
+            self.now_playing.emit(self.start_index, items[self.start_index]["path"])
+            with self._lock:
+                self.proc = subprocess.Popen(
+                    cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                    stdin=subprocess.DEVNULL, text=True, encoding="utf-8", errors="replace",
+                    creationflags=CREATE_NO_WINDOW)
+                self._clip_started = time.time()
+                self._clip_emit_started = self._clip_started
+                self._out_time = -1.0
+                self._out_time_at = 0.0
+                proc = self.proc
+            self.state.emit(True, f"{self.protocol} ON AIR • BroadcastEngine persistente • {label} • {self.resolution}@{self.fps}")
+            # En modo persistente se conserva la salida de stderr para poder
+            # diagnosticar time= negativo, frame=0 y reconexiones sin crear
+            # otro lector que confunda el índice del evento.
+            last_lines = []
+            durations = []
+            for item in items:
+                duration = float(item.get("duration") or item.get("source_duration") or 0.0)
+                mark_in = float(item.get("mark_in") or 0.0)
+                mark_out = float(item.get("mark_out") or 0.0)
+                if mark_out > mark_in:
+                    duration = mark_out - mark_in
+                durations.append(max(0.0, duration))
+            def drain():
+                try:
+                    for line in proc.stderr:
+                        line = line.rstrip()
+                        m = _PROGRESS_RE.search(line)
+                        if m and ("frame=" in line or "speed=" in line):
+                            out_time = (int(m.group(1)) * 3600.0 + int(m.group(2)) * 60.0 + float(m.group(3)))
+                            if out_time < 0:
+                                continue
+                            with self._lock:
+                                self._out_time = out_time
+                                self._out_time_at = time.time()
+                            remaining = max(0.0, out_time + max(0.0, self.start_offset))
+                            idx = max(0, min(self.start_index, len(items) - 1))
+                            while idx + 1 < len(items) and durations[idx] > 0 and remaining >= durations[idx]:
+                                remaining -= durations[idx]
+                                idx += 1
+                            self._current_index = idx
+                            self.progress.emit(idx, remaining)
+                            continue
+                        if line and not any(n in line for n in self.NOISE):
+                            last_lines.append(line)
+                            del last_lines[:-5]
+                            self.log.emit("FFmpeg • " + line)
+                except Exception:  # noqa: BLE001
+                    pass
+            threading.Thread(target=drain, name="broadcast-stderr", daemon=True).start()
+            while proc.poll() is None and not self.stop_requested:
+                time.sleep(0.15)
+            code = proc.wait()
+            if not self.stop_requested and code not in (0, 255, -15):
+                self.log.emit(f"BroadcastEngine terminó con código {code}; no se avanza de evento")
+            if not self.stop_requested:
+                self.clip_finished.emit(self._current_index, code in (0, 255, -15))
+        finally:
+            try:
+                os.unlink(manifest)
+            except OSError:
+                pass
+
     # -------------------------------------------------------------- loop
     def run(self):
         try:
+            # Una sesión persistente sólo se usa cuando el propio output es
+            # master. En modo seguido por PyAV, sync_items conserva la
+            # autoridad del playout y no permite que concat se adelante.
+            if self.seamless_concat:
+                self._run_persistent()
+                self.state.emit(False, f"{self.protocol} detenido")
+                return
             with self._lock:
                 items = list(self.items)
             self.stop_requested = False
@@ -1333,6 +1452,15 @@ class OutputWorker(QThread):
                     pass
 
 
+class BroadcastEngine(OutputWorker):
+    """Motor propio de emisión continua para destinos FFmpeg/RTMP.
+
+    ``OutputWorker`` conserva la compatibilidad con salidas históricas; esta
+    clase da nombre explícito al motor que mantiene la sesión persistente en
+    el modo reloj y deja la reconexión aislada por destino.
+    """
+
+
 class MultiOutputManager(QObject):
     """Coordina destinos RTMP, SRT y NDI independientes.
 
@@ -1350,12 +1478,13 @@ class MultiOutputManager(QObject):
     def __init__(self, ffmpeg, profiles, items, resolution, fps, encoder, bitrate,
                  audio_preference="AUTO", subtitle_preference="OFF", subtitle_burn=False,
                  audio_bitrate=192, loop=True, start_index=0, start_offset=0.0,
+                 video_profile="baseline", x264_preset="veryfast", keyframe_interval=2,
                  extra_args="", logo=None, program_overlay=None, program_interval=1080.0,
                  program_duration=15.0, ndi_ffmpeg=None, ndi_source=None,
                  monitor_feed_url="", externally_controlled=False,
                  audio_processor_config=None, music_overlay=None,
                  music_intro_start=30.0, music_intro_duration=12.0, music_outro_duration=10.0,
-                 fallback_mode="bars", seamless_concat=True, parent=None):
+                 fallback_mode="bars", seamless_concat=True, output_buffer_seconds=5.0, parent=None):
         super().__init__(parent)
         self.ffmpeg = ffmpeg
         self.ndi_ffmpeg = ndi_ffmpeg or ffmpeg
@@ -1365,6 +1494,8 @@ class MultiOutputManager(QObject):
         self.current_item = (self.items[int(start_index)]
                              if 0 <= int(start_index or 0) < len(self.items) else None)
         self.common = dict(resolution=resolution, fps=fps, encoder=encoder, bitrate=bitrate,
+                           video_profile=video_profile, x264_preset=x264_preset,
+                           keyframe_interval=keyframe_interval,
                            audio_preference=audio_preference, subtitle_preference=subtitle_preference,
                            subtitle_burn=subtitle_burn, audio_bitrate=audio_bitrate, loop=loop,
                            start_index=start_index, start_offset=start_offset, extra_args=extra_args, logo=logo,
@@ -1377,7 +1508,8 @@ class MultiOutputManager(QObject):
                            music_intro_duration=float(music_intro_duration or 12.0),
                            music_outro_duration=float(music_outro_duration or 10.0),
                            fallback_mode=str(fallback_mode or "bars"),
-                           seamless_concat=bool(seamless_concat))
+                           seamless_concat=bool(seamless_concat),
+                           output_buffer_seconds=max(0.0, float(output_buffer_seconds or 5.0)))
         self.externally_controlled = bool(externally_controlled)
         self.monitor_feed_url = str(monitor_feed_url or "").strip()
         self.workers = []
@@ -1401,8 +1533,8 @@ class MultiOutputManager(QObject):
         target = str(profile.get("target") or profile.get("url") or "").strip()
         name = str(profile.get("name") or protocol)
         binary = self.ndi_ffmpeg if protocol == "NDI" else self.ffmpeg
-        worker = OutputWorker(binary, self.items, target, protocol=protocol,
-                              monitor_feed_url=monitor_feed_url, **self.common)
+        worker = BroadcastEngine(binary, self.items, target, protocol=protocol,
+                                  monitor_feed_url=monitor_feed_url, **self.common)
         worker._profile_name = name
         worker.state.connect(lambda ok, msg, n=name: self._state_from_worker(ok, msg, n))
         worker.log.connect(lambda msg, n=name: self.log.emit(f"[{n}] {msg}"))
