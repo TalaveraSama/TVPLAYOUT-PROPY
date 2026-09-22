@@ -1,7 +1,7 @@
 ; ============================================================================
-; Nexora Air V25.3.1 — Instalador completo para Windows
+; Nexora Air V25.3.2 — Instalador completo para Windows
 ;
-; Genera UN SOLO Setup_NexoraAir_V25.3.1.exe que instala:
+; Genera UN SOLO Setup_NexoraAir_V25.3.2.exe que instala:
 ;   • NexoraAir.exe  (aplicación PySide6 + PyAV congelada, carpeta _internal)
 ;   • ffmpeg.exe, ffprobe.exe y mpv.exe en la RAÍZ del programa
 ;   • Opcional: NDI Runtime x64 y VLC (se empaquetan si están en vendor\)
@@ -16,7 +16,7 @@
 ; ============================================================================
 
 #define MyAppName "Nexora Air"
-#define MyAppVersion "V25.3.1"
+#define MyAppVersion "V25.3.2"
 #define MyAppPublisher "Nexora Air"
 #define MyAppExeName "NexoraAir.exe"
 #define MyAppId "{7A4C2E90-3B1D-4F5A-8C2E-9D0B1A2C3E4F}"

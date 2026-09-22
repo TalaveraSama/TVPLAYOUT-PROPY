@@ -81,4 +81,4 @@ línea (v22.2, v24.0.0, v24.0.1, v24.0.2).
 | `v25.0.1` | Nexora Air V25.0.1 — Sincronización continua, soporte M3U8 y gestión de identificadores |
 | `v25.1.0` | Nexora Air V25.1.0 — Sonido Profesional, Titulación Musical y Transmisiones en Vivo |
 | `v24.3.9` | Nexora Air V24.3.9 — Sincronización Playout, Monitoreo MPV y Titulación Musical |
-| `v25.3.1` | Nexora Air V25.3.1 — BroadcastEngine persistente y continuidad RTMP |
+| `v25.3.2` | Nexora Air V25.3.2 — BroadcastEngine persistente y continuidad RTMP |
