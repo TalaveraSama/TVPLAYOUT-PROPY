@@ -341,6 +341,10 @@ class ContinuousOutputEngine(OutputWorker):
     SLATE_RETRY = 5.0
     # Bytes de cabeza que debe tener un spool antes de retirar al zombi.
     HEAD_BYTES = 2 * 1024 * 1024
+    # Límite duro de procesos de codificación simultáneos. Una realineación
+    # repetida puede dejar zombis durante varios segundos; sin este límite el
+    # consumo de RAM/VRAM crece sin control y Windows puede reiniciarse.
+    MAX_ACTIVE_PRODUCERS = 4
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -631,12 +635,24 @@ class ContinuousOutputEngine(OutputWorker):
         return seg
 
     def _start_producer(self, seg, cmd):
+        with self._lock:
+            active = sum(1 for other in self._segments
+                         if other is not seg and not other.dead and other.producing())
+        if active >= self.MAX_ACTIVE_PRODUCERS:
+            seg.dead = True
+            seg.done = True
+            seg.failed = True
+            self.log.emit(
+                f"Límite de productores alcanzado ({self.MAX_ACTIVE_PRODUCERS}); "
+                f"se evita otro FFmpeg para proteger RAM/VRAM")
+            return False
         log.info("productor seg %d: %s", seg.seq, subprocess.list2cmdline(cmd))
         seg.proc = proc_tools.popen(
             cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             stdin=subprocess.DEVNULL, creationflags=CREATE_NO_WINDOW)
         seg.started_at = time.time()
         seg.last_growth_at = time.time()
+        return True
 
     def _produce_item_segment(self, index, item, item_offset=0.0):
         """Crea y produce el spool de un item; devuelve el segmento o None."""
@@ -650,7 +666,8 @@ class ContinuousOutputEngine(OutputWorker):
             return None
         seg = self._new_segment(index, item, item_offset, duration)
         try:
-            self._start_producer(seg, cmd)
+            if not self._start_producer(seg, cmd):
+                return None
         except OSError as exc:
             self.log.emit(f"No se pudo iniciar el productor: {exc}")
             seg.dead = True
@@ -673,7 +690,8 @@ class ContinuousOutputEngine(OutputWorker):
             return None
         seg = self._new_segment(-1, None, 0.0, self.SLATE_CHUNK)
         try:
-            self._start_producer(seg, cmd)
+            if not self._start_producer(seg, cmd):
+                return None
         except OSError as exc:
             self.log.emit(f"No se pudo iniciar el productor de slate: {exc}")
             seg.dead = True
