@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                                QDialog)
 
 from . import logger
+from .obs_runtime import status_line as obs_runtime_status
 from .config import (DB_PATH, MPV_PATH, VLC_PATH, FFMPEG_PATH, FFMPEG_NDI_PATH, FFPROBE_PATH, APP_NAME, APP_VERSION, APP_ICON_PATH, VIDEO_EXTS,
                      AUDIO_PREFS, category_color)
 from .db import DB
@@ -54,7 +55,7 @@ STATUS_LABEL = {ST_PENDING: "", ST_READY: "LISTO", ST_ONAIR: "AL AIRE", ST_AIRED
                 ST_ERROR: "ERROR", ST_SKIPPED: "OMITIDO"}
 
 DEFAULT_SETTINGS = {
-    "rtmp_url": "", "outputs": [], "resolution": "1920x1080", "fps": "29.97", "encoder": "CPU/x264", "video_profile": "baseline", "x264_preset": "veryfast", "keyframe_interval": 2, "bitrate": 6000, "audio_bitrate": 192,
+    "rtmp_url": "", "outputs": [], "output_engine": "ffmpeg", "resolution": "1920x1080", "fps": "29.97", "encoder": "CPU/x264", "video_profile": "baseline", "x264_preset": "veryfast", "keyframe_interval": 2, "bitrate": 6000, "audio_bitrate": 192,
     "subtitle_burn": True, "ffmpeg_extra": "", "rtmp_autostart": False, "rtmp_mode": "local",
     "audio_pref": AUDIO_PREFS[0], "sub_pref": "OFF", "hwdec": "auto-safe", "audio_device": "",
     "autofill_category": "Todas", "autofill_count": 10, "tandas_category": "Publicidad", "tandas_count": 2,
@@ -2176,6 +2177,21 @@ class MainWindow(QMainWindow):
             self.rtmp_mode_local.setChecked(True)
             return
         self._save_setting("outputs", profiles)
+        requested_engine = str(self.settings.get("output_engine", "ffmpeg")).lower()
+        if requested_engine == "obs":
+            # Hasta que exista el puente nativo que cree escenas y
+            # obs_output, nunca fingir que FFmpeg es libobs: registrar el
+            # diagnóstico y caer explícitamente al motor estable.
+            diagnostic = obs_runtime_status()
+            log.info(diagnostic)
+            if "disponible" not in diagnostic or "no disponible" in diagnostic:
+                self._status("OBS/libobs no disponible • usando FFmpeg como fallback")
+                log.warning("obs: backend nativo aún no está habilitado; fallback FFmpeg")
+            else:
+                # El runtime detectado todavía requiere el puente de escenas;
+                # no iniciar una salida falsa ni arriesgar el RTMP.
+                self._status("OBS/libobs detectado, pero el backend de escenas aún está en desarrollo")
+                log.warning("obs: runtime detectado pero obs_output aún no está conectado; fallback FFmpeg")
         needs_ffmpeg = any(str(p.get("protocol", "RTMP")).upper() != "NDI" for p in profiles)
         if needs_ffmpeg and not FFMPEG_PATH:
             QMessageBox.warning(self, "Salidas IP", "No se encontró ffmpeg.exe para RTMP/SRT. Colócalo en la raíz del proyecto.")
