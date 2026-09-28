@@ -869,6 +869,15 @@ class SettingsDialog(BaseDialog):
         f = QFormLayout(w)
         self.rtmp = QLineEdit(self.settings.get("rtmp_url", ""))
         self.rtmp.setPlaceholderText("rtmp://servidor/app/clave  •  rtmps://…  •  srt://host:puerto")
+        self.output_engine = QComboBox()
+        self.output_engine.addItem("FFmpeg (estable)", "ffmpeg")
+        self.output_engine.addItem("OBS/libobs (requiere runtime OBS)", "obs")
+        engine_idx = self.output_engine.findData(self.settings.get("output_engine", "ffmpeg"))
+        self.output_engine.setCurrentIndex(max(0, engine_idx))
+        self.output_engine.setToolTip(
+            "OBS/libobs se habilitará cuando el runtime nativo esté instalado. "
+            "Mientras tanto Nexora usa FFmpeg como fallback seguro."
+        )
         self.res = QComboBox()
         self.res.setEditable(True)
         self.res.addItems(RESOLUTIONS)
@@ -916,6 +925,7 @@ class SettingsDialog(BaseDialog):
         self.outputs_btn = QPushButton("Configurar destinos RTMP / SRT / NDI…")
         self.outputs_btn.clicked.connect(parent.open_outputs)
         f.addRow("Destinos", self.outputs_btn)
+        f.addRow("Motor de salida", self.output_engine)
         f.addRow("URL de salida", self.rtmp)
         f.addRow("Resolución", self.res)
         f.addRow("FPS", self.fps)
@@ -1210,6 +1220,7 @@ class SettingsDialog(BaseDialog):
     def values(self):
         return {
             "rtmp_url": self.rtmp.text().strip(),
+            "output_engine": self.output_engine.currentData() or "ffmpeg",
             "resolution": self.res.currentText().strip(),
             "fps": self.fps.currentText(),
             "encoder": self.encoder.currentText(),
