@@ -1,7 +1,7 @@
 # Archivo de notas de versión
 
 Cada archivo `vX.Y.Z(.N).md` contiene las notas tal como se publicaron en
-GitHub para esa versión (73 versiones, de la v22.0.0 a la v25.6.0).
+GitHub para esa versión (74 versiones, de la v22.0.0 a la v25.7.0).
 Las líneas con varios parches fueron consolidadas en una sola release por
 línea (v22.2, v24.0.0, v24.0.1, v24.0.2).
 
@@ -85,3 +85,4 @@ línea (v22.2, v24.0.0, v24.0.1, v24.0.2).
 | `v25.4.0` | Nexora Air V25.4.0 — Motor de emisión continua estilo OBS (cero cortes TCP) |
 | `v25.5.0` | Nexora Air V25.5.0 — Cobertura de pruebas de `fmt_tc` |
 | `v25.6.0` | Nexora Air V25.6.0 — Release reproducible y validada |
+| `v25.7.0` | Nexora Air V25.7.0 — Preparación del motor OBS embebido |
